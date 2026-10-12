@@ -45,7 +45,16 @@ configuration (see `AGENTS.md`). The daemon integration test starts its own priv
   Replaces the queue and starts playing. An artist gives all their albums (year, then name), tracks
   in the server's order; a track plays alone. The list comes from the API (`getPlaylist`,
   `getAlbum`, `getArtist`, `getSong`), not from the local copy.
-- `melodie queue <kind> <id>`: appends to the queue (starts playing if the queue is empty).
+- `melodie queue [--next] <kind> <id>`: adds to the queue, at the end or, with `--next`, right
+  after the current track (starts playing if nothing plays).
+- `melodie queue --list [--json] | --play <pos> | --move <from> <to> | --remove <pos> |
+  --clear-after`: shows the queue (the current track marked `▶`) and edits it; positions start
+  at 1. Like the controls, they never start the daemon; without one, `--list` shows an empty
+  queue (`{"current":null,"tracks":[]}`). See [docs/events.md](docs/events.md) for what happens to
+  the current track.
+- `melodie watch`: follows what the player does, one JSON event per line (state, track,
+  position, volume, queue, favourites, connection). Never starts the daemon; without one, prints
+  `{"type":"gone"}` and waits for it. The format is in [docs/events.md](docs/events.md).
 - `melodie toggle | pause | resume | next | prev | stop`: controls. They never start the daemon
   (without a daemon: "Rien en lecture", code 1). `prev` restarts the track after 3 s of playing,
   else goes back to the previous one. `next` on the last track ends the queue.
@@ -81,7 +90,8 @@ exposed), and keeps the queue in step with mpv's playlist.
 
 - Control: Unix socket `$XDG_RUNTIME_DIR/melodie/melodie.sock` (0600, folder 0700), one JSON
   request per line (`{"cmd":"next"}`), one JSON answer per line (`{"ok":true}` or
-  `{"ok":false,"error":"…"}`; `now` adds the `now` object).
+  `{"ok":false,"error":"…"}`; `now` adds the `now` object). The queue requests and the event
+  stream (`{"cmd":"watch"}`) are described in [docs/events.md](docs/events.md).
 - MPRIS 2: `org.mpris.MediaPlayer2.melodie`, identity "Mélodie", no DesktopEntry. Metadata:
   `mpris:trackid` (`/org/melodie/track/<n>`), `mpris:length`, `xesam:title`, `xesam:artist`,
   `xesam:album`, `xesam:albumArtist`, `mpris:artUrl` (local cover), `xesam:comment`,
@@ -101,7 +111,8 @@ exposed), and keeps the queue in step with mpv's playlist.
   tests the server. Authentication refused: stop, `auth-refused` marker, notification "Navidrome :
   reconnexion requise" (a click runs `xdg-terminal-exec melodie login`).
 - End: queue finished, MPRIS `Quit`, or paused/stopped for 10 minutes: the daemon quits (MPRIS
-  service removed, socket deleted). SIGTERM too.
+  service removed, socket deleted). SIGTERM too. Clients following the event stream do not keep
+  it alive.
 - Log: `~/.local/state/melodie/melodie.log`, overwritten at every start, without token.
 - Variables: `MELODIE_AO` sets mpv's audio output (`null` for tests). Reserved for tests:
   `MELODIE_TEST_SECRET` (a file standing for the keyring; with it set, no notification is sent),

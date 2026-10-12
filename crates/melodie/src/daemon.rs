@@ -8,27 +8,31 @@
 use crate::autosync;
 use crate::mpris::{self, MetaInfo, Snapshot};
 use crate::notify;
+use crate::queue;
 use crate::rules::{self, ScrobbleClock};
 use anyhow::{Context, Result, bail};
-use libmpv2::events::{Event, PropertyData};
+use libmpv2::events::{Event as MpvRaw, PropertyData};
 use libmpv2::{Format, Mpv};
 use melodie_core::api::Client;
 use melodie_core::cover;
 use melodie_core::db;
 use melodie_core::env::Env;
 use melodie_core::prefs::{self, Prefs};
-use melodie_core::proto::{self, Now, Request, Response};
+use melodie_core::proto::{self, Event, Now, QueueEntry, QueueView, Request, Response};
 use melodie_core::state::{self, Failure};
 use melodie_core::store;
 use melodie_core::time::{now_secs, rfc3339};
 use melodie_core::track::TrackInfo;
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write};
+use std::net::Shutdown;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
+use std::sync::mpsc::{
+    Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError, channel, sync_channel,
+};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -47,6 +51,13 @@ const RESTART_AFTER_SECS: f64 = 3.0;
 const FINISH_GRACE: Duration = Duration::from_millis(800);
 /// Délai avant d'écrire un changement de volume (regroupe les crans successifs).
 const VOLUME_SAVE_DELAY: Duration = Duration::from_secs(1);
+/// Events waiting for one subscriber; past this, it is too slow and let go
+/// (the socket's own buffer comes on top).
+const SUBSCRIBER_BUFFER: usize = 64;
+/// Least time between two `position` events.
+const POSITION_EVERY: Duration = Duration::from_secs(1);
+/// Time left to subscribers to receive the last events when the daemon quits.
+const FAREWELL: Duration = Duration::from_secs(1);
 
 /// Fin de lecture demandée par SIGTERM ou SIGINT.
 static TERMINATED: AtomicBool = AtomicBool::new(false);
@@ -63,6 +74,19 @@ pub enum Msg {
     Cover,
     /// Le serveur a refusé le jeton.
     AuthRefused,
+    /// What the last call to the server says of the connection (`ok`, `unreachable`).
+    Link(&'static str),
+    /// A client asks for the event stream.
+    Watch(Subscriber),
+}
+
+/// A client of the event stream, fed by the engine without ever waiting.
+pub struct Subscriber {
+    tx: SyncSender<Arc<str>>,
+    /// The same socket, to close it when the client is let go.
+    stream: UnixStream,
+    /// Disconnected once the writing thread has finished.
+    done: Receiver<()>,
 }
 
 pub enum MpvEvent {
@@ -173,12 +197,12 @@ fn spawn_events(mpv: &Mpv, tx: Sender<Msg>) -> Result<()> {
         loop {
             let msg = match ev.wait_event(1.0) {
                 None => continue,
-                Some(Ok(Event::PropertyChange { change, .. })) => {
+                Some(Ok(MpvRaw::PropertyChange { change, .. })) => {
                     let _ = matches!(change, PropertyData::Flag(_));
                     MpvEvent::Prop
                 }
-                Some(Ok(Event::EndFile(reason))) => MpvEvent::EndFile(reason),
-                Some(Ok(Event::Shutdown)) => return,
+                Some(Ok(MpvRaw::EndFile(reason))) => MpvEvent::EndFile(reason),
+                Some(Ok(MpvRaw::Shutdown)) => return,
                 Some(Ok(_)) => continue,
                 Some(Err(e)) => MpvEvent::Failure(e.to_string()),
             };
@@ -188,6 +212,31 @@ fn spawn_events(mpv: &Mpv, tx: Sender<Msg>) -> Result<()> {
         }
     });
     Ok(())
+}
+
+/// Turns a connection into the event stream: the engine queues lines, this
+/// thread writes them, so a client that stops reading only holds up itself.
+fn stream_events(out: UnixStream, tx: &Sender<Msg>) {
+    let (etx, erx) = sync_channel::<Arc<str>>(SUBSCRIBER_BUFFER);
+    let (done_tx, done) = channel::<()>();
+    let Ok(stream) = out.try_clone() else { return };
+    if tx
+        .send(Msg::Watch(Subscriber {
+            tx: etx,
+            stream,
+            done,
+        }))
+        .is_err()
+    {
+        return;
+    }
+    let mut out = out;
+    for line in erx {
+        if out.write_all(line.as_bytes()).is_err() {
+            break;
+        }
+    }
+    drop(done_tx);
 }
 
 /// Un client du socket : une requête par ligne, une réponse par ligne.
@@ -203,6 +252,7 @@ fn serve_connection(stream: UnixStream, tx: Sender<Msg>) {
             continue;
         }
         let reply = match proto::decode::<Request>(&line) {
+            Ok(Request::Watch) => return stream_events(out, &tx),
             Ok(req) => {
                 let (rtx, rrx) = channel();
                 if tx.send(Msg::Req(req, rtx)).is_err() {
@@ -246,6 +296,24 @@ struct Engine {
     volume_dirty: Option<Instant>,
     next_sync: Instant,
     quit: bool,
+    subs: Vec<Subscriber>,
+    /// Bumped at every change of the queue's tracks.
+    queue_rev: u64,
+    /// What was last announced on the event stream.
+    seen: Seen,
+    last_position: Option<Instant>,
+    /// Connection state: `ok`, `unreachable` or `auth-refused`.
+    link: &'static str,
+}
+
+/// What the event stream last said, to announce only what changed.
+#[derive(Clone, Copy, PartialEq)]
+struct Seen {
+    status: Status,
+    entry: Option<u64>,
+    volume: f64,
+    queue_rev: u64,
+    link: &'static str,
 }
 
 type Res<T> = std::result::Result<T, String>;
@@ -344,6 +412,7 @@ impl Engine {
 
     /// Met à jour l'état partagé et signale les changements sur D-Bus.
     fn publish(&mut self) {
+        self.announce();
         let new = self.snapshot();
         self.track_volume(new.volume);
         let old = {
@@ -357,6 +426,155 @@ impl Engine {
             && let Err(e) = mpris::emit_changes(conn, &old, &new)
         {
             dlog!("MPRIS : signal impossible : {e}");
+        }
+    }
+
+    fn entry_view(&self, e: &Entry) -> QueueEntry {
+        QueueEntry {
+            entry: e.seq,
+            id: e.info.id.clone(),
+            title: e.info.title.clone(),
+            artist: e.info.artist.clone(),
+            album: e.info.album.clone(),
+            album_artist: e.info.album_artist.clone(),
+            duration: e.info.duration as f64,
+            quality: e.info.quality(),
+            cover: e
+                .info
+                .cover
+                .as_deref()
+                .map(|c| cover::path(&self.env, c))
+                .filter(|p| p.is_file())
+                .map(|p| p.to_string_lossy().to_string()),
+            cover_id: e.info.cover.clone(),
+            starred: e.info.starred,
+        }
+    }
+
+    fn queue_view(&self) -> QueueView {
+        QueueView {
+            current: self.cur,
+            tracks: self.queue.iter().map(|e| self.entry_view(e)).collect(),
+        }
+    }
+
+    // ---- event stream ----
+
+    fn seen_now(&self) -> Seen {
+        Seen {
+            status: self.status(),
+            entry: self.current().map(|e| e.seq),
+            volume: self.volume(),
+            queue_rev: self.queue_rev,
+            link: self.link,
+        }
+    }
+
+    /// Sends one event to every subscriber; one that cannot take it is let go.
+    fn broadcast(&mut self, ev: &Event) {
+        if self.subs.is_empty() {
+            return;
+        }
+        let Ok(mut line) = proto::encode(ev) else {
+            return;
+        };
+        line.push('\n');
+        let line: Arc<str> = line.into();
+        self.subs.retain(|s| match s.tx.try_send(line.clone()) {
+            Ok(()) => true,
+            Err(TrySendError::Full(_)) => {
+                dlog!("event subscriber too slow, let go");
+                let _ = s.stream.shutdown(Shutdown::Both);
+                false
+            }
+            Err(TrySendError::Disconnected(_)) => false,
+        });
+    }
+
+    /// Announces what changed since the last call, queue first so that a
+    /// client knows the tracks before it hears which one is current.
+    fn announce(&mut self) {
+        let new = self.seen_now();
+        let old = std::mem::replace(&mut self.seen, new);
+        if self.subs.is_empty() || old == new {
+            return;
+        }
+        if new.queue_rev != old.queue_rev {
+            self.broadcast(&Event::Queue {
+                queue: self.queue_view(),
+            });
+        }
+        if new.entry != old.entry {
+            self.announce_track();
+        }
+        if new.status != old.status {
+            self.broadcast(&Event::State {
+                state: new.status.word().into(),
+                position: self.position(),
+            });
+        }
+        if new.volume != old.volume {
+            self.broadcast(&Event::Volume { volume: new.volume });
+        }
+        if new.link != old.link {
+            self.broadcast(&Event::Connection {
+                state: new.link.into(),
+            });
+        }
+    }
+
+    fn announce_track(&mut self) {
+        let track = self.current().map(|e| self.entry_view(e));
+        self.broadcast(&Event::Track {
+            index: self.cur.filter(|_| track.is_some()),
+            track,
+        });
+    }
+
+    /// The position while playing, at most once a second.
+    fn announce_position(&mut self) {
+        if self.subs.is_empty()
+            || self.status() != Status::Playing
+            || self
+                .last_position
+                .is_some_and(|t| t.elapsed() < POSITION_EVERY)
+        {
+            return;
+        }
+        self.last_position = Some(Instant::now());
+        let duration = self.current().map_or(0.0, |e| e.info.duration as f64);
+        self.broadcast(&Event::Position {
+            position: self.position(),
+            duration,
+        });
+    }
+
+    /// A new client: what changed is announced to the others first, then the
+    /// newcomer gets a snapshot to start from.
+    fn subscribe(&mut self, sub: Subscriber) {
+        self.announce();
+        let ev = Event::Snapshot {
+            now: self.now(),
+            queue: self.queue_view(),
+            connection: self.link.into(),
+        };
+        let Ok(mut line) = proto::encode(&ev) else {
+            return;
+        };
+        line.push('\n');
+        if sub.tx.try_send(line.into()).is_ok() {
+            self.subs.push(sub);
+        }
+    }
+
+    /// Lets the subscribers receive the last events, a short while at most.
+    fn farewell(&mut self) {
+        let end = Instant::now() + FAREWELL;
+        let subs = std::mem::take(&mut self.subs);
+        let waits: Vec<Receiver<()>> = subs.into_iter().map(|s| s.done).collect();
+        for done in waits {
+            let left = end.saturating_duration_since(Instant::now());
+            let _ = done.recv_timeout(left);
         }
     }
 
@@ -408,10 +626,13 @@ impl Engine {
                 }
                 self.load(tracks, true)
             }
-            Request::Queue { tracks } => {
-                let replace = self.queue.is_empty();
-                self.load(tracks, replace)
-            }
+            Request::Queue { tracks, next } => self.insert(tracks, next),
+            Request::QueueList => return Response::queue(self.queue_view()),
+            Request::QueuePlay { index } => self.queue_play(index),
+            Request::QueueMove { from, to } => self.queue_move(from, to),
+            Request::QueueRemove { index } => self.queue_remove(index),
+            Request::QueueClearAfter => self.queue_clear_after(),
+            Request::Watch => Err("watch is only answered with the event stream".into()),
             Request::Toggle => match self.status() {
                 Status::Playing => self.set_pause(true),
                 Status::Paused => self.set_pause(false),
@@ -433,6 +654,7 @@ impl Engine {
                 for e in self.queue.iter_mut().filter(|e| e.info.id == id) {
                     e.info.starred = starred;
                 }
+                self.broadcast(&Event::Starred { id, starred });
                 Ok(())
             }
             Request::SetVolume { volume } => {
@@ -471,6 +693,7 @@ impl Engine {
             self.clock = None;
         }
         self.finish_candidate = None;
+        self.queue_rev += 1;
         for info in tracks {
             let url = self.client.stream_url(&info.id);
             let mode = if first { "replace" } else { "append" };
@@ -488,6 +711,129 @@ impl Engine {
             });
         }
         self.reconcile();
+        Ok(())
+    }
+
+    /// Adds tracks right after the current one (`next`) or at the end; starts
+    /// playing the first of them if nothing plays.
+    pub fn insert(&mut self, tracks: Vec<TrackInfo>, next: bool) -> Res<()> {
+        if self.queue.is_empty() {
+            return self.load(tracks, true);
+        }
+        if tracks.is_empty() {
+            return Err("aucun morceau".into());
+        }
+        let at = queue::insert_at(self.cur, self.queue.len(), next);
+        let start = self.cur.is_none();
+        self.queue_rev += 1;
+        for (k, info) in tracks.into_iter().enumerate() {
+            let url = self.client.stream_url(&info.id);
+            self.mpv
+                .command("loadfile", &[url.expose(), "append"])
+                .map_err(|e| format!("lecture impossible : {e}"))?;
+            let (end, pos) = (self.queue.len(), at + k);
+            if pos != end {
+                self.mpv
+                    .command("playlist-move", &[&end.to_string(), &pos.to_string()])
+                    .map_err(mpv_err)?;
+            }
+            self.next_seq += 1;
+            self.queue.insert(
+                pos,
+                Entry {
+                    seq: self.next_seq,
+                    info,
+                },
+            );
+        }
+        if start {
+            self.queue_play(at)?;
+        }
+        Ok(())
+    }
+
+    fn check_index(&self, index: usize) -> Res<()> {
+        if index < self.queue.len() {
+            Ok(())
+        } else {
+            Err(format!("No track at position {} of the queue", index + 1))
+        }
+    }
+
+    fn queue_play(&mut self, index: usize) -> Res<()> {
+        self.check_index(index)?;
+        if self.cur == Some(index) {
+            self.mpv
+                .command("seek", &["0", "absolute"])
+                .map_err(mpv_err)?;
+            return self.set_pause(false);
+        }
+        self.finish_candidate = None;
+        self.mpv
+            .command("playlist-play-index", &[&index.to_string()])
+            .map_err(mpv_err)?;
+        self.set_pause(false)?;
+        // mpv's `playlist-pos` already names this entry: no second start on the next reconcile.
+        self.start_track(index);
+        Ok(())
+    }
+
+    fn queue_move(&mut self, from: usize, to: usize) -> Res<()> {
+        self.check_index(from)?;
+        self.check_index(to)?;
+        if from == to {
+            return Ok(());
+        }
+        let target = queue::mpv_move_target(from, to);
+        self.mpv
+            .command("playlist-move", &[&from.to_string(), &target.to_string()])
+            .map_err(mpv_err)?;
+        let e = self.queue.remove(from);
+        self.queue.insert(to, e);
+        // The current track keeps playing; only its index changes.
+        self.cur = queue::moved(self.cur, from, to);
+        self.queue_rev += 1;
+        Ok(())
+    }
+
+    fn queue_remove(&mut self, index: usize) -> Res<()> {
+        self.check_index(index)?;
+        let len_before = self.queue.len();
+        self.mpv
+            .command("playlist-remove", &[&index.to_string()])
+            .map_err(mpv_err)?;
+        self.queue.remove(index);
+        self.queue_rev += 1;
+        let cur = queue::removed(self.cur, index, len_before);
+        if self.cur != Some(index) {
+            self.cur = cur;
+            return Ok(());
+        }
+        // mpv goes on with the next entry, at the same index (or stops past the end):
+        // a new track for us even though the index did not change.
+        self.cur = None;
+        self.clock = None;
+        self.finish_candidate = None;
+        if let Some(i) = cur {
+            self.start_track(i);
+        }
+        Ok(())
+    }
+
+    fn queue_clear_after(&mut self) -> Res<()> {
+        let Some(c) = self.cur else {
+            return Err("Rien en lecture".into());
+        };
+        if c + 1 >= self.queue.len() {
+            return Ok(());
+        }
+        self.queue_rev += 1;
+        for i in (c + 1..self.queue.len()).rev() {
+            self.mpv
+                .command("playlist-remove", &[&i.to_string()])
+                .map_err(mpv_err)?;
+            self.queue.truncate(i);
+        }
         Ok(())
     }
 
@@ -524,6 +870,7 @@ impl Engine {
     }
 
     fn stop(&mut self) -> Res<()> {
+        self.queue_rev += 1;
         self.queue.clear();
         self.cur = None;
         self.clock = None;
@@ -604,8 +951,13 @@ impl Engine {
                 dlog!("authentification refusée : {m}");
                 let _ = tx.send(Msg::AuthRefused);
             }
-            Err(e) => dlog!("test du serveur : {e}"),
-            Ok(()) => {}
+            Err(e) => {
+                dlog!("test du serveur : {e}");
+                let _ = tx.send(Msg::Link("unreachable"));
+            }
+            Ok(()) => {
+                let _ = tx.send(Msg::Link("ok"));
+            }
         });
     }
 
@@ -642,8 +994,10 @@ impl Engine {
         // La copie locale est plus fraîche que la file (favoris changés ailleurs).
         if let Some(id) = self.queue.get(index).map(|e| e.info.id.clone())
             && let Ok(Some(s)) = db::track_starred(&self.env, &id)
+            && s != self.queue[index].info.starred
         {
             self.queue[index].info.starred = s;
+            self.broadcast(&Event::Starred { id, starred: s });
         }
         let Some(e) = self.queue.get(index) else {
             return;
@@ -666,14 +1020,23 @@ impl Engine {
 
     fn scrobble(&self, id: &str, submission: bool) {
         let client = self.client.clone();
+        let tx = self.tx.clone();
         let id = id.to_string();
         std::thread::spawn(move || {
             let r = client.call(
                 "scrobble",
                 &[("id", id), ("submission", submission.to_string())],
             );
-            if let Err(e) = r {
-                dlog!("écoute non signalée : {e}");
+            match r {
+                Ok(_) => {
+                    let _ = tx.send(Msg::Link("ok"));
+                }
+                Err(e) => {
+                    dlog!("écoute non signalée : {e}");
+                    if matches!(e, melodie_core::api::ApiError::Unreachable(_)) {
+                        let _ = tx.send(Msg::Link("unreachable"));
+                    }
+                }
             }
         });
     }
@@ -768,6 +1131,8 @@ impl Engine {
     }
 
     fn auth_refused(&mut self) {
+        self.link = "auth-refused";
+        self.queue_rev += 1;
         store::mark_auth_refused(&self.env);
         notify::reconnect_required();
         let _ = self.mpv.command("stop", &[]);
@@ -784,13 +1149,20 @@ impl Engine {
                     let _ = reply.send(r);
                 }
                 Ok(Msg::Mpv(ev)) => self.on_mpv(ev),
-                Ok(Msg::Cover) => self.publish(),
+                Ok(Msg::Cover) => {
+                    // Its local path is part of the track: said again once the file is there.
+                    self.announce_track();
+                    self.publish();
+                }
                 Ok(Msg::AuthRefused) => self.auth_refused(),
+                Ok(Msg::Link(state)) => self.link = state,
+                Ok(Msg::Watch(sub)) => self.subscribe(sub),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break,
             }
             self.tick();
             self.publish();
+            self.announce_position();
             self.flush_volume(self.quit);
             if self.quit {
                 break;
@@ -890,6 +1262,17 @@ pub fn run(env: &Env) -> Result<()> {
         volume_dirty: None,
         next_sync: Instant::now() + Duration::from_secs(autosync::daemon_every_secs().max(1)),
         quit: false,
+        subs: Vec::new(),
+        queue_rev: 0,
+        seen: Seen {
+            status: Status::Stopped,
+            entry: None,
+            volume: f64::from(volume) / 100.0,
+            queue_rev: 0,
+            link: "ok",
+        },
+        last_position: None,
+        link: "ok",
     };
     engine.sync_at_start();
     engine.run(rx);
@@ -897,6 +1280,7 @@ pub fn run(env: &Env) -> Result<()> {
     // Sortie propre : plus de son, plus de service MPRIS, plus de socket.
     let _ = mpv.command("stop", &[]);
     let _ = std::fs::remove_file(&sock);
+    engine.farewell();
     let conn = engine.conn.take();
     drop(conn);
     let _ = std::fs::remove_file(proto::lock_path()?);

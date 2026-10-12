@@ -10,6 +10,7 @@ mod mixcmd;
 mod mpris;
 mod notify;
 mod playlists_cmd;
+mod queue;
 mod rules;
 
 use anyhow::{Result, bail};
@@ -191,8 +192,41 @@ enum Cmd {
         #[arg(long)]
         shuffle: bool,
     },
-    /// Ajoute à la fin de la file
-    Queue { kind: KindArg, id: String },
+    /// Adds to the queue, or shows and edits it (positions start at 1)
+    #[command(group(
+        clap::ArgGroup::new("action")
+            .required(true)
+            .args(["kind", "list", "play", "move_", "remove", "clear_after"])
+    ))]
+    Queue {
+        #[arg(requires = "id")]
+        kind: Option<KindArg>,
+        id: Option<String>,
+        /// Adds right after the current track instead of at the end
+        #[arg(long, requires = "kind")]
+        next: bool,
+        /// Shows the queue and the current track
+        #[arg(long)]
+        list: bool,
+        /// With --list: JSON output
+        #[arg(long, requires = "list")]
+        json: bool,
+        /// Plays the track at this position
+        #[arg(long, value_name = "POS", value_parser = clap::value_parser!(u64).range(1..))]
+        play: Option<u64>,
+        /// Moves the track at FROM so that it ends up at TO
+        #[arg(long = "move", num_args = 2, value_names = ["FROM", "TO"],
+              value_parser = clap::value_parser!(u64).range(1..))]
+        move_: Option<Vec<u64>>,
+        /// Removes the track at this position
+        #[arg(long, value_name = "POS", value_parser = clap::value_parser!(u64).range(1..))]
+        remove: Option<u64>,
+        /// Removes every track after the current one
+        #[arg(long)]
+        clear_after: bool,
+    },
+    /// Follows what the player does: one JSON event per line (never starts the daemon)
+    Watch,
     /// Lecture ou pause
     Toggle,
     /// Met en pause
@@ -306,10 +340,50 @@ fn run(cli: Cli) -> Result<ExitCode> {
             Ok(emit(&env, search_cmd(&env, &text), json))
         }
         Cmd::Playlists { json } => Ok(emit(&env, playlists_cmd(&env), json)),
-        Cmd::Play { kind, id, shuffle } => {
-            Ok(ctl::play_or_queue(&env, kind.into(), &id, shuffle, false))
+        Cmd::Play { kind, id, shuffle } => Ok(ctl::play_or_queue(
+            &env,
+            kind.into(),
+            &id,
+            shuffle,
+            false,
+            false,
+        )),
+        Cmd::Queue {
+            kind,
+            id,
+            next,
+            list,
+            json,
+            play,
+            move_,
+            remove,
+            clear_after,
+        } => {
+            // Positions start at 1 on the command line, at 0 on the socket.
+            let at = |p: u64| p as usize - 1;
+            Ok(if list {
+                ctl::queue_list(json)
+            } else if let Some(p) = play {
+                ctl::control(proto::Request::QueuePlay { index: at(p) })
+            } else if let Some(m) = move_ {
+                ctl::control(proto::Request::QueueMove {
+                    from: at(m[0]),
+                    to: at(m[1]),
+                })
+            } else if let Some(p) = remove {
+                ctl::control(proto::Request::QueueRemove { index: at(p) })
+            } else if clear_after {
+                ctl::control(proto::Request::QueueClearAfter)
+            } else {
+                match (kind, id) {
+                    (Some(kind), Some(id)) => {
+                        ctl::play_or_queue(&env, kind.into(), &id, false, true, next)
+                    }
+                    _ => bail!("queue: what to add is missing"),
+                }
+            })
         }
-        Cmd::Queue { kind, id } => Ok(ctl::play_or_queue(&env, kind.into(), &id, false, true)),
+        Cmd::Watch => Ok(ctl::watch()),
         Cmd::Toggle => Ok(ctl::control(proto::Request::Toggle)),
         Cmd::Pause => Ok(ctl::control(proto::Request::Pause)),
         Cmd::Resume => Ok(ctl::control(proto::Request::Resume)),
