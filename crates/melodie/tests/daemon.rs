@@ -1789,3 +1789,187 @@ fn the_cover_of_the_current_track_is_announced_when_it_arrives() {
         })
     });
 }
+
+/// Five tracks of five minutes: `al1` holds t1 to t3, `al2` (older) t4 and t5, the playlist
+/// `p1` holds t5 then t1.
+fn addressable_library(sb: &Sandbox) {
+    sb.fake.state.stream_secs.store(300, Ordering::SeqCst);
+    *sb.fake.state.songs.lock().unwrap() = (1..=5)
+        .map(|i| {
+            let album = if i > 3 { "al2" } else { "al1" };
+            song(i, json!({"duration": 300, "albumId": album}))
+        })
+        .collect();
+    seed_playlist(sb, &["t5", "t1"]);
+}
+
+/// The address of each kind and what the fake server answers for it. The artist's albums come
+/// oldest first (`al2`, then `al1`).
+const ADDRESSES: [(&str, &[&str]); 4] = [
+    ("melodie:track/t2", &["t2"]),
+    ("melodie:album/al1", &["t1", "t2", "t3"]),
+    ("melodie:playlist/p1", &["t5", "t1"]),
+    ("melodie:artist/ar1", &["t4", "t5", "t1", "t2", "t3"]),
+];
+
+const MALFORMED: [&str; 9] = [
+    "melodie:radio/r1",
+    "melodie:album/",
+    "melodie:album",
+    "melodie:album/a%2Fb",
+    "melodie:album/al1?shuffle=maybe",
+    "melodie:album/al1?queue=now",
+    "melodie:album/al1?speed=2",
+    "melodie:album/al1#top",
+    "https://example.org/album/al1",
+];
+
+/// Requests that look something up or check the connection; the player's own reports to the
+/// server (now playing, scrobble, cover) come on their own time and are not counted.
+fn lookups(sb: &Sandbox) -> usize {
+    sb.calls()
+        .iter()
+        .filter(|c| {
+            [
+                "ping?",
+                "getSong?",
+                "getAlbum?",
+                "getArtist?",
+                "getPlaylist?",
+            ]
+            .iter()
+            .any(|m| c.starts_with(m))
+        })
+        .count()
+}
+
+fn queue_ids(sb: &Sandbox) -> Vec<String> {
+    ids(&sb.queue_list())
+}
+
+fn sorted(mut v: Vec<String>) -> Vec<String> {
+    v.sort();
+    v
+}
+
+#[test]
+fn open_plays_each_kind_by_its_address() {
+    let sb = Sandbox::new(true);
+    addressable_library(&sb);
+    for (uri, expected) in ADDRESSES {
+        let out = sb.ok(&["open", uri]);
+        assert!(out.starts_with("Lecture :"), "{uri}: {out}");
+        assert_eq!(queue_ids(&sb), ids_of(expected), "{uri}");
+        wait_until(5, "lecture", || sb.now()["state"] == "playing");
+        assert_eq!(sb.now()["id"], expected[0], "{uri}");
+    }
+}
+
+#[test]
+fn open_adds_to_the_queue_next_or_last() {
+    let sb = Sandbox::new(true);
+    addressable_library(&sb);
+    sb.ok(&["open", "melodie:album/al2"]);
+    sb.ok(&["open", "melodie:track/t1?queue=last"]);
+    assert_eq!(queue_ids(&sb), ids_of(&["t4", "t5", "t1"]));
+    let out = sb.ok(&["open", "melodie:track/t2?queue=next"]);
+    assert!(out.starts_with("Ajouté à la file :"), "{out}");
+    assert_eq!(queue_ids(&sb), ids_of(&["t4", "t2", "t5", "t1"]));
+    // What plays is untouched.
+    assert_eq!(sb.now()["id"], "t4");
+}
+
+#[test]
+fn open_shuffles_what_it_plays_or_adds() {
+    let sb = Sandbox::new(true);
+    addressable_library(&sb);
+    let natural = ids_of(ADDRESSES[3].1);
+    // A shuffle can keep the natural order by chance (1 in 120): try again a few times.
+    let mut moved = false;
+    for _ in 0..8 {
+        sb.ok(&["open", "melodie:artist/ar1?shuffle=true"]);
+        let q = queue_ids(&sb);
+        assert_eq!(sorted(q.clone()), sorted(natural.clone()));
+        if q != natural {
+            moved = true;
+            break;
+        }
+    }
+    assert!(moved, "never shuffled");
+    // Explicitly not shuffled.
+    sb.ok(&["open", "melodie:artist/ar1?shuffle=false"]);
+    assert_eq!(queue_ids(&sb), natural);
+    // Shuffling an addition adds the same tracks, and leaves the queue as it was before them.
+    sb.ok(&["open", "melodie:album/al1?shuffle=true&queue=last"]);
+    let q = queue_ids(&sb);
+    assert_eq!(q[..5], natural[..]);
+    assert_eq!(sorted(q[5..].to_vec()), ids_of(&["t1", "t2", "t3"]));
+}
+
+#[test]
+fn open_refuses_a_malformed_address_and_changes_nothing() {
+    let sb = Sandbox::new(true);
+    addressable_library(&sb);
+    // No daemon: none is started, and the server is not even asked.
+    for uri in MALFORMED {
+        let o = sb.run(&["open", uri]);
+        assert_eq!(o.status.code(), Some(1), "{uri}");
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(err.contains("invalid address"), "{uri}: {err}");
+        assert!(!sb.socket().exists(), "{uri}");
+    }
+    assert!(sb.calls().is_empty(), "{:?}", sb.calls());
+    // With a daemon: the queue and the playing track stay as they are.
+    sb.ok(&["open", "melodie:album/al1"]);
+    let calls = lookups(&sb);
+    for uri in MALFORMED {
+        assert_eq!(sb.run(&["open", uri]).status.code(), Some(1), "{uri}");
+    }
+    assert_eq!(queue_ids(&sb), ids_of(&["t1", "t2", "t3"]));
+    assert_eq!(sb.now()["id"], "t1");
+    assert_eq!(lookups(&sb), calls);
+}
+
+#[test]
+fn open_of_something_the_server_does_not_have_changes_nothing() {
+    let sb = Sandbox::new(true);
+    addressable_library(&sb);
+    sb.ok(&["open", "melodie:album/al1"]);
+    for uri in ["melodie:album/nope", "melodie:track/nope"] {
+        let o = sb.run(&["open", uri]);
+        assert!(!o.status.success(), "{uri}");
+        assert!(!o.stderr.is_empty(), "{uri}");
+    }
+    assert_eq!(queue_ids(&sb), ids_of(&["t1", "t2", "t3"]));
+}
+
+#[test]
+fn open_without_login_says_no_login_and_starts_no_daemon() {
+    let sb = Sandbox::new(false);
+    let o = sb.run(&["open", "melodie:album/al1"]);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("melodie login"));
+    assert!(!sb.socket().exists());
+    assert!(sb.calls().is_empty());
+
+    // A refused token is told like no login, and is remembered.
+    let sb = Sandbox::new(true);
+    *sb.fake.state.expected_token.lock().unwrap() = "autre".into();
+    let o = sb.run(&["open", "melodie:album/al1"]);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(sb.home().join(".cache/melodie/auth-refused").exists());
+    assert!(!sb.socket().exists());
+
+    // An unreachable server is not a reason to log in again.
+    let sb = Sandbox::new(true);
+    *sb.fake.state.raw.lock().unwrap() = Some((503, "x".into()));
+    let o = sb.run(&["open", "melodie:album/al1"]);
+    assert_eq!(o.status.code(), Some(2));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("injoignable") && !err.contains("melodie login"),
+        "{err}"
+    );
+    assert!(!sb.socket().exists());
+    assert!(!sb.home().join(".cache/melodie/auth-refused").exists());
+}
