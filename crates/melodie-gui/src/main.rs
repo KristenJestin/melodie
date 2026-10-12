@@ -5,6 +5,8 @@ mod app;
 mod motion;
 mod player;
 mod queue;
+#[cfg(feature = "frame-stats")]
+mod stats;
 mod widgets;
 
 use app::Shared;
@@ -325,6 +327,8 @@ fn main() -> ExitCode {
     };
     gpui_kit::application().with_assets(Icons).run(move |cx| {
         gpui_kit::init(cx);
+        #[cfg(feature = "frame-stats")]
+        stats::start(cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                 None,

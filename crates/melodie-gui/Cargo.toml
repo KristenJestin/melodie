@@ -10,6 +10,8 @@ publish.workspace = true
 default = ["gpui-fast"]
 # GPUI Fast behind gpui-kit (docs/gui-toolkit.md); without it, upstream GPUI from the same source.
 gpui-fast = ["gpui-kit/gpui-fast"]
+# Frame statistics for measuring the window (`MELODIE_GUI_FRAME_STATS`); off in the program people run.
+frame-stats = ["gpui-kit/profiler"]
 
 [dependencies]
 anyhow = "1"
