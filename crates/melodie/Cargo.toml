@@ -1,0 +1,23 @@
+[package]
+name = "melodie"
+description = "A music player for Navidrome: background daemon, command line, local mixes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+getrandom = "0.3"
+libc = "0.2"
+libmpv2 = "6"
+melodie-core = { path = "../melodie-core" }
+rpassword = "7"
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde_json = "1"
+zbus = "5"
+
+[dev-dependencies]
+melodie-core = { path = "../melodie-core", features = ["fake"] }
+tempfile = "3"

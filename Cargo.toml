@@ -1,8 +1,9 @@
-[package]
-name = "melodie"
+[workspace]
+resolver = "3"
+members = ["crates/melodie-core", "crates/melodie"]
+
+[workspace.package]
 version = "0.0.0"
 edition = "2024"
-description = "A music player for Navidrome: background daemon, command line, local mixes"
 license = "MIT"
-
-[dependencies]
+publish = false
