@@ -1763,3 +1763,29 @@ fn connection_state_is_announced() {
     });
     w.wait_count("gone", 1);
 }
+
+#[test]
+fn the_cover_of_the_current_track_is_announced_when_it_arrives() {
+    let sb = Sandbox::new(true);
+    long_album(&sb);
+    for (i, s) in sb.fake.state.songs.lock().unwrap().iter_mut().enumerate() {
+        s["coverArt"] = json!(format!("c{}", i + 1));
+    }
+    sb.ok(&["play", "album", "al1"]);
+    wait_until(5, "lecture", || {
+        sb.try_now().is_some_and(|v| v["state"] == "playing")
+    });
+    let w = sb.watch();
+    w.wait_count("snapshot", 1);
+    sb.fake.state.cover_delay_ms.store(500, Ordering::SeqCst);
+    sb.ok(&["queue", "--play", "3"]);
+    w.wait_for("cover of t3", |ev| {
+        ev.iter().any(|e| {
+            e["type"] == "track"
+                && e["track"]["id"] == "t3"
+                && e["track"]["cover"]
+                    .as_str()
+                    .is_some_and(|c| c.ends_with("/covers/c3.img"))
+        })
+    });
+}

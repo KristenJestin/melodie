@@ -505,11 +505,7 @@ impl Engine {
             });
         }
         if new.entry != old.entry {
-            let track = self.current().map(|e| self.entry_view(e));
-            self.broadcast(&Event::Track {
-                index: self.cur.filter(|_| track.is_some()),
-                track,
-            });
+            self.announce_track();
         }
         if new.status != old.status {
             self.broadcast(&Event::State {
@@ -525,6 +521,14 @@ impl Engine {
                 state: new.link.into(),
             });
         }
+    }
+
+    fn announce_track(&mut self) {
+        let track = self.current().map(|e| self.entry_view(e));
+        self.broadcast(&Event::Track {
+            index: self.cur.filter(|_| track.is_some()),
+            track,
+        });
     }
 
     /// The position while playing, at most once a second.
@@ -1145,7 +1149,11 @@ impl Engine {
                     let _ = reply.send(r);
                 }
                 Ok(Msg::Mpv(ev)) => self.on_mpv(ev),
-                Ok(Msg::Cover) => self.publish(),
+                Ok(Msg::Cover) => {
+                    // Its local path is part of the track: said again once the file is there.
+                    self.announce_track();
+                    self.publish();
+                }
                 Ok(Msg::AuthRefused) => self.auth_refused(),
                 Ok(Msg::Link(state)) => self.link = state,
                 Ok(Msg::Watch(sub)) => self.subscribe(sub),
