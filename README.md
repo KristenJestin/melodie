@@ -80,7 +80,8 @@ configuration (see `AGENTS.md`). The daemon integration test starts its own priv
 
 `play`, `queue` and `open` start the daemon if it is not running, but only if the connection is good:
 `no-login`, `auth-refused` and `unreachable` give a clear message (code 1, 1 or 2) and a
-`notify-send -a "Mélodie"` notification, without starting the daemon.
+`notify-send -a "Mélodie"` notification, without starting the daemon. An id the server does not
+have is "not found" (code 5, see "Connection states"), also without starting the daemon.
 
 ## Addresses
 
@@ -123,7 +124,8 @@ An address comes from outside, so it is read strictly and refused with a message
   and the queue is untouched.
 
 `melodie open` checks the connection like `play` does: `no-login`, `auth-refused` (both code 1) and
-`unreachable` (code 2) are told apart, with a notification, and the daemon is not started. It has
+`unreachable` (code 2) are told apart, with a notification, and the daemon is not started; an id
+the server does not know is "not found" (code 5), not a connection state. It has
 no `--json`: like `play`, it prints one line ("Lecture : 3 morceaux") and acts.
 
 `OpenUri` runs in the daemon and does not wait for the server: the address is read on the D-Bus
@@ -287,6 +289,18 @@ result), `--size N` (50 by default).
 | `no-login` | no secret or no configuration | "Pas connecté : lance `melodie login`", code 1 | entry "Se connecter à Navidrome" (`xdg-terminal-exec melodie login`), code 0 |
 | `auth-refused` | `status="failed"`, Subsonic code 40 to 44 | same (handled like `no-login`), code 1 | same |
 | `unreachable` | network, 8 s timeout, HTTP not 200, invalid JSON, other Subsonic error | "Serveur injoignable", code 2, never asks to log in again | entry "Navidrome injoignable" (subtitle: the address), code 0 |
+
+**Not found is not a connection state.** When the server answers Subsonic code 70 ("data not
+found", e.g. an album id it does not have), it is reachable and accepted the token: the item is
+missing. Every command that asks the server about an id (`play`, `queue`, `open`, `like`,
+`unlike`, `playlist …`) says "Introuvable sur le serveur : album al9" (for the ones that look an
+id up, else the name of the failed request) with code 5 and a notification, and never asks to log
+in. The daemon is not started for it. It is never
+remembered: it neither sets nor clears the `auth-refused` marker, and the daemon's `connection`
+(`docs/events.md`) does not change. With `--json` it is one entry
+`{"id": "not-found", "name": "Introuvable sur le serveur", "subtitle": "album al9", "icon": …}`
+with no action, code 0, like the other failure entries. MPRIS `OpenUri` of such an address logs it
+and changes nothing.
 
 A local problem (missing keyring, disk, database) gives code 3 and a message; with `--json`, an
 entry "Erreur du module music". Never a silent error.
