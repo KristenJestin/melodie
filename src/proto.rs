@@ -1,9 +1,9 @@
 //! Protocole du socket de contrôle : une requête JSON par ligne, une réponse
 //! JSON par ligne. Emplacements des fichiers du démon.
 
-use crate::track::TrackInfo;
-use anyhow::{bail, Context, Result};
 use crate::env::Env;
+use crate::track::TrackInfo;
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;

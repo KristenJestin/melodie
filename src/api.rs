@@ -243,7 +243,7 @@ impl Client {
         let resp = match r.call() {
             Ok(resp) => resp,
             Err(ureq::Error::Status(code, _)) => {
-                return Err(ApiError::Unreachable(format!("{method} : HTTP {code}")))
+                return Err(ApiError::Unreachable(format!("{method} : HTTP {code}")));
             }
             Err(ureq::Error::Transport(t)) => {
                 // `Display` de `Transport` contient l'URL : on n'en garde que le genre.
@@ -419,12 +419,11 @@ mod tests {
         let client = Client::new("http://h:4533/", creds.clone());
         let req = client.request("search3", &[("query", String::new())]);
         assert!(req.full_url().contains(&creds.t));
-        assert!(req
-            .full_url()
-            .starts_with("http://h:4533/rest/search3.view?u=kris&t="));
-        assert!(req
-            .full_url()
-            .contains("&v=1.16.1&c=melodie&f=json&query="));
+        assert!(
+            req.full_url()
+                .starts_with("http://h:4533/rest/search3.view?u=kris&t=")
+        );
+        assert!(req.full_url().contains("&v=1.16.1&c=melodie&f=json&query="));
         for text in [
             format!("{req}"),
             format!("{req:?}"),

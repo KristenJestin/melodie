@@ -114,11 +114,7 @@ pub fn parse_rfc3339(s: &str) -> Option<i64> {
             let hh: i64 = o.get(1..3)?.parse().ok()?;
             let mm: i64 = o.get(4..6)?.parse().ok()?;
             let v = hh * 3600 + mm * 60;
-            if o.starts_with('-') {
-                -v
-            } else {
-                v
-            }
+            if o.starts_with('-') { -v } else { v }
         }
         _ => return None,
     };
@@ -892,7 +888,10 @@ pub fn find_source(
         SourceKind::Track => {
             let v = rowids("SELECT rowid FROM tracks WHERE id = ?1", key);
             let v = if v.is_empty() {
-                rowids("SELECT rowid FROM tracks WHERE title = ?1 COLLATE NOCASE ORDER BY playCount DESC LIMIT 1", key)
+                rowids(
+                    "SELECT rowid FROM tracks WHERE title = ?1 COLLATE NOCASE ORDER BY playCount DESC LIMIT 1",
+                    key,
+                )
             } else {
                 v
             };

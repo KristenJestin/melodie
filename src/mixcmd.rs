@@ -3,13 +3,13 @@
 //! de la copie) : aucun appel à l'API par morceau.
 
 use crate::ctl;
-use crate::mix::{self, Detail, Library, Rng, Source, SourceKind};
-use crate::search::{shell_word, Hit, Kind, ICON_PLAY, ICON_QUEUE};
-use crate::state::Failure;
-use anyhow::anyhow;
-use crate::time::now_secs;
 use crate::env::Env;
-use serde_json::{json, Value};
+use crate::mix::{self, Detail, Library, Rng, Source, SourceKind};
+use crate::search::{Hit, ICON_PLAY, ICON_QUEUE, Kind, shell_word};
+use crate::state::Failure;
+use crate::time::now_secs;
+use anyhow::anyhow;
+use serde_json::{Value, json};
 use std::process::ExitCode;
 
 const ICON_MIX: &str = "\u{f049d}";
@@ -189,7 +189,10 @@ pub fn home(env: &Env) -> Result<Vec<Value>, Failure> {
 }
 
 pub fn home_in(conn: &rusqlite::Connection) -> Result<Vec<Value>, Failure> {
-    let mut out: Vec<Value> = crate::search::playlists(conn)?.iter().map(|h| h.to_json()).collect();
+    let mut out: Vec<Value> = crate::search::playlists(conn)?
+        .iter()
+        .map(|h| h.to_json())
+        .collect();
     out.extend(mixes_in(conn)?);
     Ok(out)
 }

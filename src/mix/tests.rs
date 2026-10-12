@@ -825,9 +825,11 @@ fn sources_par_identifiant_ou_nom() {
         src(SourceKind::Genre, "JAZZ"),
         Ok(Source::Genre(_))
     ));
-    assert!(src(SourceKind::Genre, "Disco")
-        .unwrap_err()
-        .contains("genre inconnu"));
+    assert!(
+        src(SourceKind::Genre, "Disco")
+            .unwrap_err()
+            .contains("genre inconnu")
+    );
     // Détails dans l'ordre du mix.
     let det = details(&conn, &lib, &[7, 3]).unwrap();
     assert_eq!(det[0].info.id, "t7");

@@ -4,11 +4,11 @@
 //! Jamais d'identifiant dans les arguments ni l'environnement du processus
 //! détaché : il relit lui-même le trousseau.
 
+use crate::env::Env;
 use crate::state::{self, Failure};
+use crate::time::{now_secs, rfc3339};
 use crate::{db, proto, sync};
 use anyhow::{Context, Result};
-use crate::time::{now_secs, rfc3339};
-use crate::env::Env;
 use rusqlite::Connection;
 use std::io::Write;
 use std::os::fd::AsRawFd;

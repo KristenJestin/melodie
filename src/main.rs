@@ -6,8 +6,8 @@ mod autosync;
 mod cover;
 mod ctl;
 mod daemon;
-mod env;
 mod db;
+mod env;
 #[cfg(test)]
 mod fake;
 mod likes;
@@ -27,10 +27,10 @@ mod sync;
 mod time;
 mod track;
 
-use anyhow::{bail, Result};
-use clap::{Parser, Subcommand, ValueEnum};
-use crate::time::rfc3339;
 use crate::env::Env;
+use crate::time::rfc3339;
+use anyhow::{Result, bail};
+use clap::{Parser, Subcommand, ValueEnum};
 use rusqlite::Connection;
 use state::Failure;
 use std::io::{BufRead, Write};
@@ -664,7 +664,11 @@ fn status(env: &Env) -> Result<ExitCode> {
             };
             println!(
                 "Copie       : {} morceaux, {} albums, {} artistes, {} playlists ({}), synchronisée le {when}{age}",
-                c.tracks, c.albums, c.artists, c.playlists, megabytes(size)
+                c.tracks,
+                c.albums,
+                c.artists,
+                c.playlists,
+                megabytes(size)
             );
         }
         None => println!("Copie       : aucune (elle se fait toute seule après la connexion)"),

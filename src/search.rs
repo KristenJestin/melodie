@@ -1,8 +1,8 @@
 //! Recherche dans la copie locale (FTS5) et mise en forme des résultats.
 
 use anyhow::Result;
-use rusqlite::{params, Connection};
-use serde_json::{json, Value};
+use rusqlite::{Connection, params};
+use serde_json::{Value, json};
 
 pub const LIMIT_PLAYLISTS: usize = 5;
 pub const LIMIT_ARTISTS: usize = 5;
@@ -257,11 +257,7 @@ fn relevance(query: &[String], hit: &Hit) -> u8 {
         let mut all = name;
         all.extend(words(&hit.artist));
         all.extend(words(&hit.album));
-        if whole(&all) {
-            5
-        } else {
-            6
-        }
+        if whole(&all) { 5 } else { 6 }
     }
 }
 
@@ -463,12 +459,14 @@ mod tests {
     fn prefixes_casse_accents() {
         let (_d, conn) = sample();
         let r = search(&conn, "daf pun").unwrap();
-        assert!(r
-            .iter()
-            .any(|h| h.kind == Kind::Artist && h.name == "Daft Punk"));
-        assert!(r
-            .iter()
-            .any(|h| h.kind == Kind::Track && h.name == "One More Time"));
+        assert!(
+            r.iter()
+                .any(|h| h.kind == Kind::Artist && h.name == "Daft Punk")
+        );
+        assert!(
+            r.iter()
+                .any(|h| h.kind == Kind::Track && h.name == "One More Time")
+        );
         let r = search(&conn, "BEYONCE").unwrap();
         assert!(r.iter().any(|h| h.name == "Beyoncé"));
         let r = search(&conn, "beyoncé hal").unwrap();
@@ -504,8 +502,11 @@ mod tests {
             ("t4", "Rêve mieux", "Civilisation"),
             ("t5", "Rêve", "Plaisir Risque Dépendance"),
         ] {
-            db::insert_track(&tx, &json!({"id":id,"title":title,"artist":"X","album":album}))
-                .unwrap();
+            db::insert_track(
+                &tx,
+                &json!({"id":id,"title":title,"artist":"X","album":album}),
+            )
+            .unwrap();
         }
         tx.commit().unwrap();
         let names: Vec<_> = search(&conn, "Rêve")
@@ -539,7 +540,10 @@ mod tests {
         assert_eq!(pl["subtitle"], "Playlist · 42 tracks · 2 h 05");
         assert_eq!(pl["verb"], "Play");
         assert_eq!(pl["action"]["type"], "command");
-        assert_eq!(pl["action"]["command"], "melodie play playlist p1 --shuffle");
+        assert_eq!(
+            pl["action"]["command"],
+            "melodie play playlist p1 --shuffle"
+        );
         assert!(pl.get("_cover").is_none());
         let acts = pl["actions"].as_array().unwrap();
         let labels: Vec<_> = acts.iter().map(|a| a["label"].as_str().unwrap()).collect();
@@ -556,10 +560,7 @@ mod tests {
         );
         assert_eq!(acts[1]["action"]["command"], "melodie play playlist p1");
         assert_eq!(acts[2]["icon"], "󰐕");
-        assert_eq!(
-            acts[2]["action"]["command"],
-            "melodie queue playlist p1"
-        );
+        assert_eq!(acts[2]["action"]["command"], "melodie queue playlist p1");
         // Un morceau n'a pas de lecture aléatoire.
         let t = v[3]["actions"].as_array().unwrap();
         let labels: Vec<_> = t.iter().map(|a| a["label"].as_str().unwrap()).collect();

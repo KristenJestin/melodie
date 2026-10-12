@@ -1,6 +1,6 @@
 //! Faux serveur Subsonic pour les tests : HTTP minimal sur un port local.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

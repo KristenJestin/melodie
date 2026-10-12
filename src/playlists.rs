@@ -4,17 +4,17 @@
 use crate::api::Client;
 use crate::ctl::{self, Oops};
 use crate::db;
+use crate::env::Env;
 use crate::notify;
 use crate::resolve;
-use crate::search::{human_duration, shell_word, Kind};
+use crate::search::{Kind, human_duration, shell_word};
 use crate::state::{self, Failure};
 use crate::store::Settings;
+use crate::time::{now_secs, rfc3339};
 use crate::track::TrackInfo;
 use anyhow::anyhow;
-use crate::time::{now_secs, rfc3339};
-use crate::env::Env;
 use rusqlite::Connection;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::process::ExitCode;
 
 const ICON_NEW: &str = "\u{f0415}";
@@ -419,8 +419,8 @@ pub fn pick_cmd(env: &Env, target: &Target) -> Result<Vec<Value>, Failure> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::{token, Creds};
-    use crate::fake::{params, Fake};
+    use crate::api::{Creds, token};
+    use crate::fake::{Fake, params};
     use crate::sync;
 
     fn setup() -> (tempfile::TempDir, Env, Fake, Client) {
@@ -533,30 +533,37 @@ mod tests {
         assert_eq!(params(args, "songId"), ["s2"]);
         assert_eq!(counts(&conn, "p9"), (1, 200)); // chiffres du serveur
         let hits = crate::search::search(&conn, "ma lis").unwrap();
-        assert!(hits
-            .iter()
-            .any(|h| h.kind == Kind::Playlist && h.name == "Ma liste"));
+        assert!(
+            hits.iter()
+                .any(|h| h.kind == Kind::Playlist && h.name == "Ma liste")
+        );
 
         rename(&client, Some(&conn), "p9", "Autre nom", 1_790_000_001).unwrap();
         let q = last(&fake);
         let args = q.split_once('?').unwrap().1;
         assert_eq!(params(args, "playlistId"), ["p9"]);
         assert_eq!(params(args, "name"), ["Autre nom"]);
-        assert!(crate::search::search(&conn, "ma lis")
-            .unwrap()
-            .iter()
-            .all(|h| h.kind != Kind::Playlist));
-        assert!(crate::search::search(&conn, "autre")
-            .unwrap()
-            .iter()
-            .any(|h| h.name == "Autre nom"));
+        assert!(
+            crate::search::search(&conn, "ma lis")
+                .unwrap()
+                .iter()
+                .all(|h| h.kind != Kind::Playlist)
+        );
+        assert!(
+            crate::search::search(&conn, "autre")
+                .unwrap()
+                .iter()
+                .any(|h| h.name == "Autre nom")
+        );
 
         delete(&client, Some(&conn), "p9").unwrap();
         assert!(last(&fake).starts_with("deletePlaylist?") && last(&fake).contains("id=p9"));
-        assert!(crate::search::search(&conn, "autre")
-            .unwrap()
-            .iter()
-            .all(|h| h.kind != Kind::Playlist));
+        assert!(
+            crate::search::search(&conn, "autre")
+                .unwrap()
+                .iter()
+                .all(|h| h.kind != Kind::Playlist)
+        );
         // Playlist vide
         create(&client, Some(&conn), "kris", "Vide", &[], 0).unwrap();
         assert_eq!(counts(&conn, "p9"), (0, 0));
@@ -605,15 +612,14 @@ mod tests {
         );
         assert_eq!(v[1]["subtitle"], "Playlist · 42 tracks · 2 h 05");
         let v = pick(&conn, "kris", &Target::Current).unwrap();
-        assert_eq!(
-            v[1]["action"]["command"],
-            "melodie playlist add p1 current"
-        );
+        assert_eq!(v[1]["action"]["command"], "melodie playlist add p1 current");
         let v = pick(&conn, "kris", &Target::Album("al1".into())).unwrap();
-        assert!(v[0]["action"]["command"]
-            .as_str()
-            .unwrap()
-            .ends_with("--prompt album al1"));
+        assert!(
+            v[0]["action"]["command"]
+                .as_str()
+                .unwrap()
+                .ends_with("--prompt album al1")
+        );
         assert!(render_pick(&v).contains("Daft Mix"));
     }
 }

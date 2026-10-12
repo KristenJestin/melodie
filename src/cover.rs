@@ -2,11 +2,11 @@
 //! une seule fois, en arrière-plan (démon, 512 px). Le lanceur utilise
 //! de petites vignettes (128 px) dans `covers/thumbs/<id>.img`.
 
-use crate::api::{pct_encode, Client};
+use crate::api::{Client, pct_encode};
 use crate::db;
-use crate::store::write_atomic;
-use anyhow::{bail, Context, Result};
 use crate::env::Env;
+use crate::store::write_atomic;
+use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::collections::VecDeque;
 use std::os::fd::AsRawFd;
@@ -14,7 +14,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::mpsc::{channel, RecvTimeoutError};
+use std::sync::mpsc::{RecvTimeoutError, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -149,13 +149,15 @@ fn spawn_downloads(
     let queue = Arc::new(Mutex::new(VecDeque::from(ids)));
     for _ in 0..n {
         let (env, client, queue, done) = (env.clone(), client.clone(), queue.clone(), done.clone());
-        std::thread::spawn(move || loop {
-            let Some(id) = queue.lock().unwrap_or_else(|e| e.into_inner()).pop_front() else {
-                break;
-            };
-            let _ = download_thumb(&env, &client, &id);
-            if done.send(id).is_err() {
-                break;
+        std::thread::spawn(move || {
+            loop {
+                let Some(id) = queue.lock().unwrap_or_else(|e| e.into_inner()).pop_front() else {
+                    break;
+                };
+                let _ = download_thumb(&env, &client, &id);
+                if done.send(id).is_err() {
+                    break;
+                }
             }
         });
     }
@@ -322,7 +324,7 @@ mod tests {
         );
     }
 
-    use crate::api::{token, Creds};
+    use crate::api::{Creds, token};
     use crate::fake::{Fake, PNG};
     use std::cell::RefCell;
     use std::sync::atomic::Ordering;

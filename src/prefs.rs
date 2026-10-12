@@ -2,9 +2,9 @@
 //! `~/.local/state/melodie/state.toml` (aujourd'hui, seulement le volume).
 //! Distinct de `~/.config/melodie/config.toml` (connexion), que le module n'écrit pas ici.
 
+use crate::env::Env;
 use crate::store::write_atomic;
 use anyhow::Result;
-use crate::env::Env;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 

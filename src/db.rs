@@ -1,8 +1,8 @@
 //! Copie locale de la bibliothèque : SQLite + index plein texte FTS5.
 
-use anyhow::{Context, Result};
 use crate::env::Env;
-use rusqlite::{params, Connection, Transaction};
+use anyhow::{Context, Result};
+use rusqlite::{Connection, Transaction, params};
 use serde_json::Value;
 use std::path::PathBuf;
 

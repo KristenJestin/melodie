@@ -2,6 +2,7 @@
 //! démarre au besoin pour `play` et `queue`.
 
 use crate::api::Client;
+use crate::env::Env;
 use crate::notify;
 use crate::prefs::{self, Prefs};
 use crate::proto::{self, Now, Request, Response};
@@ -9,8 +10,7 @@ use crate::resolve;
 use crate::search::Kind;
 use crate::state::{self, Failure};
 use crate::track::clock;
-use anyhow::{anyhow, bail, Context, Result};
-use crate::env::Env;
+use anyhow::{Context, Result, anyhow, bail};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, ExitCode, Stdio};

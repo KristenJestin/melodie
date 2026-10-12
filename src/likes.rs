@@ -5,10 +5,10 @@
 use crate::api::Client;
 use crate::ctl::{self, Oops};
 use crate::db::{self, StarKind};
+use crate::env::Env;
 use crate::notify;
 use crate::state::{self, Failure};
 use crate::time::{now_secs, rfc3339};
-use crate::env::Env;
 use rusqlite::Connection;
 use std::process::ExitCode;
 
@@ -123,7 +123,7 @@ fn try_run(env: &Env, target: Target, mode: Mode) -> Result<(), Oops> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::{token, Creds};
+    use crate::api::{Creds, token};
     use crate::fake::Fake;
     use crate::sync;
 

@@ -9,6 +9,7 @@ use crate::api::Client;
 use crate::autosync;
 use crate::cover;
 use crate::db;
+use crate::env::Env;
 use crate::mpris::{self, MetaInfo, Snapshot};
 use crate::notify;
 use crate::prefs::{self, Prefs};
@@ -16,19 +17,18 @@ use crate::proto::{self, Now, Request, Response};
 use crate::rules::{self, ScrobbleClock};
 use crate::state::{self, Failure};
 use crate::store;
+use crate::time::{now_secs, rfc3339};
 use crate::track::TrackInfo;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use libmpv2::events::{Event, PropertyData};
 use libmpv2::{Format, Mpv};
-use crate::time::{now_secs, rfc3339};
-use crate::env::Env;
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -127,9 +127,7 @@ fn acquire_lock(path: &std::path::Path) -> Result<Option<std::fs::File>> {
 }
 
 fn new_mpv(volume: u32) -> Result<Mpv> {
-    let ao = std::env::var("MELODIE_AO")
-        .ok()
-        .filter(|s| !s.is_empty());
+    let ao = std::env::var("MELODIE_AO").ok().filter(|s| !s.is_empty());
     Mpv::with_initializer(|init| {
         init.set_option("vid", "no")?;
         init.set_option("audio-display", "no")?;
@@ -171,20 +169,22 @@ fn spawn_events(mpv: &Mpv, tx: Sender<Msg>) -> Result<()> {
         ev.observe_property(name, fmt, id)
             .map_err(|e| anyhow::anyhow!("observation de {name} : {e}"))?;
     }
-    std::thread::spawn(move || loop {
-        let msg = match ev.wait_event(1.0) {
-            None => continue,
-            Some(Ok(Event::PropertyChange { change, .. })) => {
-                let _ = matches!(change, PropertyData::Flag(_));
-                MpvEvent::Prop
+    std::thread::spawn(move || {
+        loop {
+            let msg = match ev.wait_event(1.0) {
+                None => continue,
+                Some(Ok(Event::PropertyChange { change, .. })) => {
+                    let _ = matches!(change, PropertyData::Flag(_));
+                    MpvEvent::Prop
+                }
+                Some(Ok(Event::EndFile(reason))) => MpvEvent::EndFile(reason),
+                Some(Ok(Event::Shutdown)) => return,
+                Some(Ok(_)) => continue,
+                Some(Err(e)) => MpvEvent::Failure(e.to_string()),
+            };
+            if tx.send(Msg::Mpv(msg)).is_err() {
+                return;
             }
-            Some(Ok(Event::EndFile(reason))) => MpvEvent::EndFile(reason),
-            Some(Ok(Event::Shutdown)) => return,
-            Some(Ok(_)) => continue,
-            Some(Err(e)) => MpvEvent::Failure(e.to_string()),
-        };
-        if tx.send(Msg::Mpv(msg)).is_err() {
-            return;
         }
     });
     Ok(())

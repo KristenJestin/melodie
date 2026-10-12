@@ -2,10 +2,10 @@
 //! (`config.toml`), secret dans le trousseau (Secret Service), dernier refus connu.
 
 use crate::api::Creds;
-use anyhow::{anyhow, Context, Result};
 use crate::env::Env;
-use secret_service::blocking::SecretService;
+use anyhow::{Context, Result, anyhow};
 use secret_service::EncryptionType;
+use secret_service::blocking::SecretService;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

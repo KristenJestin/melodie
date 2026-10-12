@@ -6,10 +6,10 @@
 //!    surtout pas de se reconnecter.
 
 use crate::api::{ApiError, Client};
+use crate::env::Env;
 use crate::store::{self, Settings};
 use anyhow::anyhow;
-use crate::env::Env;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::fmt;
 
 #[derive(Debug)]
@@ -170,10 +170,7 @@ mod tests {
             assert_eq!(e["subtitle"], "Connexion requise");
             assert_eq!(e["icon"], "󰍂");
             assert_eq!(e["action"]["type"], "command");
-            assert_eq!(
-                e["action"]["command"],
-                "xdg-terminal-exec melodie login"
-            );
+            assert_eq!(e["action"]["command"], "xdg-terminal-exec melodie login");
         }
     }
 

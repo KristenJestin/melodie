@@ -2,9 +2,9 @@
 
 use crate::api::Client;
 use crate::db;
-use crate::state::{from_api, Failure};
-use crate::time::now_secs;
 use crate::env::Env;
+use crate::state::{Failure, from_api};
+use crate::time::now_secs;
 use rusqlite::{Connection, Transaction};
 use serde_json::Value;
 use std::collections::HashSet;
@@ -221,7 +221,7 @@ pub fn run(env: &Env, client: &Client, force_full: bool) -> Result<Report, Failu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::{token, ApiError, Creds};
+    use crate::api::{ApiError, Creds, token};
     use crate::fake::Fake;
     use crate::search;
     use std::sync::atomic::Ordering;

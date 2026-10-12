@@ -10,7 +10,7 @@
 mod fake;
 
 use fake::Fake;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -361,7 +361,11 @@ fn lecture_complete_mpris_scrobble_skip_et_fin() {
         assert_eq!(album, "Discovery");
         let q = "FLAC · 24 bit / 96 kHz · 2304 kbps";
         assert_eq!(strings(&m["xesam:comment"]), [q]);
-        let pq: String = m["melodie:quality"].try_clone().unwrap().try_into().unwrap();
+        let pq: String = m["melodie:quality"]
+            .try_clone()
+            .unwrap()
+            .try_into()
+            .unwrap();
         assert_eq!(pq, q);
         assert!(!m.contains_key("xesam:url"));
         for (k, v) in &m {
@@ -412,14 +416,20 @@ fn lecture_complete_mpris_scrobble_skip_et_fin() {
     if let Some(p) = &proxy {
         wait_until(3, "MPRIS titre 2", || title(p) == "Titre 2");
         let m = metadata(p);
-        let q: String = m["melodie:quality"].try_clone().unwrap().try_into().unwrap();
+        let q: String = m["melodie:quality"]
+            .try_clone()
+            .unwrap()
+            .try_into()
+            .unwrap();
         assert_eq!(q, "MP3 · 320 kbps");
-        assert!(p_changes
-            .as_ref()
-            .unwrap()
-            .lock()
-            .unwrap()
-            .contains(&"Metadata".to_string()));
+        assert!(
+            p_changes
+                .as_ref()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .contains(&"Metadata".to_string())
+        );
     }
 
     // pause par MPRIS, reprise par la commande
@@ -429,12 +439,14 @@ fn lecture_complete_mpris_scrobble_skip_et_fin() {
         assert_eq!(sb.now()["state"], "paused");
         sb.ok(&["resume"]);
         wait_until(3, "reprise", || status(p) == "Playing");
-        assert!(p_changes
-            .as_ref()
-            .unwrap()
-            .lock()
-            .unwrap()
-            .contains(&"PlaybackStatus".to_string()));
+        assert!(
+            p_changes
+                .as_ref()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .contains(&"PlaybackStatus".to_string())
+        );
     } else {
         sb.ok(&["pause"]);
         wait_until(3, "pause", || sb.now()["state"] == "paused");
@@ -697,10 +709,12 @@ fn favoris_playlists_et_mixes_de_bout_en_bout() {
     let list: Value =
         serde_json::from_str(&sb.ok(&["mix", "me", "--json", "--seed", "1"])).unwrap();
     assert_eq!(list.as_array().unwrap().len(), 3);
-    assert!(list[0]["action"]["command"]
-        .as_str()
-        .unwrap()
-        .starts_with("melodie play track t"));
+    assert!(
+        list[0]["action"]["command"]
+            .as_str()
+            .unwrap()
+            .starts_with("melodie play track t")
+    );
     assert_eq!(
         sb.calls()
             .iter()
@@ -712,10 +726,11 @@ fn favoris_playlists_et_mixes_de_bout_en_bout() {
         !sb.socket().exists(),
         "--print et --json ne lancent pas le démon"
     );
-    assert!(!sb
-        .run(&["mix", "genre", "Disco", "--print"])
-        .status
-        .success());
+    assert!(
+        !sb.run(&["mix", "genre", "Disco", "--print"])
+            .status
+            .success()
+    );
 
     // Lecture d'un mix, favori du morceau en cours (now, MPRIS), ajout à une playlist.
     let n_api = sb
