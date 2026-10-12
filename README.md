@@ -213,8 +213,10 @@ connection states (see below), with a notification.
   nothing is left to add, code 0, nothing written). `--allow-duplicates` adds them anyway, without
   reading the playlist. A track repeated in the request itself is added once.
 - `melodie playlist duplicates [--remove] [--json] <playlistId>`: lists the repeats of a playlist,
-  by rank (from 0, like `remove`) and the rank of the occurrence they repeat. Two kinds, told
-  apart: *exact* (same track id) and *likely* (another id, same title and artist, ignoring case
+  by rank and the rank of the occurrence they repeat. The text output counts ranks from 1; the
+  `--json` `index` and `first` count from 0, like `remove`, and match Subsonic's
+  `songIndexToRemove`. Two kinds, told apart: *exact* (same track id) and *likely* (another id,
+  same title and artist, ignoring case
   and surrounding spaces; entries without a title are not compared). `--remove` drops the exact
   ones only, keeping the first occurrence and the order of the rest, in one `updatePlaylist`
   whose `songIndexToRemove` are all ranks of the order before the call (Navidrome's reading,

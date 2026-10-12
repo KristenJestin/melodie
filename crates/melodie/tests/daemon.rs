@@ -640,7 +640,7 @@ fn playlist_duplicates_from_the_command_line() {
 
     // The duplicates command lists, then --remove keeps the first occurrence and the order.
     let out = sb.ok(&["playlist", "duplicates", "p1"]);
-    assert!(out.contains("rang 3 : Titre 1 (comme le rang 0)"), "{out}");
+    assert!(out.contains("rang 4 : Titre 1 (comme le rang 1)"), "{out}");
     assert_eq!(server_playlist(&sb).len(), 4, "listing writes nothing");
     let out = sb.ok(&["playlist", "duplicates", "p1", "--remove", "--json"]);
     let v: Value = serde_json::from_str(&out).unwrap();
@@ -650,6 +650,21 @@ fn playlist_duplicates_from_the_command_line() {
     assert_eq!(server_playlist(&sb), ["t1", "t2", "t3"]);
     let out = sb.ok(&["playlist", "duplicates", "p1"]);
     assert!(out.contains("Aucun doublon"), "{out}");
+}
+
+#[test]
+fn playlist_duplicates_text_counts_ranks_from_one() {
+    let sb = Sandbox::new(true);
+    sb.ok(&["sync", "--full"]);
+    seed_playlist(&sb, &["t1", "t1"]);
+
+    // The text counts ranks from 1; the JSON keeps the 0-based index and first.
+    let out = sb.ok(&["playlist", "duplicates", "p1"]);
+    assert!(out.contains("rang 2 : Titre 1 (comme le rang 1)"), "{out}");
+    let out = sb.ok(&["playlist", "duplicates", "p1", "--json"]);
+    let v: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["exact"][0]["index"], 1);
+    assert_eq!(v["exact"][0]["first"], 0);
 }
 
 #[test]

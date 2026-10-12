@@ -170,12 +170,15 @@ fn plain(r: Result<(), Failure>) -> ExitCode {
     finish_result(r.map_err(Oops::Failure))
 }
 
+/// Ranks are counted from 1 for a person; the `--json` output keeps the 0-based index.
 fn duplicate_lines(list: &[Duplicate]) -> String {
     list.iter()
         .map(|d| {
             format!(
                 "  rang {} : {} (comme le rang {})\n",
-                d.index, d.track.title, d.first
+                d.index + 1,
+                d.track.title,
+                d.first + 1
             )
         })
         .collect()
