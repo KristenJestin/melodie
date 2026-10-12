@@ -1,0 +1,8 @@
+[package]
+name = "melodie"
+version = "0.0.0"
+edition = "2024"
+description = "A music player for Navidrome: background daemon, command line, local mixes"
+license = "MIT"
+
+[dependencies]
