@@ -166,6 +166,11 @@ impl Player {
         *self = Self {
             track_change: self.track_change + u64::from(had_track),
             volume: self.volume,
+            // The daemon quits when the server refuses the login: the window keeps saying why.
+            connection: match self.connection {
+                Connection::AuthRefused => Connection::AuthRefused,
+                _ => Connection::Ok,
+            },
             ..Self::default()
         };
         *clock = Clock::default();
@@ -510,6 +515,31 @@ mod tests {
         p.apply(&snapshot(), &mut c, t0);
         assert!(p.following);
         assert_eq!(p.track().unwrap().title, "Second");
+    }
+
+    #[test]
+    fn a_refused_login_is_still_said_after_the_daemon_quits() {
+        let (mut p, mut c, t0) = feed(&[snapshot()]);
+        p.apply(
+            &Event::Connection {
+                state: "auth-refused".into(),
+            },
+            &mut c,
+            t0,
+        );
+        p.gone(&mut c);
+        assert_eq!(p.connection, Connection::AuthRefused);
+        // an unreachable server is not said once the daemon has gone: it may be back
+        let (mut p, mut c, t0) = feed(&[snapshot()]);
+        p.apply(
+            &Event::Connection {
+                state: "unreachable".into(),
+            },
+            &mut c,
+            t0,
+        );
+        p.gone(&mut c);
+        assert_eq!(p.connection, Connection::Ok);
     }
 
     #[test]
