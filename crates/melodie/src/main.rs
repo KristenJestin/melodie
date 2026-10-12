@@ -109,6 +109,22 @@ enum PlaylistCmd {
         playlist_id: String,
         /// `current`, `track <id>` ou `album <id>`
         target: Vec<String>,
+        /// Ajoute aussi les morceaux déjà présents (sinon ils sont ignorés et comptés)
+        #[arg(long)]
+        allow_duplicates: bool,
+        /// Sortie JSON : morceaux ajoutés et morceaux déjà présents
+        #[arg(long)]
+        json: bool,
+    },
+    /// Liste les doublons d'une playlist ; avec --remove, retire les doublons exacts
+    Duplicates {
+        playlist_id: String,
+        /// Retire les doublons exacts (même identifiant) et garde la première occurrence
+        #[arg(long)]
+        remove: bool,
+        /// Sortie JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Retire le morceau de rang <index> (à partir de 0)
     Remove { playlist_id: String, index: usize },
@@ -378,7 +394,14 @@ fn playlist_cmd(env: &Env, cmd: PlaylistCmd) -> ExitCode {
             PlaylistCmd::Add {
                 playlist_id,
                 target: t,
-            } => playlists_cmd::add_cmd(env, &playlist_id, &target(&t)?),
+                allow_duplicates,
+                json,
+            } => playlists_cmd::add_cmd(env, &playlist_id, &target(&t)?, allow_duplicates, json),
+            PlaylistCmd::Duplicates {
+                playlist_id,
+                remove,
+                json,
+            } => playlists_cmd::duplicates_cmd(env, &playlist_id, remove, json),
             PlaylistCmd::Remove { playlist_id, index } => {
                 playlists_cmd::remove_cmd(env, &playlist_id, index)
             }

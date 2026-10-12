@@ -7,7 +7,10 @@ use anyhow::anyhow;
 use melodie_core::api::Client;
 use melodie_core::db;
 use melodie_core::env::Env;
-use melodie_core::playlists::{Target, add, create, delete, pick, remove, rename};
+use melodie_core::playlists::{
+    Duplicate, Target, add_checked, create, delete, duplicates, pick, remove, remove_duplicates,
+    rename,
+};
 use melodie_core::resolve;
 use melodie_core::search::Kind;
 use melodie_core::state::{self, Failure};
@@ -15,7 +18,7 @@ use melodie_core::store::Settings;
 use melodie_core::time::now_secs;
 use melodie_core::track::TrackInfo;
 use rusqlite::Connection;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::process::ExitCode;
 
 /// Morceaux visés. Le morceau en cours vient du démon, un morceau de la copie
@@ -31,6 +34,8 @@ fn tracks_of(
             Ok(vec![TrackInfo {
                 id: n.id,
                 title: n.title,
+                artist: n.artist,
+                album: n.album,
                 duration: n.duration as u64,
                 ..TrackInfo::default()
             }])
@@ -96,20 +101,62 @@ fn tracks_label(tracks: &[TrackInfo]) -> String {
     }
 }
 
-pub fn add_cmd(env: &Env, pid: &str, target: &Target) -> ExitCode {
+/// `{"playlist": {"id", "name"}, …}`: what the `--json` outputs of `add` and `duplicates` share.
+fn with_playlist(conn: Option<&Connection>, pid: &str, mut body: Value) -> Value {
+    body["playlist"] = json!({"id": pid, "name": playlist_name(conn, pid)});
+    body
+}
+
+/// In `--json` a failure state is one launcher entry and code 0, like the other JSON outputs.
+fn json_failure(o: &Oops) -> Option<ExitCode> {
+    let Oops::Failure(f) = o else { return None };
+    println!("{}", Value::Array(vec![f.launcher_entry()]));
+    Some(ExitCode::SUCCESS)
+}
+
+pub fn add_cmd(
+    env: &Env,
+    pid: &str,
+    target: &Target,
+    allow_duplicates: bool,
+    json: bool,
+) -> ExitCode {
     let r = (|| -> Result<(), Oops> {
         let s = session(env)?;
         let tracks = tracks_of(target, &s.client, s.conn.as_ref())?;
-        let r = add(&s.client, s.conn.as_ref(), pid, &tracks, now_secs());
-        state::record(env, &r);
-        r?;
-        finish(
-            &format!("Ajouté à « {} »", playlist_name(s.conn.as_ref(), pid)),
-            &tracks_label(&tracks),
+        let r = add_checked(
+            &s.client,
+            s.conn.as_ref(),
+            pid,
+            &tracks,
+            allow_duplicates,
+            now_secs(),
         );
+        state::record(env, &r);
+        let done = r?;
+        let name = playlist_name(s.conn.as_ref(), pid);
+        if json {
+            let mut body = with_playlist(s.conn.as_ref(), pid, done.to_json());
+            body["allowDuplicates"] = json!(allow_duplicates);
+            println!("{body}");
+        } else if done.added.is_empty() {
+            finish(
+                &format!("Déjà dans « {name} »"),
+                &tracks_label(&done.already),
+            );
+        } else {
+            let mut body = tracks_label(&done.added);
+            if !done.already.is_empty() {
+                body.push_str(&format!(" ({} déjà présents, ignorés)", done.already.len()));
+            }
+            finish(&format!("Ajouté à « {name} »"), &body);
+        }
         Ok(())
     })();
-    finish_result(r)
+    match r {
+        Err(o) if json => json_failure(&o).unwrap_or_else(|| ctl::report_oops(&o)),
+        r => finish_result(r),
+    }
 }
 
 fn finish_result(r: Result<(), Oops>) -> ExitCode {
@@ -121,6 +168,74 @@ fn finish_result(r: Result<(), Oops>) -> ExitCode {
 
 fn plain(r: Result<(), Failure>) -> ExitCode {
     finish_result(r.map_err(Oops::Failure))
+}
+
+fn duplicate_lines(list: &[Duplicate]) -> String {
+    list.iter()
+        .map(|d| {
+            format!(
+                "  rang {} : {} (comme le rang {})\n",
+                d.index, d.track.title, d.first
+            )
+        })
+        .collect()
+}
+
+/// `playlist duplicates <id> [--remove]`: lists the repeats, and with `remove` drops the exact
+/// ones. The similar ones (other id, same title and artist) are only ever listed.
+pub fn duplicates_cmd(env: &Env, pid: &str, remove: bool, json: bool) -> ExitCode {
+    let r = (|| -> Result<(), Failure> {
+        let s = session(env)?;
+        let r = if remove {
+            remove_duplicates(&s.client, s.conn.as_ref(), pid, now_secs())
+        } else {
+            duplicates(&s.client, pid)
+        };
+        state::record(env, &r);
+        let found = r?;
+        let name = playlist_name(s.conn.as_ref(), pid);
+        if json {
+            let mut body = with_playlist(s.conn.as_ref(), pid, found.to_json());
+            body["removed"] = if remove {
+                body["exact"].clone()
+            } else {
+                json!([])
+            };
+            println!("{body}");
+            return Ok(());
+        }
+        let (n, m) = (found.exact.len(), found.similar.len());
+        if n + m == 0 {
+            println!("Aucun doublon dans « {name} » ({} morceaux)", found.total);
+            return Ok(());
+        }
+        if n > 0 {
+            println!("Doublons exacts dans « {name} » (même identifiant) :");
+            print!("{}", duplicate_lines(&found.exact));
+        }
+        if m > 0 {
+            println!("Doublons probables (autre identifiant, même titre et même artiste) :");
+            print!("{}", duplicate_lines(&found.similar));
+        }
+        if remove && n > 0 {
+            let left = if m > 0 {
+                format!(" ; {m} doublons probables laissés")
+            } else {
+                String::new()
+            };
+            finish(
+                &format!("Doublons retirés de « {name} »"),
+                &format!("{n} morceaux{left}"),
+            );
+        } else if remove {
+            println!("Rien à retirer : les doublons probables ne sont jamais retirés");
+        }
+        Ok(())
+    })();
+    match r {
+        Err(f) if json => json_failure(&Oops::Failure(f)).unwrap(),
+        r => plain(r),
+    }
 }
 
 pub fn remove_cmd(env: &Env, pid: &str, index: usize) -> ExitCode {

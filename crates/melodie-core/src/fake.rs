@@ -1,6 +1,7 @@
 //! Faux serveur Subsonic pour les tests : HTTP minimal sur un port local.
 
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -13,6 +14,9 @@ pub struct Fake {
 
 pub struct State {
     pub songs: Mutex<Vec<Value>>,
+    /// Content of the playlists a test chose to seed, by playlist id. A playlist that is not
+    /// here keeps the fixed answer (all the songs) and ignores `updatePlaylist`.
+    pub playlists: Mutex<HashMap<String, Vec<Value>>>,
     pub last_scan: Mutex<String>,
     pub expected_token: Mutex<String>,
     /// Code d'erreur Subsonic à renvoyer pour tout, si présent.
@@ -90,6 +94,7 @@ impl Fake {
     pub fn start(n_songs: usize, token: &str) -> Fake {
         let state = Arc::new(State {
             songs: Mutex::new((0..n_songs).map(song).collect()),
+            playlists: Mutex::new(HashMap::new()),
             last_scan: Mutex::new("2026-10-01T10:00:00Z".into()),
             expected_token: Mutex::new(token.to_string()),
             fail_code: Mutex::new(None),
@@ -251,9 +256,36 @@ impl State {
                 {"id":"al1","name":"Discovery","year":2001},
                 {"id":"al2","name":"Homework","year":1997}]}}),
             ),
-            "getPlaylist" => ok(json!({"playlist": {"id": "p1", "name": "Daft Mix",
-                "entry": songs}})),
-            "scrobble" | "star" | "unstar" | "updatePlaylist" | "deletePlaylist" => ok(json!({})),
+            "getPlaylist" => {
+                let id = param(query, "id").unwrap_or_default();
+                let entry = match self.playlists.lock().unwrap().get(&id) {
+                    Some(seeded) => seeded.clone(),
+                    None => songs,
+                };
+                ok(json!({"playlist": {"id": "p1", "name": "Daft Mix", "entry": entry}}))
+            }
+            "updatePlaylist" => {
+                let id = param(query, "playlistId").unwrap_or_default();
+                if let Some(entries) = self.playlists.lock().unwrap().get_mut(&id) {
+                    // Like Navidrome: the indexes to remove all refer to the order before
+                    // the call; the songs to add land at the end.
+                    let drop: Vec<usize> = params(query, "songIndexToRemove")
+                        .iter()
+                        .filter_map(|i| i.parse().ok())
+                        .collect();
+                    let mut i = 0;
+                    entries.retain(|_| {
+                        i += 1;
+                        !drop.contains(&(i - 1))
+                    });
+                    for sid in params(query, "songIdToAdd") {
+                        let known = songs.iter().find(|s| s["id"] == sid.as_str());
+                        entries.push(known.cloned().unwrap_or_else(|| json!({"id": sid})));
+                    }
+                }
+                ok(json!({}))
+            }
+            "scrobble" | "star" | "unstar" | "deletePlaylist" => ok(json!({})),
             "createPlaylist" => {
                 let n = params(query, "songId").len();
                 ok(

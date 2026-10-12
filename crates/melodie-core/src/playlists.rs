@@ -10,6 +10,7 @@ use crate::track::TrackInfo;
 use anyhow::anyhow;
 use rusqlite::Connection;
 use serde_json::{Value, json};
+use std::collections::{HashMap, HashSet};
 
 const ICON_NEW: &str = "\u{f0415}";
 const ICON_PLAYLIST: &str = "\u{f0cb8}";
@@ -69,6 +70,168 @@ pub fn add(
         db::playlist_adjust(c, pid, tracks.len() as i64, secs(tracks), &rfc3339(at))?;
     }
     Ok(())
+}
+
+/// What `add_checked` did: the tracks sent to the server, and those found already in the
+/// playlist (left out unless duplicates were allowed).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AddOutcome {
+    pub added: Vec<TrackInfo>,
+    pub already: Vec<TrackInfo>,
+}
+
+/// `add`, but a track already in the playlist (by id, as the server lists it now) is left out
+/// and reported, unless `allow_duplicates`. With nothing left to add, nothing is written.
+pub fn add_checked(
+    client: &Client,
+    conn: Option<&Connection>,
+    pid: &str,
+    tracks: &[TrackInfo],
+    allow_duplicates: bool,
+    at: u64,
+) -> Result<AddOutcome, Failure> {
+    let mut out = AddOutcome::default();
+    if allow_duplicates {
+        out.added = tracks.to_vec();
+    } else {
+        // Read from the server: the local copy holds only the counts, and would be stale anyway.
+        let mut seen: HashSet<String> = entries(client, pid)?.into_iter().map(|t| t.id).collect();
+        for t in tracks {
+            if seen.insert(t.id.clone()) {
+                out.added.push(t.clone());
+            } else {
+                out.already.push(t.clone());
+            }
+        }
+    }
+    if !out.added.is_empty() {
+        add(client, conn, pid, &out.added, at)?;
+    }
+    Ok(out)
+}
+
+/// The tracks of a playlist, in the server's order.
+fn entries(client: &Client, pid: &str) -> Result<Vec<TrackInfo>, Failure> {
+    let r = call(client, "getPlaylist", &[("id", pid.to_string())])?;
+    Ok(r["playlist"]["entry"]
+        .as_array()
+        .map(|a| a.iter().filter_map(TrackInfo::from_api).collect())
+        .unwrap_or_default())
+}
+
+/// A track as the `--json` outputs of `playlist add` and `playlist duplicates` show it.
+pub fn track_json(t: &TrackInfo) -> Value {
+    json!({"id": t.id, "title": t.title, "artist": t.artist, "album": t.album})
+}
+
+impl AddOutcome {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "added": self.added.iter().map(track_json).collect::<Vec<_>>(),
+            "already": self.already.iter().map(track_json).collect::<Vec<_>>(),
+        })
+    }
+}
+
+/// A track met again in a playlist: its position, and the position of the occurrence it repeats.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Duplicate {
+    pub track: TrackInfo,
+    pub index: usize,
+    pub first: usize,
+}
+
+/// The repeats of a playlist: `exact` share a track id with an earlier entry, `similar` have
+/// another id but the same title and artist.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Duplicates {
+    pub total: usize,
+    pub exact: Vec<Duplicate>,
+    pub similar: Vec<Duplicate>,
+}
+
+impl Duplicates {
+    pub fn to_json(&self) -> Value {
+        let list = |l: &[Duplicate]| {
+            l.iter()
+                .map(|d| json!({"index": d.index, "first": d.first, "track": track_json(&d.track)}))
+                .collect::<Vec<_>>()
+        };
+        json!({"total": self.total, "exact": list(&self.exact), "similar": list(&self.similar)})
+    }
+}
+
+pub fn find_duplicates(entries: &[TrackInfo]) -> Duplicates {
+    let mut first_of_id: HashMap<&str, usize> = HashMap::new();
+    let mut first_of_name: HashMap<(String, String), usize> = HashMap::new();
+    let mut out = Duplicates {
+        total: entries.len(),
+        ..Duplicates::default()
+    };
+    for (index, track) in entries.iter().enumerate() {
+        if let Some(&first) = first_of_id.get(track.id.as_str()) {
+            out.exact.push(Duplicate {
+                track: track.clone(),
+                index,
+                first,
+            });
+            continue;
+        }
+        first_of_id.insert(&track.id, index);
+        // Without a title there is nothing to compare.
+        if track.title.trim().is_empty() {
+            continue;
+        }
+        let name = (
+            track.title.trim().to_lowercase(),
+            track.artist.trim().to_lowercase(),
+        );
+        match first_of_name.get(&name) {
+            Some(&first) => out.similar.push(Duplicate {
+                track: track.clone(),
+                index,
+                first,
+            }),
+            None => {
+                first_of_name.insert(name, index);
+            }
+        }
+    }
+    out
+}
+
+/// The duplicates of the playlist as the server lists it now.
+pub fn duplicates(client: &Client, pid: &str) -> Result<Duplicates, Failure> {
+    Ok(find_duplicates(&entries(client, pid)?))
+}
+
+/// Removes the exact duplicates, keeping the first occurrence of each track and the order of
+/// the rest. Similar tracks (other id, same title and artist) are never removed. Returns what
+/// was found: `exact` is what went, `similar` what stayed.
+pub fn remove_duplicates(
+    client: &Client,
+    conn: Option<&Connection>,
+    pid: &str,
+    at: u64,
+) -> Result<Duplicates, Failure> {
+    let found = duplicates(client, pid)?;
+    let gone = &found.exact;
+    if gone.is_empty() {
+        return Ok(found);
+    }
+    // Navidrome reads every `songIndexToRemove` against the order before the call, so they all
+    // go in one request, as read.
+    let mut params = vec![("playlistId", pid.to_string())];
+    params.extend(
+        gone.iter()
+            .map(|d| ("songIndexToRemove", d.index.to_string())),
+    );
+    call(client, "updatePlaylist", &params)?;
+    if let Some(c) = conn {
+        let secs: i64 = gone.iter().map(|d| d.track.duration as i64).sum();
+        db::playlist_adjust(c, pid, -(gone.len() as i64), -secs, &rfc3339(at))?;
+    }
+    Ok(found)
 }
 
 /// Retire le morceau de rang `index` (à partir de 0, comme l'API). Renvoie
@@ -429,5 +592,228 @@ mod tests {
                 .ends_with("--prompt album al1")
         );
         assert!(render_pick(&v).contains("Daft Mix"));
+    }
+
+    // --- duplicates ---
+
+    fn seed(fake: &Fake, pid: &str, entries: &[(&str, &str, &str)]) {
+        let list = entries
+            .iter()
+            .map(|(id, title, artist)| {
+                json!({"id": id, "title": title, "artist": artist, "duration": 200})
+            })
+            .collect();
+        fake.state
+            .playlists
+            .lock()
+            .unwrap()
+            .insert(pid.to_string(), list);
+    }
+
+    fn server_ids(fake: &Fake, pid: &str) -> Vec<String> {
+        fake.state.playlists.lock().unwrap()[pid]
+            .iter()
+            .map(|e| e["id"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    fn writes(fake: &Fake) -> usize {
+        fake.calls_of("updatePlaylist")
+    }
+
+    fn ids(tracks: &[TrackInfo]) -> Vec<&str> {
+        tracks.iter().map(|t| t.id.as_str()).collect()
+    }
+
+    #[test]
+    fn adding_a_present_track_skips_it_and_says_so() {
+        let (_d, env, fake, client) = setup();
+        let conn = db::open_existing(&env).unwrap().unwrap();
+        seed(&fake, "p1", &[("s1", "Titre numéro 1", "Beyoncé")]);
+        let r = add_checked(&client, Some(&conn), "p1", &[info("s1", 200)], false, 0).unwrap();
+        assert!(r.added.is_empty());
+        assert_eq!(ids(&r.already), ["s1"]);
+        assert_eq!(writes(&fake), 0, "nothing left to add, nothing written");
+        assert_eq!(counts(&conn, "p1"), (42, 7500));
+        assert_eq!(server_ids(&fake, "p1"), ["s1"]);
+    }
+
+    #[test]
+    fn allow_duplicates_adds_a_present_track() {
+        let (_d, env, fake, client) = setup();
+        let conn = db::open_existing(&env).unwrap().unwrap();
+        seed(&fake, "p1", &[("s1", "Titre numéro 1", "Beyoncé")]);
+        let r = add_checked(&client, Some(&conn), "p1", &[info("s1", 200)], true, 0).unwrap();
+        assert_eq!(ids(&r.added), ["s1"]);
+        assert!(r.already.is_empty(), "the playlist is not even read");
+        assert_eq!(server_ids(&fake, "p1"), ["s1", "s1"]);
+        assert_eq!(counts(&conn, "p1"), (43, 7700));
+    }
+
+    #[test]
+    fn an_album_with_2_of_10_tracks_present_adds_8_and_reports_2() {
+        let d = tempfile::tempdir().unwrap();
+        let env = Env::with_home(d.path());
+        let creds = Creds {
+            u: "alice".into(),
+            t: token("sesame", "c19b2d"),
+            s: "c19b2d".into(),
+        };
+        let fake = Fake::start(10, &creds.t);
+        let client = Client::new(&fake.url, creds);
+        sync::run(&env, &client, true).unwrap();
+        let conn = db::open_existing(&env).unwrap().unwrap();
+        seed(
+            &fake,
+            "p1",
+            &[("s3", "Titre numéro 3", "Beyoncé"), ("s7", "x", "y")],
+        );
+        let album = crate::resolve::resolve(&client, Kind::Album, "al1").unwrap();
+        assert_eq!(album.len(), 10);
+        let r = add_checked(&client, Some(&conn), "p1", &album, false, 0).unwrap();
+        assert_eq!(r.added.len(), 8);
+        assert_eq!(ids(&r.already), ["s3", "s7"]);
+        let q = last(&fake);
+        assert_eq!(params(q.split_once('?').unwrap().1, "songIdToAdd").len(), 8);
+        assert_eq!(counts(&conn, "p1"), (42 + 8, 7500 + 8 * 200));
+        assert_eq!(server_ids(&fake, "p1").len(), 10);
+    }
+
+    #[test]
+    fn a_track_repeated_in_the_request_is_added_once() {
+        let (_d, _env, fake, client) = setup();
+        seed(&fake, "p1", &[("s0", "Titre numéro 0", "Daft Punk")]);
+        let t = [info("s1", 200), info("s1", 200)];
+        let r = add_checked(&client, None, "p1", &t, false, 0).unwrap();
+        assert_eq!(ids(&r.added), ["s1"]);
+        assert_eq!(ids(&r.already), ["s1"]);
+        assert_eq!(server_ids(&fake, "p1"), ["s0", "s1"]);
+    }
+
+    #[test]
+    fn adding_with_a_refused_token_fails_without_writing() {
+        let (_d, _env, fake, client) = setup();
+        seed(&fake, "p1", &[]);
+        *fake.state.expected_token.lock().unwrap() = "autre".into();
+        assert!(matches!(
+            add_checked(&client, None, "p1", &[info("s0", 1)], false, 0),
+            Err(Failure::AuthRefused(_))
+        ));
+    }
+
+    fn entry(id: &str, title: &str, artist: &str) -> TrackInfo {
+        TrackInfo {
+            id: id.into(),
+            title: title.into(),
+            artist: artist.into(),
+            duration: 200,
+            ..TrackInfo::default()
+        }
+    }
+
+    #[test]
+    fn listing_duplicates_tells_exact_ones_from_similar_ones() {
+        let list = [
+            entry("a", "Around the World", "Daft Punk"),
+            entry("b", "Digital Love", "Daft Punk"),
+            entry("a", "Around the World", "Daft Punk"),
+            entry("c", " around the world", "daft punk"),
+            entry("a", "Around the World", "Daft Punk"),
+            entry("d", "Digital Love", "Someone Else"),
+            entry("e", "", ""),
+            entry("f", "", ""),
+        ];
+        let d = find_duplicates(&list);
+        assert_eq!(d.total, 8);
+        let exact: Vec<_> = d.exact.iter().map(|x| (x.index, x.first)).collect();
+        assert_eq!(exact, [(2, 0), (4, 0)]);
+        let similar: Vec<_> = d.similar.iter().map(|x| (x.index, x.first)).collect();
+        assert_eq!(similar, [(3, 0)], "other artist or no title: not similar");
+        assert_eq!(
+            find_duplicates(&list[..2]),
+            Duplicates {
+                total: 2,
+                ..Duplicates::default()
+            }
+        );
+    }
+
+    #[test]
+    fn listing_duplicates_reads_the_server() {
+        let (_d, _env, fake, client) = setup();
+        seed(
+            &fake,
+            "p1",
+            &[("s0", "T", "A"), ("s1", "U", "A"), ("s0", "T", "A")],
+        );
+        let d = duplicates(&client, "p1").unwrap();
+        assert_eq!(d.exact.len(), 1);
+        assert_eq!(d.exact[0].index, 2);
+        assert_eq!(writes(&fake), 0);
+    }
+
+    #[test]
+    fn removing_duplicates_keeps_the_first_occurrence_and_the_order() {
+        let (_d, env, fake, client) = setup();
+        let conn = db::open_existing(&env).unwrap().unwrap();
+        seed(
+            &fake,
+            "p1",
+            &[
+                ("s0", "T0", "A"),
+                ("s1", "T1", "A"),
+                ("s0", "T0", "A"),
+                ("s2", "T2", "A"),
+                ("s1", "T1", "A"),
+                ("s0", "T0", "A"),
+            ],
+        );
+        let gone = remove_duplicates(&client, Some(&conn), "p1", 0)
+            .unwrap()
+            .exact;
+        assert_eq!(gone.iter().map(|d| d.index).collect::<Vec<_>>(), [2, 4, 5]);
+        assert_eq!(server_ids(&fake, "p1"), ["s0", "s1", "s2"]);
+        assert_eq!(writes(&fake), 1, "one call, indexes of the order before it");
+        let q = fake
+            .state
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .rfind(|c| c.starts_with("updatePlaylist"))
+            .unwrap()
+            .clone();
+        assert_eq!(
+            params(q.split_once('?').unwrap().1, "songIndexToRemove"),
+            ["2", "4", "5"]
+        );
+        assert_eq!(counts(&conn, "p1"), (42 - 3, 7500 - 600));
+    }
+
+    #[test]
+    fn removing_duplicates_leaves_similar_tracks_alone() {
+        let (_d, _env, fake, client) = setup();
+        seed(
+            &fake,
+            "p1",
+            &[
+                ("s0", "Same", "A"),
+                ("s9", "Same", "A"),
+                ("s0", "Same", "A"),
+            ],
+        );
+        let found = remove_duplicates(&client, None, "p1", 0).unwrap();
+        assert_eq!(server_ids(&fake, "p1"), ["s0", "s9"]);
+        assert_eq!(found.exact.len(), 1);
+        assert_eq!(found.similar.len(), 1, "reported, and left in place");
+    }
+
+    #[test]
+    fn removing_duplicates_without_any_writes_nothing() {
+        let (_d, _env, fake, client) = setup();
+        seed(&fake, "p1", &[("s0", "T0", "A"), ("s1", "T1", "A")]);
+        let found = remove_duplicates(&client, None, "p1", 0).unwrap();
+        assert!(found.exact.is_empty());
+        assert_eq!(writes(&fake), 0);
     }
 }

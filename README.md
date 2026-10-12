@@ -61,7 +61,7 @@ configuration (see `AGENTS.md`). The daemon integration test starts its own priv
   a favourite).
 - `melodie like [<kind> <id>]`, `unlike [<kind> <id>]`, `like --toggle`: favourites (see
   "Favourites and playlists").
-- `melodie playlist add|remove|create|rename|delete|pick`: writes the playlists.
+- `melodie playlist add|remove|duplicates|create|rename|delete|pick`: writes the playlists.
 - `melodie home [--json]`: the launcher content without typing: first the entries of `mixes`,
   then the playlists (same connection states as `search`).
 - `melodie mix me|rediscover|track|album|artist|genre …` and `melodie mixes [--json]`: local mixes
@@ -123,8 +123,20 @@ connection states (see below), with a notification.
   the server). `like --toggle` flips the state. Notification "♥ Ajouté aux favoris : <title>" or
   "Retiré des favoris". The daemon updates `starred` (`now --json`, MPRIS `melodie:starred`) of the
   current track; on a track change it reads the state again from the copy.
-- `melodie playlist add <playlistId> [track <id> | album <id> | current]`: `updatePlaylist` with
-  `songIdToAdd` repeated (`current`, the current track, is the default).
+- `melodie playlist add [--allow-duplicates] [--json] <playlistId> [track <id> | album <id> | current]`:
+  `updatePlaylist` with `songIdToAdd` repeated (`current`, the current track, is the default).
+  The playlist is first read from the server (`getPlaylist`, not the local copy, which holds only
+  the counts and may be stale): a track already in it, by id, is skipped, and the output says how
+  many ("Ajouté à « X » : 8 morceaux (2 déjà présents, ignorés)", or "Déjà dans « X »" when
+  nothing is left to add, code 0, nothing written). `--allow-duplicates` adds them anyway, without
+  reading the playlist. A track repeated in the request itself is added once.
+- `melodie playlist duplicates [--remove] [--json] <playlistId>`: lists the repeats of a playlist,
+  by rank (from 0, like `remove`) and the rank of the occurrence they repeat. Two kinds, told
+  apart: *exact* (same track id) and *likely* (another id, same title and artist, ignoring case
+  and surrounding spaces; entries without a title are not compared). `--remove` drops the exact
+  ones only, keeping the first occurrence and the order of the rest, in one `updatePlaylist`
+  whose `songIndexToRemove` are all ranks of the order before the call (Navidrome's reading,
+  checked in its source and tested on the fake server). The likely ones are listed and left.
 - `melodie playlist remove <playlistId> <index>`: `songIndexToRemove`. The index starts at 0 (like
   the API) and is checked against the server's playlist before writing.
 - `melodie playlist create <name> [current | track <id> | album <id>]`,
@@ -214,7 +226,7 @@ takes over its setup, once, at the switch, without logging in again:
 
 ## Connection states
 
-| State | Cause | Readable output | With `--json` (`search`, `playlists`, `playlist pick`, `mixes`, `home`, `mix`) |
+| State | Cause | Readable output | With `--json` (`search`, `playlists`, `playlist pick`, `playlist add`, `playlist duplicates`, `mixes`, `home`, `mix`) |
 | --- | --- | --- | --- |
 | `no-login` | no secret or no configuration | "Pas connecté : lance `melodie login`", code 1 | entry "Se connecter à Navidrome" (`xdg-terminal-exec melodie login`), code 0 |
 | `auth-refused` | `status="failed"`, Subsonic code 40 to 44 | same (handled like `no-login`), code 1 | same |
@@ -223,7 +235,7 @@ takes over its setup, once, at the switch, without logging in again:
 A local problem (missing keyring, disk, database) gives code 3 and a message; with `--json`, an
 entry "Erreur du module music". Never a silent error.
 
-`like`, `unlike` and `playlist add|remove|create|rename|delete` call the server: same states, same
+`like`, `unlike` and `playlist add|remove|duplicates|create|rename|delete` call the server: same states, same
 codes (1, 1, 2), same notifications as `play`. `mix`, `mixes` and `playlist pick` only read the
 local copy; `mix` needs the server only to play (offline, `--print` and `--json` work).
 
@@ -281,6 +293,35 @@ file", then, outside playlists, "Mix instantané" (`mix <kind> <id>`) and "J'aim
 plus" depending on the local state; for tracks and albums, "Ajouter à une playlist…" whose action
 is `{"type":"submenu","command":"melodie playlist pick --json <kind> <id>"}`. The subtitle of a
 track is "Track · Artist · Album".
+
+### `playlist add --json` and `playlist duplicates --json`
+
+Unlike the launcher lists above, these two answer one object, with camel-case keys and tracks as
+`{"id","title","artist","album"}`:
+
+```json
+{"playlist": {"id": "p1", "name": "Daft Mix"},
+ "added": [{"id": "t2", "title": "Titre 2", "artist": "Beyoncé", "album": "Discovery"}],
+ "already": [{"id": "t1", "title": "Titre 1", "artist": "Daft Punk", "album": "Discovery"}],
+ "allowDuplicates": false}
+```
+
+`added` is what was sent to the server, `already` what was found in the playlist and left out
+(always empty with `--allow-duplicates`, which does not read the playlist). The launcher or the
+window can offer to add `already` again with `--allow-duplicates`.
+
+```json
+{"playlist": {"id": "p1", "name": "Daft Mix"}, "total": 6,
+ "exact":   [{"index": 3, "first": 0, "track": {"id": "t1", "title": "Titre 1", "artist": "Daft Punk", "album": "Discovery"}}],
+ "similar": [{"index": 5, "first": 1, "track": {"id": "t9", "title": "Titre 2", "artist": "Beyoncé", "album": "Single"}}],
+ "removed": []}
+```
+
+`index` is the rank of the repeat, `first` the rank of the occurrence it repeats (from 0).
+`removed` is empty without `--remove`, and with it a copy of `exact` (what went).
+
+A failure state gives, as everywhere, a single launcher entry (see the table) and code 0. The
+existing outputs, `playlist pick --json` included, are unchanged.
 
 ## Launcher covers
 
