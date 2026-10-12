@@ -4,6 +4,10 @@
 //! 2. `auth-refused` : le serveur refuse le jeton (codes 40 à 44), traité comme `no-login`.
 //! 3. `unreachable` : réseau, délai, HTTP non 200, JSON invalide ; on ne demande
 //!    surtout pas de se reconnecter.
+//!
+//! « Introuvable » (code Subsonic 70) n'est pas un quatrième état : le serveur est joignable et
+//! accepte le jeton, c'est l'élément demandé qui lui manque. C'est un échec comme les autres
+//! (message, code de sortie, entrée du lanceur) mais il n'est jamais mémorisé.
 
 use crate::api::{ApiError, Client};
 use crate::env::Env;
@@ -20,6 +24,8 @@ pub enum Failure {
         url: String,
         detail: String,
     },
+    /// Le serveur répond mais ne connaît pas l'élément (« album al9 ») : pas un état de connexion.
+    NotFound(String),
     /// Aucune copie locale : la première synchronisation tourne en arrière-plan.
     Syncing,
     /// Problème local (trousseau, disque, base) : jamais muet, jamais confondu avec un état.
@@ -33,6 +39,7 @@ impl Failure {
             Failure::NoLogin => "no-login",
             Failure::AuthRefused(_) => "auth-refused",
             Failure::Unreachable { .. } => "unreachable",
+            Failure::NotFound(_) => "not-found",
             Failure::Syncing => "syncing",
             Failure::Internal(_) => "error",
         }
@@ -45,6 +52,7 @@ impl Failure {
             Failure::Unreachable { .. } => 2,
             Failure::Internal(_) => 3,
             Failure::Syncing => 4,
+            Failure::NotFound(_) => 5,
         }
     }
 
@@ -62,6 +70,12 @@ impl Failure {
                 "id": "unreachable",
                 "name": "Navidrome injoignable",
                 "subtitle": url,
+                "icon": "󰅛"
+            }),
+            Failure::NotFound(what) => json!({
+                "id": "not-found",
+                "name": "Introuvable sur le serveur",
+                "subtitle": what,
                 "icon": "󰅛"
             }),
             Failure::Syncing => json!({
@@ -91,6 +105,7 @@ impl fmt::Display for Failure {
             Failure::Unreachable { url, detail } => {
                 write!(f, "Serveur injoignable ({url}) : {detail}")
             }
+            Failure::NotFound(what) => write!(f, "Introuvable sur le serveur : {what}"),
             Failure::Syncing => write!(
                 f,
                 "Copie de la bibliothèque en cours en arrière-plan : réessaie dans un instant"
@@ -116,6 +131,7 @@ impl From<rusqlite::Error> for Failure {
 pub fn from_api(e: ApiError, url: &str) -> Failure {
     match e {
         ApiError::AuthRefused(m) => Failure::AuthRefused(m),
+        ApiError::NotFound(m) => Failure::NotFound(m),
         ApiError::Unreachable(detail) => Failure::Unreachable {
             url: url.to_string(),
             detail,
@@ -153,6 +169,8 @@ pub fn record<T>(env: &Env, r: &Result<T, Failure>) {
     match r {
         Ok(_) => store::clear_auth_refused(env),
         Err(Failure::AuthRefused(_)) => store::mark_auth_refused(env),
+        // « Introuvable » ne dit rien du jeton : ni refus à noter, ni refus à effacer.
+        Err(Failure::NotFound(_)) => {}
         Err(_) => {}
     }
 }
@@ -197,6 +215,38 @@ mod tests {
         assert_eq!(e["icon"], "󰅛");
         assert!(e.get("action").is_none());
         assert!(!f.to_string().contains("melodie login"));
+    }
+
+    #[test]
+    fn introuvable_n_est_pas_un_etat_de_connexion() {
+        let f = Failure::NotFound("album al9".into());
+        assert_eq!(f.to_string(), "Introuvable sur le serveur : album al9");
+        assert_eq!(f.exit_code(), 5);
+        let e = f.launcher_entry();
+        assert_eq!(e["id"], "not-found");
+        assert_eq!(e["name"], "Introuvable sur le serveur");
+        assert_eq!(e["subtitle"], "album al9");
+        assert!(e.get("action").is_none());
+        assert!(!f.to_string().contains("melodie login"));
+        assert!(!f.to_string().contains("injoignable"));
+        assert!(matches!(
+            from_api(ApiError::NotFound("x".into()), "u"),
+            Failure::NotFound(_)
+        ));
+    }
+
+    #[test]
+    fn introuvable_ne_touche_pas_au_refus_memorise() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        let missing: Result<(), Failure> = Err(Failure::NotFound("album al9".into()));
+        // Neither sets the marker...
+        record(&env, &missing);
+        assert!(!store::auth_refused_marked(&env));
+        // ...nor clears it: the server did not vouch for the token, it only lacked the item.
+        store::mark_auth_refused(&env);
+        record(&env, &missing);
+        assert!(store::auth_refused_marked(&env));
     }
 
     #[test]

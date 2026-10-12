@@ -80,7 +80,7 @@ difference: applying one twice is harmless.
 | `position` | `position`, `duration` (seconds) | while playing, at most once a second; never while paused or stopped |
 | `volume` | `volume` (0 to 1.3; 1 = 100 %) | the volume changed (command line, MPRIS, socket) |
 | `starred` | `id`, `starred` | a track became a favourite or stopped being one; update every entry with this `id` |
-| `connection` | `state` (`ok`, `unreachable`, `auth-refused`) | what the last call to the server says changed; after `auth-refused` the daemon stops and quits |
+| `connection` | `state` (`ok`, `unreachable`, `auth-refused`) | what the last call to the server says changed; after `auth-refused` the daemon stops and quits. An id the server does not know (Subsonic code 70) is not a connection change: no event |
 
 The current index is the one of the latest `queue` or `track` event. Playing another position
 is a `track` event, not a `queue` event.

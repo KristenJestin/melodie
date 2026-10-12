@@ -83,7 +83,9 @@ impl Creds {
 pub enum ApiError {
     /// Le serveur refuse le jeton (codes Subsonic 40 à 44).
     AuthRefused(String),
-    /// Panne réseau, délai dépassé, HTTP non 200, JSON invalide, ou erreur
+    /// Le serveur répond, mais ne connaît pas l'élément demandé (code Subsonic 70).
+    NotFound(String),
+    /// Panne réseau, délai dépassé, HTTP non 200, JSON invalide, ou autre erreur
     /// Subsonic sans rapport avec l'authentification.
     Unreachable(String),
 }
@@ -92,6 +94,7 @@ impl fmt::Display for ApiError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ApiError::AuthRefused(m) => write!(f, "authentification refusée : {m}"),
+            ApiError::NotFound(m) => write!(f, "introuvable sur le serveur : {m}"),
             ApiError::Unreachable(m) => write!(f, "serveur injoignable : {m}"),
         }
     }
@@ -343,10 +346,12 @@ pub fn parse_response(method: &str, value: Value) -> Result<Value, ApiError> {
     }
 }
 
-/// Codes 40 à 44 : jeton, nom ou mot de passe refusés.
+/// Codes 40 à 44 : jeton, nom ou mot de passe refusés ; code 70 : élément inconnu du serveur,
+/// qui est pourtant joignable.
 pub fn classify_failure(method: &str, code: i64, msg: &str) -> ApiError {
     match code {
         40..=44 => ApiError::AuthRefused(format!("{method} : code {code} ({msg})")),
+        70 => ApiError::NotFound(format!("{method} : code {code} ({msg})")),
         _ => ApiError::Unreachable(format!("{method} : erreur Subsonic {code} ({msg})")),
     }
 }
@@ -390,12 +395,23 @@ mod tests {
                 ApiError::AuthRefused(_)
             ));
         }
-        for code in [0, 10, 20, 30, 39, 45, 50, 70] {
+        for code in [0, 10, 20, 30, 39, 45, 50, 60] {
             assert!(matches!(
                 classify_failure("ping", code, "x"),
                 ApiError::Unreachable(_)
             ));
         }
+    }
+
+    #[test]
+    fn le_code_70_est_introuvable_et_non_injoignable() {
+        let e = classify_failure("getAlbum", 70, "Data not found");
+        assert!(matches!(e, ApiError::NotFound(_)), "{e:?}");
+        let ko = json!({"subsonic-response": {"status": "failed", "error": {"code": 70, "message": "Data not found"}}});
+        assert!(matches!(
+            parse_response("getAlbum", ko),
+            Err(ApiError::NotFound(_))
+        ));
     }
 
     #[test]

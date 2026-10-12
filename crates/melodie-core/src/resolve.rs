@@ -1,16 +1,20 @@
 //! De « kind + id » à la liste des morceaux à jouer, d'après l'API : l'ordre
 //! des disques et des pistes vient du serveur, les métadonnées sont à jour.
 
-use crate::api::Client;
+use crate::api::{ApiError, Client};
 use crate::search::Kind;
 use crate::state::{self, Failure};
 use crate::track::TrackInfo;
 use serde_json::Value;
 
-fn call(client: &Client, method: &str, id: &str) -> Result<Value, Failure> {
+/// `what` is told to the user when the server does not know the id ("album al9").
+fn call(client: &Client, method: &str, id: &str, what: &str) -> Result<Value, Failure> {
     client
         .call(method, &[("id", id.to_string())])
-        .map_err(|e| state::from_api(e, client.url()))
+        .map_err(|e| match e {
+            ApiError::NotFound(_) => Failure::NotFound(what.to_string()),
+            e => state::from_api(e, client.url()),
+        })
 }
 
 fn tracks_of(list: &Value) -> Vec<TrackInfo> {
@@ -39,20 +43,21 @@ pub fn album_order(albums: &[Value]) -> Vec<String> {
 /// Morceaux d'une playlist, d'un album, d'un artiste (tous ses albums dans
 /// l'ordre) ou d'un morceau seul. Une liste vide est une erreur.
 pub fn resolve(client: &Client, kind: Kind, id: &str) -> Result<Vec<TrackInfo>, Failure> {
+    let what = format!("{} {id}", kind.word());
     let tracks = match kind {
         Kind::Track => {
-            let r = call(client, "getSong", id)?;
+            let r = call(client, "getSong", id, &what)?;
             TrackInfo::from_api(&r["song"]).into_iter().collect()
         }
-        Kind::Album => tracks_of(&call(client, "getAlbum", id)?["album"]["song"]),
-        Kind::Playlist => tracks_of(&call(client, "getPlaylist", id)?["playlist"]["entry"]),
+        Kind::Album => tracks_of(&call(client, "getAlbum", id, &what)?["album"]["song"]),
+        Kind::Playlist => tracks_of(&call(client, "getPlaylist", id, &what)?["playlist"]["entry"]),
         Kind::Artist => {
-            let r = call(client, "getArtist", id)?;
+            let r = call(client, "getArtist", id, &what)?;
             let albums = r["artist"]["album"].as_array().cloned().unwrap_or_default();
             let mut out = Vec::new();
             for album in album_order(&albums) {
                 out.extend(tracks_of(
-                    &call(client, "getAlbum", &album)?["album"]["song"],
+                    &call(client, "getAlbum", &album, &what)?["album"]["song"],
                 ));
             }
             out
@@ -118,10 +123,25 @@ mod tests {
         assert_eq!(ids(Kind::Playlist, "p1"), ["s0", "s1", "h0"]);
         // Homework (1997) avant Discovery (2001).
         assert_eq!(ids(Kind::Artist, "ar1"), ["h0", "s0", "s1"]);
-        assert!(matches!(
-            resolve(&client, Kind::Album, "inconnu"),
-            Err(Failure::Internal(_))
-        ));
-        assert!(resolve(&client, Kind::Track, "zzz").is_err());
+    }
+
+    #[test]
+    fn un_identifiant_inconnu_est_introuvable_et_non_injoignable() {
+        let fake = Fake::start(0, "tok");
+        let creds = Creds {
+            u: "alice".into(),
+            t: "tok".into(),
+            s: "sel".into(),
+        };
+        let client = Client::new(&fake.url, creds);
+        for (kind, id, what) in [
+            (Kind::Album, "inconnu", "album inconnu"),
+            (Kind::Track, "zzz", "track zzz"),
+        ] {
+            match resolve(&client, kind, id) {
+                Err(Failure::NotFound(w)) => assert_eq!(w, what),
+                other => panic!("{kind:?} {id}: {other:?}"),
+            }
+        }
     }
 }

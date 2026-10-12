@@ -1943,6 +1943,97 @@ fn open_of_something_the_server_does_not_have_changes_nothing() {
     assert_eq!(queue_ids(&sb), ids_of(&["t1", "t2", "t3"]));
 }
 
+/// What each command that resolves an id on the server says for an id it does not have.
+const UNKNOWN_ID_COMMANDS: [(&[&str], &str); 5] = [
+    (&["play", "album", "nope"], "album nope"),
+    (&["play", "track", "nope"], "track nope"),
+    (&["queue", "album", "nope"], "album nope"),
+    (&["open", "melodie:album/nope"], "album nope"),
+    (&["playlist", "add", "p1", "album", "nope"], "album nope"),
+];
+
+fn assert_not_found(o: &Output, what: &str, args: &[&str]) {
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(5), "{args:?}: {err}");
+    assert!(
+        err.contains(&format!("Introuvable sur le serveur : {what}")),
+        "{args:?}: {err}"
+    );
+    assert!(
+        !err.contains("injoignable") && !err.contains("melodie login"),
+        "{args:?}: {err}"
+    );
+}
+
+#[test]
+fn an_unknown_id_is_not_found_and_not_an_unreachable_server() {
+    let sb = Sandbox::new(true);
+    addressable_library(&sb);
+    for (args, what) in UNKNOWN_ID_COMMANDS {
+        assert_not_found(&sb.run(args), what, args);
+    }
+    // The server is fine: no daemon was started for nothing, no login is asked again.
+    assert!(!sb.socket().exists());
+    assert!(!sb.home().join(".cache/melodie/auth-refused").exists());
+    // And the next command still works.
+    assert!(
+        sb.ok(&["open", "melodie:album/al1"])
+            .starts_with("Lecture :")
+    );
+}
+
+#[test]
+fn an_unknown_id_never_changes_the_connection_the_daemon_keeps() {
+    let sb = Sandbox::new(true);
+    addressable_library(&sb);
+    sb.ok(&["open", "melodie:album/al1"]);
+    let w = sb.watch();
+    w.wait_count("snapshot", 1);
+    assert_eq!(w.of_type("snapshot")[0]["connection"], "ok");
+    for (args, what) in UNKNOWN_ID_COMMANDS {
+        assert_not_found(&sb.run(args), what, args);
+    }
+    // A later event proves the stream was open and the daemon alive for all of the above.
+    sb.ok(&["pause"]);
+    w.wait_for("state", |ev| {
+        ev.iter()
+            .any(|e| e["type"] == "state" && e["state"] == "paused")
+    });
+    assert!(w.of_type("connection").is_empty(), "{:?}", w.raw());
+    assert_eq!(queue_ids(&sb), ids_of(&["t1", "t2", "t3"]));
+}
+
+#[test]
+fn an_unknown_id_is_one_launcher_entry_in_json() {
+    let sb = Sandbox::new(true);
+    addressable_library(&sb);
+    let args = &["playlist", "add", "p1", "album", "nope", "--json"][..];
+    let o = sb.run(args);
+    assert_eq!(o.status.code(), Some(0));
+    let v: Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v.as_array().unwrap().len(), 1);
+    assert_eq!(v[0]["id"], "not-found");
+    assert_eq!(v[0]["name"], "Introuvable sur le serveur");
+    assert_eq!(v[0]["subtitle"], "album nope");
+    assert!(v[0].get("action").is_none());
+}
+
+#[test]
+fn a_refused_token_and_a_dead_server_keep_their_answers_for_an_unknown_id() {
+    let sb = Sandbox::new(true);
+    *sb.fake.state.expected_token.lock().unwrap() = "autre".into();
+    for (args, _) in UNKNOWN_ID_COMMANDS {
+        assert_eq!(sb.run(args).status.code(), Some(1), "{args:?}");
+    }
+    let sb = Sandbox::new(true);
+    *sb.fake.state.raw.lock().unwrap() = Some((503, "x".into()));
+    for (args, _) in UNKNOWN_ID_COMMANDS {
+        let o = sb.run(args);
+        assert_eq!(o.status.code(), Some(2), "{args:?}");
+        assert!(String::from_utf8_lossy(&o.stderr).contains("injoignable"));
+    }
+}
+
 #[test]
 fn open_without_login_says_no_login_and_starts_no_daemon() {
     let sb = Sandbox::new(false);
@@ -2079,6 +2170,34 @@ fn open_uri_on_mpris_of_something_the_server_does_not_have_changes_nothing() {
     );
     assert_eq!(queue_ids(&sb), ids_of(&["t1", "t2", "t3"]));
     assert_no_secret(&sb.log());
+}
+
+#[test]
+fn open_uri_on_mpris_of_an_unknown_id_is_logged_as_not_found_and_changes_nothing() {
+    let sb = Sandbox::new(true);
+    addressable_library(&sb);
+    sb.ok(&["open", "melodie:album/al1"]);
+    let Some((_conn, p)) = bus_player(&sb) else {
+        return;
+    };
+    let w = sb.watch();
+    w.wait_count("snapshot", 1);
+    open_uri(&p, "melodie:album/nope").unwrap();
+    wait_until(5, "log", || sb.log().contains("OpenUri"));
+    let log = sb.log();
+    assert!(
+        log.contains("Introuvable sur le serveur : album nope"),
+        "{log}"
+    );
+    assert!(!log.contains("injoignable"), "{log}");
+    // The daemon is still there, still playing, and said nothing about the connection.
+    open_uri(&p, "melodie:track/t2?queue=last").unwrap();
+    wait_until(5, "queued", || {
+        queue_ids(&sb) == ids_of(&["t1", "t2", "t3", "t2"])
+    });
+    assert!(w.of_type("connection").is_empty(), "{:?}", w.raw());
+    assert!(!sb.home().join(".cache/melodie/auth-refused").exists());
+    assert_no_secret(&log);
 }
 
 #[test]

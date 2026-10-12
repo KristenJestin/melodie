@@ -242,6 +242,9 @@ impl State {
                         s["played"] = json!("2026-10-02T00:00:00Z");
                     }
                 }
+                if in_album.is_empty() {
+                    return no_such("getAlbum");
+                }
                 ok(json!({"album": {"id": id, "song": in_album}}))
             }
             "getSong" => {

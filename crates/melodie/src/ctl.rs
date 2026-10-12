@@ -93,6 +93,7 @@ pub fn report(f: &Failure) -> ExitCode {
     let summary = match f {
         Failure::NoLogin | Failure::AuthRefused(_) => "Navidrome : connexion requise",
         Failure::Unreachable { .. } => "Navidrome injoignable",
+        Failure::NotFound(_) => "Mélodie : introuvable sur le serveur",
         Failure::Syncing => "Mélodie : copie de la bibliothèque en cours",
         Failure::Internal(_) => "Mélodie : erreur",
     };
