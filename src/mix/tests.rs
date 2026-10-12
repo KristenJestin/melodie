@@ -94,9 +94,9 @@ fn dates_rfc3339() {
     );
     assert_eq!(parse_rfc3339("2026-10-08"), None);
     assert_eq!(parse_rfc3339("pas une date"), None);
-    // Cohérent avec l'écriture de poste-core.
+    // Consistent with how `time::rfc3339` writes.
     assert_eq!(
-        parse_rfc3339(&poste_core::time::rfc3339(1_234_567_890)),
+        parse_rfc3339(&crate::time::rfc3339(1_234_567_890)),
         Some(1_234_567_890)
     );
     // 29 février d'une année bissextile.
@@ -707,7 +707,7 @@ fn insert_fake(conn: &Connection, n: usize) {
         }
         for a in 0..n_albums {
             let played: Option<String> = (a % 3 == 0)
-                .then(|| poste_core::time::rfc3339((NOW - (a as i64 % 400) * 86_400) as u64));
+                .then(|| crate::time::rfc3339((NOW - (a as i64 % 400) * 86_400) as u64));
             al.execute(params![
                 format!("al{a}"),
                 format!("Album {a}"),
@@ -724,7 +724,7 @@ fn insert_fake(conn: &Connection, n: usize) {
             let g2 = genres[(i / 7) % genres.len()];
             let raw = format!("[\"{g1}\",\"{g2}\"]");
             let played: Option<String> = (i % 4 == 0)
-                .then(|| poste_core::time::rfc3339((NOW - (i as i64 % 500) * 3600 * 5) as u64));
+                .then(|| crate::time::rfc3339((NOW - (i as i64 % 500) * 3600 * 5) as u64));
             let starred: Option<String> = (i % 17 == 0).then(|| "2026-01-01T00:00:00Z".to_string());
             tr.execute(params![
                 format!("t{i}"),

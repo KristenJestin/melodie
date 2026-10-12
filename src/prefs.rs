@@ -4,7 +4,7 @@
 
 use crate::store::write_atomic;
 use anyhow::Result;
-use poste_core::Env;
+use crate::env::Env;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 

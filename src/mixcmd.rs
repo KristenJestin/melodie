@@ -7,8 +7,8 @@ use crate::mix::{self, Detail, Library, Rng, Source, SourceKind};
 use crate::search::{shell_word, Hit, Kind, ICON_PLAY, ICON_QUEUE};
 use crate::state::Failure;
 use anyhow::anyhow;
-use poste_core::time::now_secs;
-use poste_core::Env;
+use crate::time::now_secs;
+use crate::env::Env;
 use serde_json::{json, Value};
 use std::process::ExitCode;
 

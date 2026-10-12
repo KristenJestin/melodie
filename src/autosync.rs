@@ -7,8 +7,8 @@
 use crate::state::{self, Failure};
 use crate::{db, proto, sync};
 use anyhow::{Context, Result};
-use poste_core::time::{now_secs, rfc3339};
-use poste_core::Env;
+use crate::time::{now_secs, rfc3339};
+use crate::env::Env;
 use rusqlite::Connection;
 use std::io::Write;
 use std::os::fd::AsRawFd;

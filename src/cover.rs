@@ -6,7 +6,7 @@ use crate::api::{pct_encode, Client};
 use crate::db;
 use crate::store::write_atomic;
 use anyhow::{bail, Context, Result};
-use poste_core::Env;
+use crate::env::Env;
 use serde_json::Value;
 use std::collections::VecDeque;
 use std::os::fd::AsRawFd;

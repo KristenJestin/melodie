@@ -6,6 +6,7 @@ mod autosync;
 mod cover;
 mod ctl;
 mod daemon;
+mod env;
 mod db;
 #[cfg(test)]
 mod fake;
@@ -23,12 +24,13 @@ mod search;
 mod state;
 mod store;
 mod sync;
+mod time;
 mod track;
 
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use poste_core::time::rfc3339;
-use poste_core::Env;
+use crate::time::rfc3339;
+use crate::env::Env;
 use rusqlite::Connection;
 use state::Failure;
 use std::io::{BufRead, Write};

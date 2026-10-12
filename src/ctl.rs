@@ -10,7 +10,7 @@ use crate::search::Kind;
 use crate::state::{self, Failure};
 use crate::track::clock;
 use anyhow::{anyhow, bail, Context, Result};
-use poste_core::Env;
+use crate::env::Env;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, ExitCode, Stdio};

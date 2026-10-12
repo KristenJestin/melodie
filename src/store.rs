@@ -3,7 +3,7 @@
 
 use crate::api::Creds;
 use anyhow::{anyhow, Context, Result};
-use poste_core::Env;
+use crate::env::Env;
 use secret_service::blocking::SecretService;
 use secret_service::EncryptionType;
 use serde::{Deserialize, Serialize};

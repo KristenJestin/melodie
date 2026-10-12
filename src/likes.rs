@@ -7,8 +7,8 @@ use crate::ctl::{self, Oops};
 use crate::db::{self, StarKind};
 use crate::notify;
 use crate::state::{self, Failure};
-use poste_core::time::{now_secs, rfc3339};
-use poste_core::Env;
+use crate::time::{now_secs, rfc3339};
+use crate::env::Env;
 use rusqlite::Connection;
 use std::process::ExitCode;
 

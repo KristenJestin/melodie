@@ -8,7 +8,7 @@
 use crate::api::{ApiError, Client};
 use crate::store::{self, Settings};
 use anyhow::anyhow;
-use poste_core::Env;
+use crate::env::Env;
 use serde_json::{json, Value};
 use std::fmt;
 
