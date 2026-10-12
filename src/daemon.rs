@@ -353,10 +353,10 @@ impl Engine {
             }
             std::mem::replace(&mut *g, new.clone())
         };
-        if let Some(conn) = &self.conn {
-            if let Err(e) = mpris::emit_changes(conn, &old, &new) {
-                dlog!("MPRIS : signal impossible : {e}");
-            }
+        if let Some(conn) = &self.conn
+            && let Err(e) = mpris::emit_changes(conn, &old, &new)
+        {
+            dlog!("MPRIS : signal impossible : {e}");
         }
     }
 
@@ -627,10 +627,11 @@ impl Engine {
                 .ok()
                 .filter(|p| *p >= 0)
                 .map(|p| p as usize);
-            if let Some(p) = pos {
-                if Some(p) != self.cur && p < self.queue.len() {
-                    self.start_track(p);
-                }
+            if let Some(p) = pos
+                && Some(p) != self.cur
+                && p < self.queue.len()
+            {
+                self.start_track(p);
             }
         }
         self.publish();
@@ -639,10 +640,10 @@ impl Engine {
     fn start_track(&mut self, index: usize) {
         self.cur = Some(index);
         // La copie locale est plus fraîche que la file (favoris changés ailleurs).
-        if let Some(id) = self.queue.get(index).map(|e| e.info.id.clone()) {
-            if let Ok(Some(s)) = db::track_starred(&self.env, &id) {
-                self.queue[index].info.starred = s;
-            }
+        if let Some(id) = self.queue.get(index).map(|e| e.info.id.clone())
+            && let Ok(Some(s)) = db::track_starred(&self.env, &id)
+        {
+            self.queue[index].info.starred = s;
         }
         let Some(e) = self.queue.get(index) else {
             return;
@@ -728,12 +729,11 @@ impl Engine {
         let status = self.status();
         let moving = status == Status::Playing
             && !self.mpv.get_property::<bool>("core-idle").unwrap_or(false);
-        if let Some(clock) = &mut self.clock {
-            if clock.advance(dt, moving) {
-                if let Some(id) = self.current().map(|e| e.info.id.clone()) {
-                    self.scrobble(&id, true);
-                }
-            }
+        if let Some(clock) = &mut self.clock
+            && clock.advance(dt, moving)
+            && let Some(id) = self.current().map(|e| e.info.id.clone())
+        {
+            self.scrobble(&id, true);
         }
 
         if status == Status::Playing {
@@ -746,18 +746,18 @@ impl Engine {
             }
         }
 
-        if let Some(t) = self.finish_candidate {
-            if now.duration_since(t) >= FINISH_GRACE {
-                if self
-                    .mpv
-                    .get_property::<bool>("idle-active")
-                    .unwrap_or(false)
-                {
-                    dlog!("file terminée, arrêt");
-                    self.quit = true;
-                } else {
-                    self.finish_candidate = None;
-                }
+        if let Some(t) = self.finish_candidate
+            && now.duration_since(t) >= FINISH_GRACE
+        {
+            if self
+                .mpv
+                .get_property::<bool>("idle-active")
+                .unwrap_or(false)
+            {
+                dlog!("file terminée, arrêt");
+                self.quit = true;
+            } else {
+                self.finish_candidate = None;
             }
         }
 

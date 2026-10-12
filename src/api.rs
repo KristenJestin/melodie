@@ -282,10 +282,10 @@ impl Client {
     pub fn fetch(&self, method: &str, extra: &[(&str, String)]) -> Result<Vec<u8>, ApiError> {
         let resp = self.send(method, extra)?;
         let body = self.read_body(method, resp, MAX_IMAGE)?;
-        if body.first() == Some(&b'{') {
-            if let Ok(v) = serde_json::from_slice::<Value>(&body) {
-                return parse_response(method, v).map(|_| Vec::new());
-            }
+        if body.first() == Some(&b'{')
+            && let Ok(v) = serde_json::from_slice::<Value>(&body)
+        {
+            return parse_response(method, v).map(|_| Vec::new());
         }
         Ok(body)
     }

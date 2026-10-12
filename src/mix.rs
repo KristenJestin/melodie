@@ -786,10 +786,10 @@ pub fn rediscover(lib: &Library, albums: &[AlbumStat], size: usize, rng: &mut Rn
     let wanted: HashMap<u32, usize> = albums.iter().enumerate().map(|(n, a)| (a.key, n)).collect();
     let mut by_album: Vec<Vec<usize>> = vec![Vec::new(); albums.len()];
     for (i, t) in lib.tracks.iter().enumerate() {
-        if let Some(&n) = wanted.get(&t.album) {
-            if !lib.excluded(t) {
-                by_album[n].push(i);
-            }
+        if let Some(&n) = wanted.get(&t.album)
+            && !lib.excluded(t)
+        {
+            by_album[n].push(i);
         }
     }
     let mut order: Vec<(f64, usize)> = albums

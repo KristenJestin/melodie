@@ -190,34 +190,35 @@ pub fn apply_with(
 ) {
     let mut missing: Vec<String> = Vec::new();
     for e in entries.iter() {
-        if let Some(id) = e["_cover"].as_str() {
-            if matches!(local(env, id), Local::Missing) && !missing.iter().any(|m| m == id) {
-                missing.push(id.to_string());
-            }
+        if let Some(id) = e["_cover"].as_str()
+            && matches!(local(env, id), Local::Missing)
+            && !missing.iter().any(|m| m == id)
+        {
+            missing.push(id.to_string());
         }
     }
-    if !missing.is_empty() {
-        if let Some(client) = open() {
-            let start = Instant::now();
-            let (tx, rx) = channel();
-            spawn_downloads(env, Arc::new(client), missing.clone(), tx);
-            let total = missing.len();
-            let mut finished = 0;
-            while finished < total {
-                let left = budget.saturating_sub(start.elapsed());
-                match rx.recv_timeout(left) {
-                    Ok(id) => {
-                        finished += 1;
-                        missing.retain(|m| *m != id);
-                    }
-                    Err(RecvTimeoutError::Timeout) => break,
-                    Err(RecvTimeoutError::Disconnected) => break,
+    if !missing.is_empty()
+        && let Some(client) = open()
+    {
+        let start = Instant::now();
+        let (tx, rx) = channel();
+        spawn_downloads(env, Arc::new(client), missing.clone(), tx);
+        let total = missing.len();
+        let mut finished = 0;
+        while finished < total {
+            let left = budget.saturating_sub(start.elapsed());
+            match rx.recv_timeout(left) {
+                Ok(id) => {
+                    finished += 1;
+                    missing.retain(|m| *m != id);
                 }
+                Err(RecvTimeoutError::Timeout) => break,
+                Err(RecvTimeoutError::Disconnected) => break,
             }
-            // Ce qui reste (en cours ou pas commencé) finira hors budget.
-            if !missing.is_empty() {
-                background(&missing);
-            }
+        }
+        // Ce qui reste (en cours ou pas commencé) finira hors budget.
+        if !missing.is_empty() {
+            background(&missing);
         }
     }
     for e in entries.iter_mut() {
