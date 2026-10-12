@@ -117,8 +117,8 @@ driver, and the `melodie` program beside it (same folder, as a build leaves them
   own.
 - **Animations**: every change of view, panel or state is short and interruptible, and follows
   the desktop's reduced-motion setting. An unfocused window keeps animating at the screen's rate.
-- Measuring: built with the `frame-stats` feature and run with `MELODIE_GUI_FRAME_STATS=1`, the
-  window prints frame statistics on its standard error (for measurements only).
+- Measuring: built with the `frame-stats` feature and run with `MELODIE_GUI_FRAME_STATS=<file>`,
+  the window writes the time of each frame and how long it took to draw (for measurements only).
 
 ## Addresses
 
