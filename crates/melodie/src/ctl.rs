@@ -1,16 +1,16 @@
 //! Côté client des commandes de lecture : parle au démon par le socket, le
 //! démarre au besoin pour `play` et `queue`.
 
-use crate::api::Client;
-use crate::env::Env;
 use crate::notify;
-use crate::prefs::{self, Prefs};
-use crate::proto::{self, Now, Request, Response};
-use crate::resolve;
-use crate::search::Kind;
-use crate::state::{self, Failure};
-use crate::track::clock;
 use anyhow::{Context, Result, anyhow, bail};
+use melodie_core::api::Client;
+use melodie_core::env::Env;
+use melodie_core::prefs::{self, Prefs};
+use melodie_core::proto::{self, Now, Request, Response};
+use melodie_core::resolve;
+use melodie_core::search::Kind;
+use melodie_core::state::{self, Failure};
+use melodie_core::track::clock;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, ExitCode, Stdio};
@@ -203,7 +203,7 @@ pub fn prepare(env: &Env) -> Result<(Client, Ready), Failure> {
 pub fn deliver(
     env: &Env,
     ready: Ready,
-    tracks: Vec<crate::track::TrackInfo>,
+    tracks: Vec<melodie_core::track::TrackInfo>,
     shuffle: bool,
     queue: bool,
 ) -> Result<usize, Failure> {
@@ -243,7 +243,7 @@ fn try_play_or_queue(
 /// `mix` : envoie une liste déjà calculée localement.
 pub fn play_list(
     env: &Env,
-    tracks: Vec<crate::track::TrackInfo>,
+    tracks: Vec<melodie_core::track::TrackInfo>,
     queue: bool,
 ) -> Result<usize, Failure> {
     let (_client, ready) = prepare(env)?;

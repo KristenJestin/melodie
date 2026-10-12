@@ -5,23 +5,23 @@
 //! Un seul fil (le moteur) possède l'état de la file ; les autres (socket,
 //! événements de mpv, D-Bus) lui envoient des messages.
 
-use crate::api::Client;
 use crate::autosync;
-use crate::cover;
-use crate::db;
-use crate::env::Env;
 use crate::mpris::{self, MetaInfo, Snapshot};
 use crate::notify;
-use crate::prefs::{self, Prefs};
-use crate::proto::{self, Now, Request, Response};
 use crate::rules::{self, ScrobbleClock};
-use crate::state::{self, Failure};
-use crate::store;
-use crate::time::{now_secs, rfc3339};
-use crate::track::TrackInfo;
 use anyhow::{Context, Result, bail};
 use libmpv2::events::{Event, PropertyData};
 use libmpv2::{Format, Mpv};
+use melodie_core::api::Client;
+use melodie_core::cover;
+use melodie_core::db;
+use melodie_core::env::Env;
+use melodie_core::prefs::{self, Prefs};
+use melodie_core::proto::{self, Now, Request, Response};
+use melodie_core::state::{self, Failure};
+use melodie_core::store;
+use melodie_core::time::{now_secs, rfc3339};
+use melodie_core::track::TrackInfo;
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write};
 use std::os::fd::AsRawFd;
@@ -600,7 +600,7 @@ impl Engine {
         let client = self.client.clone();
         let tx = self.tx.clone();
         std::thread::spawn(move || match client.ping() {
-            Err(crate::api::ApiError::AuthRefused(m)) => {
+            Err(melodie_core::api::ApiError::AuthRefused(m)) => {
                 dlog!("authentification refusée : {m}");
                 let _ = tx.send(Msg::AuthRefused);
             }

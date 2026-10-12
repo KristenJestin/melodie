@@ -1,6 +1,6 @@
 //! Notifications de bureau de l'application « Mélodie ».
 
-use crate::store::TEST_SECRET_VAR;
+use melodie_core::store::TEST_SECRET_VAR;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 

@@ -1,10 +1,10 @@
 //! Pochettes du côté ligne de commande : remplacement de `_cover` dans les entrées du lanceur,
 //! lancement détaché de `cover-fetch` et sa sous-commande cachée.
 
-use crate::cover::{BUDGET, Local, apply_with, local, spawn_downloads};
-use crate::db;
-use crate::env::Env;
 use anyhow::{Context, Result};
+use melodie_core::cover::{BUDGET, Local, apply_with, local, spawn_downloads};
+use melodie_core::db;
+use melodie_core::env::Env;
 use serde_json::Value;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
@@ -22,7 +22,7 @@ pub fn apply(env: &Env, entries: &mut [Value]) {
         env,
         entries,
         BUDGET,
-        || crate::state::open_client(env).ok(),
+        || melodie_core::state::open_client(env).ok(),
         |ids| {
             if let Err(e) = spawn_background(ids) {
                 eprintln!("melodie : pochettes en arrière-plan : {e:#}");
@@ -85,7 +85,7 @@ pub fn fetch_cmd(env: &Env) -> Result<()> {
     if ids.is_empty() {
         return Ok(());
     }
-    let client = match crate::state::open_client(env) {
+    let client = match melodie_core::state::open_client(env) {
         Ok(c) => Arc::new(c),
         Err(_) => return Ok(()),
     };

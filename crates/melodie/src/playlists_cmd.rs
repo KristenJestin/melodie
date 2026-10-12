@@ -1,19 +1,19 @@
 //! Commandes `playlist add|remove|create|rename|delete|pick` : le côté ligne de commande de
 //! `playlists`.
 
-use crate::api::Client;
 use crate::ctl::{self, Oops};
-use crate::db;
-use crate::env::Env;
 use crate::notify;
-use crate::playlists::{Target, add, create, delete, pick, remove, rename};
-use crate::resolve;
-use crate::search::Kind;
-use crate::state::{self, Failure};
-use crate::store::Settings;
-use crate::time::now_secs;
-use crate::track::TrackInfo;
 use anyhow::anyhow;
+use melodie_core::api::Client;
+use melodie_core::db;
+use melodie_core::env::Env;
+use melodie_core::playlists::{Target, add, create, delete, pick, remove, rename};
+use melodie_core::resolve;
+use melodie_core::search::Kind;
+use melodie_core::state::{self, Failure};
+use melodie_core::store::Settings;
+use melodie_core::time::now_secs;
+use melodie_core::track::TrackInfo;
 use rusqlite::Connection;
 use serde_json::Value;
 use std::process::ExitCode;

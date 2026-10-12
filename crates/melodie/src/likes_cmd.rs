@@ -1,12 +1,12 @@
 //! Commandes `like`, `unlike` et `like --toggle` : le côté ligne de commande de `likes`.
 
 use crate::ctl::{self, Oops};
-use crate::db::{self, StarKind};
-use crate::env::Env;
-use crate::likes::{Mode, Target, apply, message};
 use crate::notify;
-use crate::state::{self, Failure};
-use crate::time::now_secs;
+use melodie_core::db::{self, StarKind};
+use melodie_core::env::Env;
+use melodie_core::likes::{Mode, Target, apply, message};
+use melodie_core::state::{self, Failure};
+use melodie_core::time::now_secs;
 use std::process::ExitCode;
 
 pub fn run(env: &Env, target: Target, mode: Mode) -> ExitCode {

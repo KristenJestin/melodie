@@ -4,11 +4,11 @@
 //! Jamais d'identifiant dans les arguments ni l'environnement du processus
 //! détaché : il relit lui-même le trousseau.
 
-use crate::env::Env;
-use crate::state::{self, Failure};
-use crate::time::{now_secs, rfc3339};
-use crate::{db, proto, sync};
 use anyhow::{Context, Result};
+use melodie_core::env::Env;
+use melodie_core::state::{self, Failure};
+use melodie_core::time::{now_secs, rfc3339};
+use melodie_core::{db, proto, sync};
 use rusqlite::Connection;
 use std::io::Write;
 use std::os::fd::AsRawFd;
@@ -231,7 +231,7 @@ pub fn library(env: &Env) -> Result<Connection, Failure> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::Settings;
+    use melodie_core::store::Settings;
     use std::cell::RefCell;
 
     #[test]
@@ -321,7 +321,7 @@ mod tests {
     fn refus_memorise_passe_avant() {
         let (_d, env) = env_connecte();
         copie(&env, 1);
-        crate::store::mark_auth_refused(&env);
+        melodie_core::store::mark_auth_refused(&env);
         let (r, calls) = essai(&env, false);
         assert!(matches!(r, Err(Failure::AuthRefused(_))));
         assert!(calls.is_empty());

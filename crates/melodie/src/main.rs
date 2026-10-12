@@ -1,41 +1,24 @@
 //! `melodie` : client Navidrome (API Subsonic/OpenSubsonic), copie locale
 //! de la bibliothèque, recherche, et lecteur de fond (démon libmpv + MPRIS).
 
-mod api;
 mod autosync;
-mod cover;
 mod cover_cmd;
 mod ctl;
 mod daemon;
-mod db;
-mod env;
-#[cfg(test)]
-mod fake;
-mod likes;
 mod likes_cmd;
-mod mix;
 mod mixcmd;
 mod mpris;
 mod notify;
-mod playlists;
 mod playlists_cmd;
-mod prefs;
-mod proto;
-mod resolve;
 mod rules;
-mod search;
-mod state;
-mod store;
-mod sync;
-mod time;
-mod track;
 
-use crate::env::Env;
-use crate::time::rfc3339;
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
+use melodie_core::env::Env;
+use melodie_core::state::{self, Failure};
+use melodie_core::time::rfc3339;
+use melodie_core::{api, db, likes, mix, playlists, proto, search, store, sync};
 use rusqlite::Connection;
-use state::Failure;
 use std::io::{BufRead, Write};
 use std::process::ExitCode;
 

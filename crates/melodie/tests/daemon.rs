@@ -5,11 +5,7 @@
 //! Le service MPRIS vit sur un bus de session privé (`dbus-daemon` lancé par le test, jamais le vrai bus) ; sans `dbus-daemon`,
 //! les vérifications MPRIS sont sautées avec un message.
 
-#[allow(dead_code)]
-#[path = "../src/fake.rs"]
-mod fake;
-
-use fake::Fake;
+use melodie_core::fake::{self, Fake};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};

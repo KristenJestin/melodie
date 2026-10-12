@@ -923,8 +923,21 @@ dependencies = [
  "getrandom 0.3.4",
  "libc",
  "libmpv2",
- "md5",
+ "melodie-core",
  "rpassword",
+ "rusqlite",
+ "serde_json",
+ "tempfile",
+ "zbus",
+]
+
+[[package]]
+name = "melodie-core"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "getrandom 0.3.4",
+ "md5",
  "rusqlite",
  "secret-service",
  "serde",
@@ -932,7 +945,6 @@ dependencies = [
  "tempfile",
  "toml",
  "ureq",
- "zbus",
 ]
 
 [[package]]

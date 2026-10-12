@@ -3,8 +3,8 @@
 //! n'y figure : pas de `xesam:url`.
 
 use crate::daemon::Msg;
-use crate::proto::Request;
 use libmpv2::Mpv;
+use melodie_core::proto::Request;
 use std::collections::HashMap;
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex};

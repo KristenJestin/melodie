@@ -3,12 +3,12 @@
 //! de la copie) : aucun appel à l'API par morceau.
 
 use crate::ctl;
-use crate::env::Env;
-use crate::mix::{self, Detail, Library, Rng, Source, SourceKind};
-use crate::search::{Hit, ICON_PLAY, ICON_QUEUE, Kind, shell_word};
-use crate::state::Failure;
-use crate::time::now_secs;
 use anyhow::anyhow;
+use melodie_core::env::Env;
+use melodie_core::mix::{self, Detail, Library, Rng, Source, SourceKind};
+use melodie_core::search::{Hit, ICON_PLAY, ICON_QUEUE, Kind, shell_word};
+use melodie_core::state::Failure;
+use melodie_core::time::now_secs;
 use serde_json::{Value, json};
 use std::process::ExitCode;
 
@@ -189,7 +189,7 @@ pub fn home(env: &Env) -> Result<Vec<Value>, Failure> {
 }
 
 pub fn home_in(conn: &rusqlite::Connection) -> Result<Vec<Value>, Failure> {
-    let mut out: Vec<Value> = crate::search::playlists(conn)?
+    let mut out: Vec<Value> = melodie_core::search::playlists(conn)?
         .iter()
         .map(|h| h.to_json())
         .collect();
@@ -200,7 +200,7 @@ pub fn home_in(conn: &rusqlite::Connection) -> Result<Vec<Value>, Failure> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db;
+    use melodie_core::db;
 
     #[test]
     fn accueil_mixes_puis_playlists() {
