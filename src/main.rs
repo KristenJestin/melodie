@@ -4,6 +4,7 @@
 mod api;
 mod autosync;
 mod cover;
+mod cover_cmd;
 mod ctl;
 mod daemon;
 mod db;
@@ -11,11 +12,13 @@ mod env;
 #[cfg(test)]
 mod fake;
 mod likes;
+mod likes_cmd;
 mod mix;
 mod mixcmd;
 mod mpris;
 mod notify;
 mod playlists;
+mod playlists_cmd;
 mod prefs;
 mod proto;
 mod resolve;
@@ -322,11 +325,13 @@ fn run(cli: Cli) -> Result<ExitCode> {
             } else {
                 likes::Mode::Like
             };
-            Ok(likes::run(&env, star_target(kind, id), mode))
+            Ok(likes_cmd::run(&env, star_target(kind, id), mode))
         }
-        Cmd::Unlike { kind, id } => {
-            Ok(likes::run(&env, star_target(kind, id), likes::Mode::Unlike))
-        }
+        Cmd::Unlike { kind, id } => Ok(likes_cmd::run(
+            &env,
+            star_target(kind, id),
+            likes::Mode::Unlike,
+        )),
         Cmd::Playlist { cmd } => Ok(playlist_cmd(&env, cmd)),
         Cmd::Mix {
             what,
@@ -360,7 +365,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Cmd::Mixes { json } => Ok(emit_values(&env, mixcmd::mixes(&env), json)),
         Cmd::Home { json } => Ok(emit_values(&env, mixcmd::home(&env), json)),
         Cmd::CoverFetch => {
-            cover::fetch_cmd(&env)?;
+            cover_cmd::fetch_cmd(&env)?;
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Daemon => {
@@ -385,9 +390,9 @@ fn playlist_cmd(env: &Env, cmd: PlaylistCmd) -> ExitCode {
             PlaylistCmd::Add {
                 playlist_id,
                 target: t,
-            } => playlists::add_cmd(env, &playlist_id, &target(&t)?),
+            } => playlists_cmd::add_cmd(env, &playlist_id, &target(&t)?),
             PlaylistCmd::Remove { playlist_id, index } => {
-                playlists::remove_cmd(env, &playlist_id, index)
+                playlists_cmd::remove_cmd(env, &playlist_id, index)
             }
             PlaylistCmd::Create { args, prompt } => {
                 let (name, rest) = if prompt {
@@ -403,15 +408,15 @@ fn playlist_cmd(env: &Env, cmd: PlaylistCmd) -> ExitCode {
                 } else {
                     Some(target(rest)?)
                 };
-                playlists::create_cmd(env, &name, t.as_ref())
+                playlists_cmd::create_cmd(env, &name, t.as_ref())
             }
             PlaylistCmd::Rename { playlist_id, name } => {
-                playlists::rename_cmd(env, &playlist_id, &name.join(" "))
+                playlists_cmd::rename_cmd(env, &playlist_id, &name.join(" "))
             }
-            PlaylistCmd::Delete { playlist_id } => playlists::delete_cmd(env, &playlist_id),
+            PlaylistCmd::Delete { playlist_id } => playlists_cmd::delete_cmd(env, &playlist_id),
             PlaylistCmd::Pick { json, target: t } => {
                 let t = target(&t)?;
-                match (playlists::pick_cmd(env, &t), json) {
+                match (playlists_cmd::pick_cmd(env, &t), json) {
                     (Ok(v), true) => {
                         println!("{}", launcher_array(env, v));
                         ExitCode::SUCCESS
@@ -462,7 +467,7 @@ fn emit_values(env: &Env, r: Result<Vec<serde_json::Value>, Failure>, json: bool
 
 /// Tableau JSON du lanceur : `_cover` devient `icon` (chemin local) quand la pochette est là.
 pub fn launcher_array(env: &Env, mut entries: Vec<serde_json::Value>) -> serde_json::Value {
-    cover::apply(env, &mut entries);
+    cover_cmd::apply(env, &mut entries);
     serde_json::Value::Array(entries)
 }
 

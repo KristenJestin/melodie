@@ -6,14 +6,10 @@ use crate::api::{Client, pct_encode};
 use crate::db;
 use crate::env::Env;
 use crate::store::write_atomic;
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use serde_json::Value;
 use std::collections::VecDeque;
-use std::os::fd::AsRawFd;
-use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::mpsc::{RecvTimeoutError, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -89,7 +85,7 @@ fn none_path(env: &Env, id: &str) -> PathBuf {
 }
 
 /// État local d'une pochette pour le lanceur.
-enum Local {
+pub enum Local {
     Have(PathBuf),
     /// Image par défaut du serveur : on garde le glyphe.
     Placeholder,
@@ -97,7 +93,7 @@ enum Local {
 }
 
 /// La vignette si elle existe, sinon la pochette du démon (déjà là, plus grande).
-fn local(env: &Env, id: &str) -> Local {
+pub fn local(env: &Env, id: &str) -> Local {
     let t = thumb_path(env, id);
     if t.is_file() {
         return Local::Have(t);
@@ -139,7 +135,7 @@ fn download_thumb_with(env: &Env, client: &Client, id: &str, placeholder: &str) 
 
 /// Télécharge `ids` en parallèle. Chaque identifiant terminé (réussi ou non) est
 /// signalé sur `done` ; l'appelant peut cesser d'attendre quand il veut.
-fn spawn_downloads(
+pub fn spawn_downloads(
     env: &Env,
     client: Arc<Client>,
     ids: Vec<String>,
@@ -161,23 +157,6 @@ fn spawn_downloads(
             }
         });
     }
-}
-
-/// Remplace `_cover` par `icon` (chemin local) dans les entrées du lanceur.
-/// Version de production : trousseau lu seulement s'il manque des vignettes,
-/// reste du téléchargement confié à un processus détaché.
-pub fn apply(env: &Env, entries: &mut [Value]) {
-    apply_with(
-        env,
-        entries,
-        BUDGET,
-        || crate::state::open_client(env).ok(),
-        |ids| {
-            if let Err(e) = spawn_background(ids) {
-                eprintln!("melodie : pochettes en arrière-plan : {e:#}");
-            }
-        },
-    );
 }
 
 /// Cœur de `apply`, avec le client et le lancement du reste injectés (tests).
@@ -235,75 +214,6 @@ pub fn apply_with(
             );
         }
     }
-}
-
-/// Lance `melodie cover-fetch` détaché ; les identifiants passent par son
-/// entrée standard et le processus relit lui-même le trousseau (aucun jeton
-/// dans les arguments ni l'environnement).
-fn spawn_background(ids: &[String]) -> Result<()> {
-    let exe = std::env::current_exe().context("chemin du programme")?;
-    let mut c = Command::new(exe);
-    c.arg("cover-fetch")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    // SAFETY : `setsid` est sûr entre `fork` et `exec`.
-    unsafe {
-        c.pre_exec(|| {
-            libc::setsid();
-            Ok(())
-        });
-    }
-    let mut child = c.spawn().context("lancement de cover-fetch")?;
-    if let Some(mut stdin) = child.stdin.take() {
-        use std::io::Write;
-        let _ = stdin.write_all(ids.join("\n").as_bytes());
-    }
-    // Pas d'attente : le processus se termine seul.
-    Ok(())
-}
-
-/// Sous-commande cachée `cover-fetch` : télécharge les vignettes lues sur l'entrée
-/// standard. Un seul à la fois (verrou), sinon sortie immédiate : les pochettes
-/// manquantes seront redemandées à la frappe suivante.
-pub fn fetch_cmd(env: &Env) -> Result<()> {
-    let dir = db::cache_dir(env).join("covers");
-    std::fs::create_dir_all(&dir).with_context(|| format!("création de {}", dir.display()))?;
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .mode(0o600)
-        .open(dir.join(".fetch.lock"))?;
-    // SAFETY : descripteur valide, détenu par `lock`.
-    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        return Ok(());
-    }
-    let mut input = String::new();
-    std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)?;
-    let ids: Vec<String> = input
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .filter(|id| matches!(local(env, id), Local::Missing))
-        .map(String::from)
-        .collect();
-    if ids.is_empty() {
-        return Ok(());
-    }
-    let client = match crate::state::open_client(env) {
-        Ok(c) => Arc::new(c),
-        Err(_) => return Ok(()),
-    };
-    let (tx, rx) = channel();
-    let n = ids.len();
-    spawn_downloads(env, client, ids, tx);
-    for _ in 0..n {
-        if rx.recv_timeout(Duration::from_secs(30)).is_err() {
-            break;
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
