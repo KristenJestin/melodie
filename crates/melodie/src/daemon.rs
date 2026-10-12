@@ -181,11 +181,17 @@ fn new_mpv(volume: u32) -> Result<Mpv> {
     .map_err(|e| anyhow::anyhow!("initialisation de libmpv : {e}"))
 }
 
-/// Fil des événements de mpv, sur un client séparé.
-fn spawn_events(mpv: &Mpv, tx: Sender<Msg>) -> Result<()> {
-    let ev = mpv
-        .create_client(Some("melodie-events"))
-        .map_err(|e| anyhow::anyhow!("client mpv : {e}"))?;
+/// The event thread waits on the main handle, not on a second client: libmpv2 6.0.0
+/// `create_client` frees the name before mpv reads it, and when that memory starts with a zero
+/// byte mpv refuses the client (NULL), which the crate turns into a `NonNull` unchecked: an
+/// abort, or undefined behaviour in release. Only this thread calls `mpv_wait_event` on it.
+fn event_handle(mpv: &Arc<Mpv>) -> Arc<Mpv> {
+    mpv.clone()
+}
+
+/// mpv's event thread.
+fn spawn_events(mpv: &Arc<Mpv>, tx: Sender<Msg>) -> Result<()> {
+    let ev = event_handle(mpv);
     for (id, name, fmt) in [
         (1, "playlist-pos", Format::Int64),
         (2, "pause", Format::Flag),
@@ -1323,4 +1329,39 @@ pub fn run(env: &Env) -> Result<()> {
     dlog!("arrêt du démon");
     let _ = std::io::stderr().flush();
     std::process::exit(0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn null_mpv() -> Arc<Mpv> {
+        Arc::new(
+            Mpv::with_initializer(|init| {
+                init.set_option("vid", "no")?;
+                init.set_option("ao", "null")?;
+                Ok(())
+            })
+            .expect("libmpv"),
+        )
+    }
+
+    /// libmpv2 6.0.0 frees the name it gives `mpv_create_client` before mpv reads it: mpv
+    /// named the client from freed memory, and refused it (NULL, then an abort) whenever
+    /// that memory began with a zero byte.
+    #[test]
+    fn the_event_handle_is_not_named_from_freed_memory() {
+        let mpv = null_mpv();
+        let ev = event_handle(&mpv);
+        // SAFETY: the handle is alive, and mpv returns its own NUL-terminated copy of the name.
+        let name = unsafe {
+            std::ffi::CStr::from_ptr(libmpv2_sys::mpv_client_name(ev.ctx.as_ptr()))
+                .to_string_lossy()
+                .into_owned()
+        };
+        assert!(
+            name == "main" || name == "melodie_events",
+            "client named {name:?}"
+        );
+    }
 }
