@@ -258,10 +258,6 @@ enum Cmd {
     /// Démon de lecture (lancé par `play` et `queue`)
     #[command(hide = true)]
     Daemon,
-    /// Reprend une installation de l'ancien lecteur (poste music) : réglages, copie, secret
-    // Hidden: run once, at the switch from the old player (see the README).
-    #[command(hide = true)]
-    ImportPoste,
 }
 
 fn main() -> ExitCode {
@@ -281,7 +277,6 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Cmd::Login => login(&env),
         Cmd::Logout => logout(&env),
         Cmd::Status => status(&env),
-        Cmd::ImportPoste => import_poste(&env),
         Cmd::Sync { full, background } => {
             if background {
                 autosync::run_background(&env, full)?;
@@ -600,36 +595,6 @@ fn logout(env: &Env) -> Result<ExitCode> {
         println!("Déjà déconnecté (aucun secret dans le trousseau)");
     } else {
         println!("Déconnecté : secret supprimé du trousseau");
-    }
-    Ok(ExitCode::SUCCESS)
-}
-
-fn import_poste(env: &Env) -> Result<ExitCode> {
-    use melodie_core::migrate::{self, Outcome};
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .filter(|v| !v.is_empty())
-        .map(std::path::PathBuf::from);
-    let done = migrate::import(env, runtime.as_deref())?;
-    if done.is_empty() {
-        println!("Rien à importer : aucun fichier ni secret de l'ancien lecteur à reprendre");
-    }
-    for o in &done {
-        match o {
-            Outcome::Moved { from, to } => {
-                println!("Déplacé : {} → {}", from.display(), to.display())
-            }
-            Outcome::Kept { from, to } => println!(
-                "Gardé : {} existe déjà ; {} laissé en place",
-                to.display(),
-                from.display()
-            ),
-            Outcome::SecretMoved => {
-                println!("Déplacé : secret du trousseau (service poste-music → melodie)")
-            }
-            Outcome::SecretKept => println!(
-                "Gardé : Mélodie a déjà un secret dans le trousseau ; celui de poste-music laissé en place"
-            ),
-        }
     }
     Ok(ExitCode::SUCCESS)
 }
