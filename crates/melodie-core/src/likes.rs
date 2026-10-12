@@ -69,7 +69,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let env = Env::with_home(d.path());
         let creds = Creds {
-            u: "kris".into(),
+            u: "alice".into(),
             t: token("sesame", "c19b2d"),
             s: "c19b2d".into(),
         };

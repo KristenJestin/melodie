@@ -375,7 +375,7 @@ mod tests {
 
     #[test]
     fn creds_depuis_mot_de_passe() {
-        let c = Creds::from_password("kris", "sesame").unwrap();
+        let c = Creds::from_password("alice", "sesame").unwrap();
         assert!(c.s.len() >= 12);
         assert_eq!(c.t, token("sesame", &c.s));
         assert_eq!(c.t.len(), 32);
@@ -415,13 +415,13 @@ mod tests {
 
     #[test]
     fn requete_sans_fuite() {
-        let creds = Creds::from_password("kris", "sesame").unwrap();
+        let creds = Creds::from_password("alice", "sesame").unwrap();
         let client = Client::new("http://h:4533/", creds.clone());
         let req = client.request("search3", &[("query", String::new())]);
         assert!(req.full_url().contains(&creds.t));
         assert!(
             req.full_url()
-                .starts_with("http://h:4533/rest/search3.view?u=kris&t=")
+                .starts_with("http://h:4533/rest/search3.view?u=alice&t=")
         );
         assert!(req.full_url().contains("&v=1.16.1&c=melodie&f=json&query="));
         for text in [
@@ -438,12 +438,12 @@ mod tests {
 
     #[test]
     fn url_de_flux_sans_fuite() {
-        let creds = Creds::from_password("kr is", "sesame").unwrap();
+        let creds = Creds::from_password("al ice", "sesame").unwrap();
         let client = Client::new("http://h:4533/", creds.clone());
         let url = client.stream_url("a b&c");
         let raw = url.expose();
         assert!(
-            raw.starts_with("http://h:4533/rest/stream.view?id=a%20b%26c&format=raw&u=kr%20is&t=")
+            raw.starts_with("http://h:4533/rest/stream.view?id=a%20b%26c&format=raw&u=al%20ice&t=")
         );
         assert!(raw.contains(&creds.t) && raw.contains(&creds.s));
         assert!(raw.ends_with("&v=1.16.1&c=melodie"));

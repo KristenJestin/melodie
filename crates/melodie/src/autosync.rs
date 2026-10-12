@@ -261,7 +261,7 @@ mod tests {
         let env = Env::with_home(d.path());
         Settings {
             url: Some("http://127.0.0.1:1".into()),
-            user: Some("kris".into()),
+            user: Some("alice".into()),
         }
         .save(&env)
         .unwrap();

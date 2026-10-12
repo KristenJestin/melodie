@@ -111,12 +111,12 @@ impl Sandbox {
             std::fs::create_dir_all(&conf).unwrap();
             std::fs::write(
                 conf.join("config.toml"),
-                format!("url = \"{}\"\nuser = \"kris\"\n", sb.fake.url),
+                format!("url = \"{}\"\nuser = \"alice\"\n", sb.fake.url),
             )
             .unwrap();
             std::fs::write(
                 sb.secret_file(),
-                json!({"u":"kris","t":TOKEN,"s":SALT}).to_string(),
+                json!({"u":"alice","t":TOKEN,"s":SALT}).to_string(),
             )
             .unwrap();
         }

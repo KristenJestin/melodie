@@ -235,7 +235,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let env = Env::with_home(d.path());
         let creds = Creds {
-            u: "kris".into(),
+            u: "alice".into(),
             t: token("sesame", "c19b2d"),
             s: "c19b2d".into(),
         };
@@ -327,7 +327,7 @@ mod tests {
         let id = create(
             &client,
             Some(&conn),
-            "kris",
+            "alice",
             "Ma liste",
             &[info("s2", 150)],
             1_790_000_000,
@@ -373,7 +373,7 @@ mod tests {
                 .all(|h| h.kind != Kind::Playlist)
         );
         // Playlist vide
-        create(&client, Some(&conn), "kris", "Vide", &[], 0).unwrap();
+        create(&client, Some(&conn), "alice", "Vide", &[], 0).unwrap();
         assert_eq!(counts(&conn, "p9"), (0, 0));
     }
 
@@ -404,7 +404,7 @@ mod tests {
             [],
         )
         .unwrap();
-        let v = pick(&conn, "kris", &Target::Track("s1".into())).unwrap();
+        let v = pick(&conn, "alice", &Target::Track("s1".into())).unwrap();
         assert_eq!(v.len(), 2, "playlist d'un autre utilisateur écartée");
         assert_eq!(v[0]["name"], "Nouvelle playlist…");
         assert_eq!(v[0]["icon"], "󰐕");
@@ -419,9 +419,9 @@ mod tests {
             "melodie playlist add p1 track s1"
         );
         assert_eq!(v[1]["subtitle"], "Playlist · 42 tracks · 2 h 05");
-        let v = pick(&conn, "kris", &Target::Current).unwrap();
+        let v = pick(&conn, "alice", &Target::Current).unwrap();
         assert_eq!(v[1]["action"]["command"], "melodie playlist add p1 current");
-        let v = pick(&conn, "kris", &Target::Album("al1".into())).unwrap();
+        let v = pick(&conn, "alice", &Target::Album("al1".into())).unwrap();
         assert!(
             v[0]["action"]["command"]
                 .as_str()

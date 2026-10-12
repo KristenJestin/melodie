@@ -219,7 +219,7 @@ impl State {
                 }}))
             }
             "getPlaylists" => ok(json!({"playlists": {"playlist": [
-                {"id":"p1","name":"Daft Mix","songCount":42,"duration":7500,"changed":"2026-10-01T10:00:00Z","owner":"kris","coverArt":"pl-p1"}]}})),
+                {"id":"p1","name":"Daft Mix","songCount":42,"duration":7500,"changed":"2026-10-01T10:00:00Z","owner":"alice","coverArt":"pl-p1"}]}})),
             "getStarred2" => ok(json!({"starred2": {"song": [
                 {"id":"s1","starred":"2026-09-01T00:00:00Z"}]}})),
             "getAlbumList2" => ok(json!({"albumList2": {"album": [
@@ -258,7 +258,7 @@ impl State {
                 let n = params(query, "songId").len();
                 ok(
                     json!({"playlist": {"id": "p9", "name": param(query, "name").unwrap_or_default(),
-                    "songCount": n, "duration": n * 200, "owner": "kris",
+                    "songCount": n, "duration": n * 200, "owner": "alice",
                     "changed": "2026-10-08T10:00:00Z"}}),
                 )
             }

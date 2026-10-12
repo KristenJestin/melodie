@@ -101,7 +101,7 @@ mod tests {
             song_in("h0", "al2"),
         ];
         let creds = Creds {
-            u: "kris".into(),
+            u: "alice".into(),
             t: "tok".into(),
             s: "sel".into(),
         };

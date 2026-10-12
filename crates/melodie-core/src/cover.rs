@@ -224,14 +224,14 @@ mod tests {
     fn noms_et_adresses() {
         assert_eq!(file_name("mf-ab12_65f"), "mf-ab12_65f.img");
         assert_eq!(file_name("../../etc/x y"), "______etc_x_y.img");
-        let env = Env::with_home("/home/k");
+        let env = Env::with_home("/home/alice");
         assert_eq!(
             path(&env, "al-1"),
-            PathBuf::from("/home/k/.cache/melodie/covers/al-1.img")
+            PathBuf::from("/home/alice/.cache/melodie/covers/al-1.img")
         );
         assert_eq!(
-            file_url(Path::new("/home/k m/.cache/a.img")),
-            "file:///home/k%20m/.cache/a.img"
+            file_url(Path::new("/home/alice m/.cache/a.img")),
+            "file:///home/alice%20m/.cache/a.img"
         );
     }
 
@@ -244,7 +244,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let env = Env::with_home(d.path());
         let creds = Creds {
-            u: "kris".into(),
+            u: "alice".into(),
             t: token("sesame", "c19b2d"),
             s: "c19b2d".into(),
         };

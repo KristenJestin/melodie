@@ -174,12 +174,12 @@ mod tests {
         assert!(Settings::default().login().is_none());
         let s = Settings {
             url: Some("http://h:4533".into()),
-            user: Some("kris".into()),
+            user: Some("alice".into()),
         };
         s.save(&env).unwrap();
         let back = Settings::load(&env).unwrap();
         assert_eq!(back, s);
-        assert_eq!(back.login(), Some(("http://h:4533", "kris")));
+        assert_eq!(back.login(), Some(("http://h:4533", "alice")));
     }
 
     #[test]
