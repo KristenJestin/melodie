@@ -47,7 +47,9 @@ What happens to the current track:
 - `entry`: a number unique for the daemon's life, kept when the track moves. The same track
   queued twice gives two entries; use `entry` to tell rows apart and to animate a move.
 - `duration` in seconds; `cover` is the local cover file once it is downloaded, else null;
-  `cover_id` is the server's cover id. A queue never holds a stream address.
+  `cover_id` is the server's cover id. The daemon downloads the cover of the current track only;
+  the others are there if something else (the launcher, an earlier play) fetched them. A queue
+  never holds a stream address.
 
 ## The event stream
 
@@ -73,7 +75,7 @@ difference: applying one twice is harmless.
 |---|---|---|
 | `snapshot` | `now`, `queue`, `connection` | first, once per connection |
 | `queue` | `queue` (`<queue>`) | the tracks of the queue changed (added, moved, removed, replaced, cleared), or a move changed the current index |
-| `track` | `index` (number or null), `track` (a queue entry or null) | another track became current, or none |
+| `track` | `index` (number or null), `track` (a queue entry or null) | another track became current, or none; sent again when the cover of the current track has been downloaded (`cover` was null) |
 | `state` | `state` (`playing`, `paused`, `stopped`), `position` (seconds) | playing, paused or stopped |
 | `position` | `position`, `duration` (seconds) | while playing, at most once a second; never while paused or stopped |
 | `volume` | `volume` (0 to 1.3; 1 = 100 %) | the volume changed (command line, MPRIS, socket) |
