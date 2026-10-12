@@ -4,3 +4,5 @@
 pub mod launch;
 pub mod link;
 pub mod model;
+pub mod theme;
+pub mod tint;
