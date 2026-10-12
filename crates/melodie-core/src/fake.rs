@@ -28,6 +28,8 @@ pub struct State {
     pub stop: AtomicBool,
     /// Durée en secondes des flux servis.
     pub stream_secs: AtomicUsize,
+    /// Stream length in seconds for the tracks that must differ from `stream_secs`, by song id.
+    pub stream_secs_of: Mutex<HashMap<String, usize>>,
     pub n_requests: AtomicUsize,
     /// Délai en millisecondes avant chaque pochette servie.
     pub cover_delay_ms: AtomicUsize,
@@ -103,6 +105,7 @@ impl Fake {
             tokens_seen: Mutex::new(Vec::new()),
             stop: AtomicBool::new(false),
             stream_secs: AtomicUsize::new(3),
+            stream_secs_of: Mutex::new(HashMap::new()),
             n_requests: AtomicUsize::new(0),
             cover_delay_ms: AtomicUsize::new(0),
             hold: AtomicBool::new(false),
@@ -309,7 +312,9 @@ impl State {
             return (200, "application/json", body.into_bytes());
         }
         if method == "stream" {
-            let secs = self.stream_secs.load(Ordering::SeqCst) as u32;
+            let own = param(query, "id")
+                .and_then(|id| self.stream_secs_of.lock().unwrap().get(&id).copied());
+            let secs = own.unwrap_or_else(|| self.stream_secs.load(Ordering::SeqCst)) as u32;
             (200, "audio/wav", wav_silence(secs))
         } else {
             let ms = self.cover_delay_ms.load(Ordering::SeqCst) as u64;
