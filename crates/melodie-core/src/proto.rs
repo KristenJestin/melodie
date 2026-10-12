@@ -41,10 +41,32 @@ pub enum Request {
         #[serde(default)]
         shuffle: bool,
     },
-    /// Ajoute à la fin de la file (lance la lecture si rien ne joue).
+    /// Adds to the queue: at the end, or right after the current track with
+    /// `next` (starts playing if nothing plays).
     Queue {
         tracks: Vec<TrackInfo>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        next: bool,
     },
+    /// The whole queue (answer: `queue`).
+    QueueList,
+    /// Plays the track at `index` (from 0).
+    QueuePlay {
+        index: usize,
+    },
+    /// Moves the track at `from` so that it ends up at `to` (both from 0).
+    QueueMove {
+        from: usize,
+        to: usize,
+    },
+    /// Removes the track at `index` (from 0).
+    QueueRemove {
+        index: usize,
+    },
+    /// Removes every track after the current one.
+    QueueClearAfter,
+    /// Turns the connection into the event stream (see `docs/events.md`).
+    Watch,
     Toggle,
     Pause,
     Resume,
@@ -113,6 +135,72 @@ pub struct Now {
     pub starred: bool,
 }
 
+/// One track of the queue, as a client shows it. Never a stream address.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct QueueEntry {
+    /// Number of the entry, unique for the daemon's life and kept when it moves
+    /// (the same track queued twice gives two entries).
+    pub entry: u64,
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub artist: String,
+    #[serde(default)]
+    pub album: String,
+    #[serde(default)]
+    pub album_artist: String,
+    /// Seconds.
+    #[serde(default)]
+    pub duration: f64,
+    #[serde(default)]
+    pub quality: String,
+    /// Local path of the cover, if it is already there.
+    #[serde(default)]
+    pub cover: Option<String>,
+    /// Cover id on the server (`coverArt`).
+    #[serde(default)]
+    pub cover_id: Option<String>,
+    #[serde(default)]
+    pub starred: bool,
+}
+
+/// The queue: every track, and the index (from 0) of the current one.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct QueueView {
+    pub current: Option<usize>,
+    pub tracks: Vec<QueueEntry>,
+}
+
+/// One line of the event stream (`watch`). Each event carries the new value,
+/// never a difference: applying one twice is harmless.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Event {
+    /// Always first: everything a client needs to start from.
+    Snapshot {
+        now: Now,
+        queue: QueueView,
+        connection: String,
+    },
+    /// The queue changed (tracks or the index of the current one).
+    Queue { queue: QueueView },
+    /// Another track became current, or none (`index` and `track` null).
+    Track {
+        index: Option<usize>,
+        track: Option<QueueEntry>,
+    },
+    /// `playing`, `paused` or `stopped`, with the position in seconds.
+    State { state: String, position: f64 },
+    /// Position while playing, at most once a second.
+    Position { position: f64, duration: f64 },
+    /// From 0 to 1.3 (1 = 100 %).
+    Volume { volume: f64 },
+    /// A track became a favourite or stopped being one.
+    Starred { id: String, starred: bool },
+    /// `ok`, `unreachable` or `auth-refused`.
+    Connection { state: String },
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Response {
     pub ok: bool,
@@ -120,6 +208,8 @@ pub struct Response {
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub now: Option<Now>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue: Option<QueueView>,
 }
 
 impl Response {
@@ -134,7 +224,15 @@ impl Response {
         Self {
             ok: true,
             now: Some(now),
-            error: None,
+            ..Self::default()
+        }
+    }
+
+    pub fn queue(queue: QueueView) -> Self {
+        Self {
+            ok: true,
+            queue: Some(queue),
+            ..Self::default()
         }
     }
 
@@ -142,7 +240,7 @@ impl Response {
         Self {
             ok: false,
             error: Some(msg.into()),
-            now: None,
+            ..Self::default()
         }
     }
 }
@@ -190,7 +288,20 @@ mod tests {
                 tracks: vec![t.clone()],
                 shuffle: true,
             },
-            Request::Queue { tracks: vec![t] },
+            Request::Queue {
+                tracks: vec![t.clone()],
+                next: false,
+            },
+            Request::Queue {
+                tracks: vec![t],
+                next: true,
+            },
+            Request::QueueList,
+            Request::QueuePlay { index: 2 },
+            Request::QueueMove { from: 0, to: 3 },
+            Request::QueueRemove { index: 1 },
+            Request::QueueClearAfter,
+            Request::Watch,
             Request::Toggle,
             Request::Pause,
             Request::Resume,
@@ -232,6 +343,20 @@ mod tests {
             }
         );
         assert!(decode::<Request>(r#"{"cmd":"explose"}"#).is_err());
+        // a request written before `next` existed still adds at the end
+        let q: Request = decode(r#"{"cmd":"queue","tracks":[]}"#).unwrap();
+        assert_eq!(
+            q,
+            Request::Queue {
+                tracks: vec![],
+                next: false
+            }
+        );
+        assert_eq!(
+            encode(&Request::QueueMove { from: 1, to: 0 }).unwrap(),
+            r#"{"cmd":"queue_move","from":1,"to":0}"#
+        );
+        assert_eq!(encode(&Request::Watch).unwrap(), r#"{"cmd":"watch"}"#);
         assert!(decode::<Request>("pas du json").is_err());
     }
 
@@ -250,6 +375,52 @@ mod tests {
         };
         let back: Response = decode(&encode(&Response::now(now.clone())).unwrap()).unwrap();
         assert_eq!(back.now, Some(now));
+    }
+
+    #[test]
+    fn events_are_one_line_tagged_by_type() {
+        let e = Event::Position {
+            position: 1.5,
+            duration: 3.0,
+        };
+        assert_eq!(
+            encode(&e).unwrap(),
+            r#"{"type":"position","position":1.5,"duration":3.0}"#
+        );
+        let e = Event::Track {
+            index: None,
+            track: None,
+        };
+        assert_eq!(
+            encode(&e).unwrap(),
+            r#"{"type":"track","index":null,"track":null}"#
+        );
+        let q = Event::Queue {
+            queue: QueueView {
+                current: Some(0),
+                tracks: vec![QueueEntry {
+                    entry: 1,
+                    id: "t1".into(),
+                    title: "A\nB".into(),
+                    ..QueueEntry::default()
+                }],
+            },
+        };
+        let line = encode(&q).unwrap();
+        assert!(!line.contains('\n'));
+        assert_eq!(decode::<Event>(&line).unwrap(), q);
+        // a client ignores fields it does not know
+        let v: Event = decode(r#"{"type":"volume","volume":0.5,"later":1}"#).unwrap();
+        assert_eq!(v, Event::Volume { volume: 0.5 });
+    }
+
+    #[test]
+    fn queue_answer() {
+        let r = Response::queue(QueueView::default());
+        assert_eq!(
+            encode(&r).unwrap(),
+            r#"{"ok":true,"queue":{"current":null,"tracks":[]}}"#
+        );
     }
 
     #[test]

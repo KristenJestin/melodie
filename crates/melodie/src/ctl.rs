@@ -6,11 +6,12 @@ use anyhow::{Context, Result, anyhow, bail};
 use melodie_core::api::Client;
 use melodie_core::env::Env;
 use melodie_core::prefs::{self, Prefs};
-use melodie_core::proto::{self, Now, Request, Response};
+use melodie_core::proto::{self, Now, QueueView, Request, Response};
 use melodie_core::resolve;
 use melodie_core::search::Kind;
 use melodie_core::state::{self, Failure};
 use melodie_core::track::clock;
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, ExitCode, Stdio};
@@ -159,8 +160,16 @@ pub fn tell_starred(id: &str, starred: bool) {
 }
 
 /// `play` et `queue` : prépare la liste, démarre le démon si besoin, l'envoie.
-pub fn play_or_queue(env: &Env, kind: Kind, id: &str, shuffle: bool, queue: bool) -> ExitCode {
-    match try_play_or_queue(env, kind, id, shuffle, queue) {
+/// `next` puts the tracks right after the current one instead of at the end.
+pub fn play_or_queue(
+    env: &Env,
+    kind: Kind,
+    id: &str,
+    shuffle: bool,
+    queue: bool,
+    next: bool,
+) -> ExitCode {
+    match try_play_or_queue(env, kind, id, shuffle, queue, next) {
         Ok(n) => {
             announce(n, queue);
             ExitCode::SUCCESS
@@ -206,10 +215,11 @@ pub fn deliver(
     tracks: Vec<melodie_core::track::TrackInfo>,
     shuffle: bool,
     queue: bool,
+    next: bool,
 ) -> Result<usize, Failure> {
     let n = tracks.len();
     let req = if queue {
-        Request::Queue { tracks }
+        Request::Queue { tracks, next }
     } else {
         Request::Play { tracks, shuffle }
     };
@@ -233,11 +243,12 @@ fn try_play_or_queue(
     id: &str,
     shuffle: bool,
     queue: bool,
+    next: bool,
 ) -> Result<usize, Failure> {
     let (client, ready) = prepare(env)?;
     let result = resolve::resolve(&client, kind, id);
     state::record(env, &result);
-    deliver(env, ready, result?, shuffle, queue)
+    deliver(env, ready, result?, shuffle, queue, next)
 }
 
 /// `mix` : envoie une liste déjà calculée localement.
@@ -247,7 +258,7 @@ pub fn play_list(
     queue: bool,
 ) -> Result<usize, Failure> {
     let (_client, ready) = prepare(env)?;
-    let n = deliver(env, ready, tracks, false, queue)?;
+    let n = deliver(env, ready, tracks, false, queue, false)?;
     announce(n, queue);
     Ok(n)
 }
@@ -389,6 +400,87 @@ pub fn now(json: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Text of `queue --list`.
+pub fn render_queue(q: &QueueView) -> String {
+    if q.tracks.is_empty() {
+        return "The queue is empty\n".to_string();
+    }
+    let width = q.tracks.len().to_string().len();
+    let mut out = String::new();
+    for (i, t) in q.tracks.iter().enumerate() {
+        let mark = if q.current == Some(i) { "▶" } else { " " };
+        let mut line = format!("{mark} {:>width$}. {}", i + 1, t.title);
+        if !t.artist.is_empty() {
+            line.push_str(&format!(" · {}", t.artist));
+        }
+        line.push_str(&format!("  {}\n", clock(t.duration)));
+        out.push_str(&line);
+    }
+    out
+}
+
+/// `queue --list`: never starts the daemon; without one, an empty queue.
+pub fn queue_list(json: bool) -> ExitCode {
+    let q = match connect() {
+        None => QueueView::default(),
+        Some(stream) => match exchange(&stream, &Request::QueueList) {
+            Ok(Response { queue: Some(q), .. }) => q,
+            Ok(r) => {
+                eprintln!("{}", r.error.unwrap_or_else(|| "réponse inattendue".into()));
+                return ExitCode::from(1);
+            }
+            Err(e) => {
+                eprintln!("melodie : {e:#}");
+                return ExitCode::from(1);
+            }
+        },
+    };
+    if json {
+        match serde_json::to_string(&q) {
+            Ok(s) => println!("{s}"),
+            Err(e) => {
+                eprintln!("melodie : {e}");
+                return ExitCode::from(3);
+            }
+        }
+    } else {
+        print!("{}", render_queue(&q));
+    }
+    ExitCode::SUCCESS
+}
+
+/// Line `watch` prints when there is no daemon to follow.
+const GONE: &str = r#"{"type":"gone"}"#;
+/// How often `watch` looks for a daemon while there is none.
+const WATCH_RETRY: Duration = Duration::from_millis(500);
+
+/// `watch`: prints the daemon's event stream as it comes. Never starts the
+/// daemon: while there is none, says so once and waits for one.
+pub fn watch() -> ExitCode {
+    let mut out = std::io::stdout().lock();
+    let mut said_gone = false;
+    loop {
+        if let Some(stream) = connect()
+            && (&stream).write_all(b"{\"cmd\":\"watch\"}\n").is_ok()
+        {
+            for line in BufReader::new(&stream).lines() {
+                let Ok(line) = line else { break };
+                if writeln!(out, "{line}").and_then(|_| out.flush()).is_err() {
+                    return ExitCode::SUCCESS;
+                }
+                said_gone = false;
+            }
+        }
+        if !said_gone {
+            if writeln!(out, "{GONE}").and_then(|_| out.flush()).is_err() {
+                return ExitCode::SUCCESS;
+            }
+            said_gone = true;
+        }
+        std::thread::sleep(WATCH_RETRY);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -417,6 +509,26 @@ mod tests {
         assert_eq!(
             render_now(&n),
             "En pause : Titre\n  Artiste · Album\n  1:23 / 3:45 · MP3 · 320 kbps\n  Morceau 2 sur 3\n"
+        );
+    }
+
+    #[test]
+    fn queue_text_marks_the_current_track() {
+        use melodie_core::proto::QueueEntry;
+        assert_eq!(render_queue(&QueueView::default()), "The queue is empty\n");
+        let t = |title: &str, artist: &str| QueueEntry {
+            title: title.into(),
+            artist: artist.into(),
+            duration: 225.0,
+            ..QueueEntry::default()
+        };
+        let q = QueueView {
+            current: Some(1),
+            tracks: vec![t("Un", "Artiste"), t("Deux", "")],
+        };
+        assert_eq!(
+            render_queue(&q),
+            "  1. Un · Artiste  3:45\n▶ 2. Deux  3:45\n"
         );
     }
 }

@@ -1210,3 +1210,556 @@ fn volume_defaut_commande_mpris_et_memoire() {
     });
     assert!((sb.now()["volume"].as_f64().unwrap() - 0.7).abs() < 1e-9);
 }
+
+// ---- the queue and the event stream (issue #5) ----
+
+/// Five tracks of five minutes in album `al1`: nothing ends on its own during a test.
+fn long_album(sb: &Sandbox) {
+    sb.fake.state.stream_secs.store(300, Ordering::SeqCst);
+    *sb.fake.state.songs.lock().unwrap() =
+        (1..=5).map(|i| song(i, json!({"duration": 300}))).collect();
+}
+
+/// `melodie watch` running in the background; its lines are kept with their arrival time.
+struct Watch {
+    child: std::process::Child,
+    lines: Arc<Mutex<Vec<(Instant, String)>>>,
+}
+
+impl Sandbox {
+    fn watch(&self) -> Watch {
+        let mut child = self
+            .cmd(&["watch"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let out = child.stdout.take().unwrap();
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let sink = lines.clone();
+        std::thread::spawn(move || {
+            for l in BufReader::new(out).lines() {
+                let Ok(l) = l else { return };
+                sink.lock().unwrap().push((Instant::now(), l));
+            }
+        });
+        Watch { child, lines }
+    }
+
+    fn queue_list(&self) -> Value {
+        serde_json::from_str(&self.ok(&["queue", "--list", "--json"])).unwrap()
+    }
+
+    /// One request on the socket, as a client other than the command line would send it.
+    fn request(&self, req: Value) -> Value {
+        let s = UnixStream::connect(self.socket()).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+        (&s).write_all(format!("{req}\n").as_bytes()).unwrap();
+        let mut l = String::new();
+        BufReader::new(&s).read_line(&mut l).unwrap();
+        serde_json::from_str(&l).unwrap()
+    }
+
+    fn play_long_album(&self) {
+        long_album(self);
+        self.ok(&["play", "album", "al1"]);
+        wait_until(5, "lecture", || {
+            self.try_now()
+                .is_some_and(|v| v["state"] == "playing" && v["id"] == "t1")
+        });
+    }
+}
+
+impl Watch {
+    fn raw(&self) -> Vec<String> {
+        self.lines
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, l)| l.clone())
+            .collect()
+    }
+
+    fn events(&self) -> Vec<Value> {
+        self.raw()
+            .iter()
+            .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("not JSON ({e}): {l}")))
+            .collect()
+    }
+
+    fn of_type(&self, t: &str) -> Vec<Value> {
+        self.events()
+            .into_iter()
+            .filter(|e| e["type"] == t)
+            .collect()
+    }
+
+    fn wait_for(&self, what: &str, f: impl Fn(&[Value]) -> bool) {
+        wait_until(5, what, || f(&self.events()));
+    }
+
+    /// Waits for one more event of this type than `before`.
+    fn wait_count(&self, t: &str, n: usize) {
+        wait_until(5, &format!("{n} events {t}"), || self.of_type(t).len() >= n);
+    }
+}
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn ids(queue: &Value) -> Vec<String> {
+    queue["tracks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+fn ids_of(list: &[&str]) -> Vec<String> {
+    list.iter().map(|s| s.to_string()).collect()
+}
+
+/// No stream address, token or salt in what a client can read.
+fn assert_no_secret(text: &str) {
+    for bad in [TOKEN, SALT, "stream.view", "t=", "s=", "http"] {
+        assert!(!text.contains(bad), "{bad:?} in {text}");
+    }
+}
+
+#[test]
+fn each_queue_change_is_listed_and_announced_in_order() {
+    let sb = Sandbox::new(true);
+    sb.play_long_album();
+    let w = sb.watch();
+    w.wait_count("snapshot", 1);
+
+    // The stream starts with a snapshot of everything.
+    let first = &w.events()[0];
+    assert_eq!(first["type"], "snapshot", "{first}");
+    assert_eq!(first["now"]["id"], "t1");
+    assert_eq!(first["now"]["state"], "playing");
+    assert_eq!(first["queue"]["current"], 0);
+    assert_eq!(ids(&first["queue"]), ["t1", "t2", "t3", "t4", "t5"]);
+    assert_eq!(first["connection"], "ok");
+
+    // The listing, as a client shows it.
+    let list = sb.queue_list();
+    assert_eq!(list["current"], 0);
+    let t = &list["tracks"][1];
+    assert_eq!(t["id"], "t2");
+    assert_eq!(t["title"], "Titre 2");
+    assert_eq!(t["artist"], "Daft Punk");
+    assert_eq!(t["album"], "Discovery");
+    assert_eq!(t["duration"], 300.0);
+    assert_eq!(t["cover_id"], "al-al1");
+    assert!(t["entry"].as_u64().is_some());
+    let text = sb.ok(&["queue", "--list"]);
+    assert!(
+        text.contains("Titre 1") && text.contains("Titre 5"),
+        "{text}"
+    );
+
+    // Each change, as the command line makes it (positions from 1), then as listed.
+    let steps: [(&[&str], &[&str], Option<u64>); 5] = [
+        (
+            &["--move", "4", "2"],
+            &["t1", "t4", "t2", "t3", "t5"],
+            Some(0),
+        ),
+        (&["--remove", "3"], &["t1", "t4", "t3", "t5"], Some(0)),
+        (
+            &["--next", "track", "t2"],
+            &["t1", "t2", "t4", "t3", "t5"],
+            Some(0),
+        ),
+        (
+            &["track", "t2"],
+            &["t1", "t2", "t4", "t3", "t5", "t2"],
+            Some(0),
+        ),
+        (
+            &["--play", "3"],
+            &["t1", "t2", "t4", "t3", "t5", "t2"],
+            Some(2),
+        ),
+    ];
+    for (args, expected, current) in steps {
+        let mut a = vec!["queue"];
+        a.extend_from_slice(args);
+        sb.ok(&a);
+        let list = sb.queue_list();
+        assert_eq!(ids(&list), ids_of(expected), "{args:?}");
+        assert_eq!(list["current"].as_u64(), current, "{args:?}");
+    }
+    wait_until(5, "t4 playing", || sb.now()["id"] == "t4");
+    sb.ok(&["queue", "--clear-after"]);
+    let list = sb.queue_list();
+    assert_eq!(ids(&list), ["t1", "t2", "t4"]);
+    assert_eq!(list["current"], 2);
+    assert_eq!(sb.now()["queue_len"], 3);
+
+    // The same changes on the stream, in the same order.
+    w.wait_count("queue", 5);
+    let seen: Vec<Vec<String>> = w
+        .of_type("queue")
+        .iter()
+        .map(|e| ids(&e["queue"]))
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            ids_of(&["t1", "t4", "t2", "t3", "t5"]),
+            ids_of(&["t1", "t4", "t3", "t5"]),
+            ids_of(&["t1", "t2", "t4", "t3", "t5"]),
+            ids_of(&["t1", "t2", "t4", "t3", "t5", "t2"]),
+            ids_of(&["t1", "t2", "t4"]),
+        ]
+    );
+    // Playing another position is a change of track, not of queue.
+    w.wait_for("track t4", |ev| {
+        ev.iter()
+            .any(|e| e["type"] == "track" && e["track"]["id"] == "t4" && e["index"] == 2)
+    });
+    let order: Vec<String> = w
+        .events()
+        .iter()
+        .filter(|e| e["type"] == "queue" || e["type"] == "track")
+        .map(|e| e["type"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        order,
+        ["queue", "queue", "queue", "queue", "track", "queue"]
+    );
+
+    // Volume and favourites are announced too.
+    sb.ok(&["volume", "40"]);
+    w.wait_for("volume", |ev| {
+        ev.iter()
+            .any(|e| e["type"] == "volume" && (e["volume"].as_f64().unwrap() - 0.4).abs() < 1e-9)
+    });
+    let r = sb.request(json!({"cmd": "set_starred", "id": "t2", "starred": true}));
+    assert_eq!(r["ok"], true);
+    w.wait_for("starred", |ev| {
+        ev.iter()
+            .any(|e| e["type"] == "starred" && e["id"] == "t2" && e["starred"] == true)
+    });
+    assert_eq!(sb.queue_list()["tracks"][1]["starred"], true);
+}
+
+#[test]
+fn moving_the_current_track_keeps_it_playing() {
+    let sb = Sandbox::new(true);
+    sb.play_long_album();
+    let w = sb.watch();
+    w.wait_count("snapshot", 1);
+    let before = sb.now()["position"].as_f64().unwrap();
+
+    sb.ok(&["queue", "--move", "1", "4"]);
+    let list = sb.queue_list();
+    assert_eq!(ids(&list), ["t2", "t3", "t4", "t1", "t5"]);
+    assert_eq!(list["current"], 3);
+    let now = sb.now();
+    assert_eq!(now["id"], "t1");
+    assert_eq!(now["state"], "playing");
+    assert_eq!(now["index"], 4);
+    assert!(now["position"].as_f64().unwrap() >= before, "{now}");
+
+    // Back to the front: still the same track, never restarted.
+    sb.ok(&["queue", "--move", "4", "1"]);
+    assert_eq!(sb.queue_list()["current"], 0);
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(sb.now()["id"], "t1");
+    assert!(w.of_type("track").is_empty(), "{:?}", w.of_type("track"));
+    let now_playing = sb
+        .calls()
+        .iter()
+        .filter(|c| {
+            c.starts_with("scrobble?") && c.contains("id=t1&") && c.contains("submission=false")
+        })
+        .count();
+    assert_eq!(now_playing, 1);
+    assert_eq!(w.of_type("queue").last().unwrap()["queue"]["current"], 0);
+}
+
+#[test]
+fn removing_the_current_track_plays_the_next_one() {
+    let sb = Sandbox::new(true);
+    sb.play_long_album();
+    let w = sb.watch();
+    w.wait_count("snapshot", 1);
+
+    sb.ok(&["queue", "--remove", "1"]);
+    let list = sb.queue_list();
+    assert_eq!(ids(&list), ["t2", "t3", "t4", "t5"]);
+    assert_eq!(list["current"], 0);
+    wait_until(5, "t2 playing", || {
+        let n = sb.now();
+        n["id"] == "t2" && n["state"] == "playing"
+    });
+    wait_until(5, "now playing t2", || sb.scrobbled("t2", false));
+    w.wait_for("track t2", |ev| {
+        ev.iter()
+            .any(|e| e["type"] == "track" && e["track"]["id"] == "t2" && e["index"] == 0)
+    });
+
+    // The last one, removed while current: the player stops, the rest stays.
+    sb.ok(&["queue", "--play", "4"]);
+    wait_until(5, "t5 playing", || sb.now()["id"] == "t5");
+    sb.ok(&["queue", "--remove", "4"]);
+    let list = sb.queue_list();
+    assert_eq!(ids(&list), ["t2", "t3", "t4"]);
+    assert_eq!(list["current"], Value::Null);
+    wait_until(5, "stopped", || sb.now()["state"] == "stopped");
+    w.wait_for("stopped", |ev| {
+        ev.iter()
+            .any(|e| e["type"] == "state" && e["state"] == "stopped")
+    });
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(sb.socket().exists(), "the daemon waits, it does not quit");
+
+    // And it plays again from the list.
+    sb.ok(&["queue", "--play", "2"]);
+    wait_until(5, "t3 playing", || {
+        let n = sb.now();
+        n["id"] == "t3" && n["state"] == "playing"
+    });
+}
+
+#[test]
+fn moving_or_removing_before_the_current_track_shifts_its_index() {
+    let sb = Sandbox::new(true);
+    sb.play_long_album();
+    sb.ok(&["queue", "--play", "3"]);
+    wait_until(5, "t3 playing", || sb.now()["id"] == "t3");
+    let w = sb.watch();
+    w.wait_count("snapshot", 1);
+
+    sb.ok(&["queue", "--remove", "1"]);
+    let list = sb.queue_list();
+    assert_eq!(ids(&list), ["t2", "t3", "t4", "t5"]);
+    assert_eq!(list["current"], 1);
+    assert_eq!(sb.now()["index"], 2);
+
+    sb.ok(&["queue", "--move", "4", "1"]);
+    let list = sb.queue_list();
+    assert_eq!(ids(&list), ["t5", "t2", "t3", "t4"]);
+    assert_eq!(list["current"], 2);
+
+    sb.ok(&["queue", "--move", "1", "4"]);
+    let list = sb.queue_list();
+    assert_eq!(ids(&list), ["t2", "t3", "t4", "t5"]);
+    assert_eq!(list["current"], 1);
+
+    let now = sb.now();
+    assert_eq!(now["id"], "t3");
+    assert_eq!(now["state"], "playing");
+    w.wait_count("queue", 3);
+    let currents: Vec<Value> = w
+        .of_type("queue")
+        .iter()
+        .map(|e| e["queue"]["current"].clone())
+        .collect();
+    assert_eq!(currents, [json!(1), json!(2), json!(1)]);
+    assert!(w.of_type("track").is_empty());
+}
+
+#[test]
+fn clear_after_keeps_past_and_current() {
+    let sb = Sandbox::new(true);
+    sb.play_long_album();
+    sb.ok(&["queue", "--play", "2"]);
+    wait_until(5, "t2 playing", || sb.now()["id"] == "t2");
+    sb.ok(&["queue", "--clear-after"]);
+    let list = sb.queue_list();
+    assert_eq!(ids(&list), ["t1", "t2"]);
+    assert_eq!(list["current"], 1);
+    let now = sb.now();
+    assert_eq!(now["id"], "t2");
+    assert_eq!(now["state"], "playing");
+    // Adding after a clear goes after the current track again.
+    sb.ok(&["queue", "track", "t5"]);
+    assert_eq!(ids(&sb.queue_list()), ["t1", "t2", "t5"]);
+    sb.ok(&["next"]);
+    wait_until(5, "t5 playing", || sb.now()["id"] == "t5");
+}
+
+#[test]
+fn queue_commands_never_start_the_daemon() {
+    let sb = Sandbox::new(true);
+    let list = sb.queue_list();
+    assert_eq!(list, json!({"current": null, "tracks": []}));
+    assert!(sb.ok(&["queue", "--list"]).contains("empty"));
+    for args in [
+        vec!["queue", "--play", "1"],
+        vec!["queue", "--move", "1", "2"],
+        vec!["queue", "--remove", "1"],
+        vec!["queue", "--clear-after"],
+    ] {
+        assert_eq!(sb.run(&args).status.code(), Some(1), "{args:?}");
+    }
+    assert!(!sb.socket().exists());
+    // A position outside the queue is refused by the daemon, not guessed.
+    sb.play_long_album();
+    let o = sb.run(&["queue", "--remove", "9"]);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(!sb.run(&["queue", "--play", "0"]).status.success());
+    assert_eq!(ids(&sb.queue_list()).len(), 5);
+}
+
+#[test]
+fn watch_survives_a_daemon_restart_by_saying_the_daemon_is_gone() {
+    let sb = Sandbox::new(true);
+    long_album(&sb);
+    let mut w = sb.watch();
+    w.wait_for("gone", |ev| ev.first().is_some_and(|e| e["type"] == "gone"));
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(!sb.socket().exists(), "watch never starts the daemon");
+    assert_eq!(w.events().len(), 1, "said once: {:?}", w.raw());
+
+    sb.ok(&["play", "album", "al1"]);
+    w.wait_count("snapshot", 1);
+    quit_daemon(&sb);
+    w.wait_count("gone", 2);
+
+    sb.ok(&["play", "track", "t3"]);
+    w.wait_count("snapshot", 2);
+    let snap = w.of_type("snapshot").pop().unwrap();
+    assert_eq!(ids(&snap["queue"]), ["t3"]);
+    assert!(w.child.try_wait().unwrap().is_none(), "watch still runs");
+}
+
+#[test]
+fn watch_does_not_hold_off_the_idle_quit() {
+    let sb = Sandbox::new(true);
+    long_album(&sb);
+    let mut c = sb.cmd(&["play", "track", "t2"]);
+    c.env("MELODIE_IDLE_SECS", "2");
+    let o = c.output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let w = sb.watch();
+    w.wait_count("snapshot", 1);
+    sb.ok(&["pause"]);
+    wait_until(10, "idle quit with a watcher", || !sb.socket().exists());
+    w.wait_count("gone", 1);
+}
+
+#[test]
+fn position_events_at_most_once_a_second_and_not_while_paused() {
+    let sb = Sandbox::new(true);
+    sb.play_long_album();
+    let w = sb.watch();
+    w.wait_count("snapshot", 1);
+    let start = Instant::now();
+    std::thread::sleep(Duration::from_millis(3500));
+    let window = start.elapsed().as_secs_f64();
+    let n = w.of_type("position").len();
+    assert!(n >= 1, "positions are sent while playing");
+    assert!(
+        (n as f64) <= window.ceil() + 1.0,
+        "{n} position events in {window:.1} s"
+    );
+    for e in w.of_type("position") {
+        assert!(
+            e["position"].as_f64().is_some() && e["duration"] == 300.0,
+            "{e}"
+        );
+    }
+
+    sb.ok(&["pause"]);
+    w.wait_for("paused", |ev| {
+        ev.iter()
+            .any(|e| e["type"] == "state" && e["state"] == "paused")
+    });
+    let paused_at = w.events().len();
+    std::thread::sleep(Duration::from_millis(2500));
+    let after: Vec<Value> = w.events().split_off(paused_at);
+    assert!(after.iter().all(|e| e["type"] != "position"), "{after:?}");
+}
+
+#[test]
+fn no_event_or_listing_holds_a_secret() {
+    let sb = Sandbox::new(true);
+    sb.play_long_album();
+    let w = sb.watch();
+    w.wait_count("snapshot", 1);
+    sb.ok(&["queue", "--next", "track", "t3"]);
+    sb.ok(&["queue", "--play", "2"]);
+    sb.ok(&["queue", "--move", "1", "3"]);
+    sb.ok(&["queue", "--remove", "2"]);
+    w.wait_count("queue", 3);
+    wait_until(3, "position", || !w.of_type("position").is_empty());
+    for line in w.raw() {
+        assert_no_secret(&line);
+    }
+    assert_no_secret(&sb.ok(&["queue", "--list", "--json"]));
+    assert_no_secret(&sb.ok(&["queue", "--list"]));
+    assert_no_secret(&sb.ok(&["now", "--json"]));
+    assert_no_secret(&sb.request(json!({"cmd": "queue_list"})).to_string());
+}
+
+#[test]
+fn a_stalled_subscriber_never_blocks_the_daemon() {
+    let sb = Sandbox::new(true);
+    sb.play_long_album();
+    // Subscribes, then never reads.
+    let stalled = UnixStream::connect(sb.socket()).unwrap();
+    (&stalled).write_all(b"{\"cmd\":\"watch\"}\n").unwrap();
+
+    // Many queue changes, each one a `queue` event of the whole queue.
+    let s = UnixStream::connect(sb.socket()).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+    let mut reader = BufReader::new(&s);
+    for i in 0..1500 {
+        let (from, to) = if i % 2 == 0 { (1, 2) } else { (2, 1) };
+        (&s).write_all(
+            format!("{{\"cmd\":\"queue_move\",\"from\":{from},\"to\":{to}}}\n").as_bytes(),
+        )
+        .unwrap();
+        let mut l = String::new();
+        reader.read_line(&mut l).unwrap();
+        assert!(l.contains("\"ok\":true"), "{l}");
+    }
+    // The daemon still answers and still plays.
+    let p1 = sb.now()["position"].as_f64().unwrap();
+    wait_until(5, "still playing", || {
+        sb.now()["position"].as_f64().unwrap() > p1
+    });
+    // The stalled subscriber was let go: what it finally reads ends.
+    stalled
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let mut n = 0;
+    for l in BufReader::new(&stalled).lines() {
+        match l {
+            Ok(_) => n += 1,
+            Err(e) => panic!("the stalled subscriber was never closed ({n} lines): {e}"),
+        }
+    }
+    assert!(n < 1500, "{n} lines");
+    assert!(sb.log().contains("subscriber"), "{}", sb.log());
+    // A new client is served as usual.
+    let w = sb.watch();
+    w.wait_count("snapshot", 1);
+}
+
+#[test]
+fn connection_state_is_announced() {
+    let sb = Sandbox::new(true);
+    sb.play_long_album();
+    let w = sb.watch();
+    w.wait_count("snapshot", 1);
+    // The server now refuses the token: the next stream opened fails, the daemon says so and
+    // quits. Not `next`: mpv may already hold the next track, prefetched with the good token.
+    *sb.fake.state.expected_token.lock().unwrap() = "autre".into();
+    sb.ok(&["queue", "--play", "4"]);
+    w.wait_for("auth-refused", |ev| {
+        ev.iter()
+            .any(|e| e["type"] == "connection" && e["state"] == "auth-refused")
+    });
+    w.wait_count("gone", 1);
+}
