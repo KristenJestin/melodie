@@ -7,9 +7,13 @@ use std::path::Path;
 /// colour to speak of (black and white, grey).
 pub fn of_file(path: &Path) -> Option<Tint> {
     let bytes = std::fs::read(path).ok()?;
-    let img = image::load_from_memory(&bytes).ok()?.into_rgb8();
+    of_image(&image::load_from_memory(&bytes).ok()?)
+}
+
+/// The dominant colour of a decoded cover.
+pub fn of_image(img: &image::DynamicImage) -> Option<Tint> {
     // A few hundred pixels say the colour as well as the whole cover.
-    let small = image::imageops::thumbnail(&img, 24, 24);
+    let small = img.thumbnail(24, 24).to_rgb8();
     let (mut x, mut y, mut chroma_sum, mut weight) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
     for p in small.pixels() {
         let [r, g, b] = p.0.map(|v| f32::from(v) / 255.0);

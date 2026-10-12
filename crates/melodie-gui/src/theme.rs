@@ -114,6 +114,13 @@ fn hex(s: &str) -> Option<Hsla> {
     Some(gpui_kit::rgb(u32::from_str_radix(s, 16).ok()?).into())
 }
 
+/// So that a whole palette can be animated as one value.
+impl gpui_kit::base::Interpolate for Palette {
+    fn interpolate(&self, target: &Self, progress: f32) -> Self {
+        self.mix(target, progress)
+    }
+}
+
 /// WCAG contrast ratio of two colours (1 to 21).
 pub fn contrast(a: Hsla, b: Hsla) -> f32 {
     fn lum(c: Hsla) -> f32 {

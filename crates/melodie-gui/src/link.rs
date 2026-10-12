@@ -18,7 +18,7 @@ const REPLY_WAIT: Duration = Duration::from_secs(5);
 /// What the stream tells the window.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Msg {
-    Event(Event),
+    Event(Box<Event>),
     /// No daemon, at start or when the connection ends. Said once until a daemon comes back.
     Gone,
 }
@@ -46,7 +46,7 @@ pub fn follow(
                     let Ok(line) = line else { break };
                     if let Some(e) = decode_event(&line) {
                         said_gone = false;
-                        if !send(Msg::Event(e)) {
+                        if !send(Msg::Event(Box::new(e))) {
                             return;
                         }
                     }
@@ -154,8 +154,11 @@ mod tests {
                 encode(&Event::Volume { volume: 0.5 }).unwrap(),
             ],
         );
-        assert_eq!(next(&rx), Msg::Event(snapshot("First")));
-        assert_eq!(next(&rx), Msg::Event(Event::Volume { volume: 0.5 }));
+        assert_eq!(next(&rx), Msg::Event(Box::new(snapshot("First"))));
+        assert_eq!(
+            next(&rx),
+            Msg::Event(Box::new(Event::Volume { volume: 0.5 }))
+        );
         // the daemon quits: its socket goes away
         drop(listener);
         std::fs::remove_file(&socket).unwrap();
@@ -163,7 +166,7 @@ mod tests {
         // and a new one starts
         let listener = UnixListener::bind(&socket).unwrap();
         serve_once(&listener, &[encode(&snapshot("Again")).unwrap()]);
-        assert_eq!(next(&rx), Msg::Event(snapshot("Again")));
+        assert_eq!(next(&rx), Msg::Event(Box::new(snapshot("Again"))));
         stop.store(true, Ordering::Relaxed);
     }
 
