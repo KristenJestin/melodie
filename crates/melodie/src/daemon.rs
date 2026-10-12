@@ -154,6 +154,10 @@ fn acquire_lock(path: &std::path::Path) -> Result<Option<std::fs::File>> {
 
 fn new_mpv(volume: u32) -> Result<Mpv> {
     let ao = std::env::var("MELODIE_AO").ok().filter(|s| !s.is_empty());
+    build_mpv(volume, ao.as_deref())
+}
+
+fn build_mpv(volume: u32, ao: Option<&str>) -> Result<Mpv> {
     Mpv::with_initializer(|init| {
         init.set_option("vid", "no")?;
         init.set_option("audio-display", "no")?;
@@ -161,6 +165,7 @@ fn new_mpv(volume: u32) -> Result<Mpv> {
         init.set_option("prefetch-playlist", "yes")?;
         init.set_option("cache", "yes")?;
         init.set_option("ytdl", "no")?;
+        init.set_option("load-scripts", "no")?;
         init.set_option("idle", "yes")?;
         init.set_option("audio-client-name", "Mélodie")?;
         init.set_option("network-timeout", "15")?;
@@ -173,8 +178,8 @@ fn new_mpv(volume: u32) -> Result<Mpv> {
         init.set_option("replaygain-preamp", "4")?;
         init.set_option("replaygain-clip", "yes")?;
         init.set_option("replaygain-fallback", "0")?;
-        if let Some(ao) = &ao {
-            init.set_option("ao", ao.as_str())?;
+        if let Some(ao) = ao {
+            init.set_option("ao", ao)?;
         }
         Ok(())
     })
@@ -1362,6 +1367,17 @@ mod tests {
         assert!(
             name == "main" || name == "melodie_events",
             "client named {name:?}"
+        );
+    }
+
+    /// The daemon has no window, terminal or key bindings: mpv's built-in Lua scripts (OSC,
+    /// console, stats…) only make every start heavier.
+    #[test]
+    fn the_daemon_loads_no_mpv_scripts() {
+        let mpv = build_mpv(100, Some("null")).expect("libmpv");
+        assert!(
+            !mpv.get_property::<bool>("load-scripts")
+                .expect("load-scripts")
         );
     }
 }

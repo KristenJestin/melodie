@@ -159,7 +159,8 @@ trip through `xdg-open` and `%u` as it is (no `//` is needed after `melodie:`).
 Only one at a time (lock `$XDG_RUNTIME_DIR/melodie/melodie.lock`). It holds libmpv (crate
 `libmpv2`, default `ao`, so PipeWire), plays the streams
 `<server>/rest/stream.view?id=…&format=raw&…` handed to mpv in memory (never written, logged or
-exposed), and keeps the queue in step with mpv's playlist.
+exposed), and keeps the queue in step with mpv's playlist. The daemon does not load mpv scripts
+(`load-scripts=no`): it has no window, terminal or key bindings for them.
 
 - Control: Unix socket `$XDG_RUNTIME_DIR/melodie/melodie.sock` (0600, folder 0700), one JSON
   request per line (`{"cmd":"next"}`), one JSON answer per line (`{"ok":true}` or
