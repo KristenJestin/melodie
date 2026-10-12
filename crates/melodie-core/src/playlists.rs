@@ -119,6 +119,20 @@ fn entries(client: &Client, pid: &str) -> Result<Vec<TrackInfo>, Failure> {
         .unwrap_or_default())
 }
 
+/// A track as the `--json` outputs of `playlist add` and `playlist duplicates` show it.
+pub fn track_json(t: &TrackInfo) -> Value {
+    json!({"id": t.id, "title": t.title, "artist": t.artist, "album": t.album})
+}
+
+impl AddOutcome {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "added": self.added.iter().map(track_json).collect::<Vec<_>>(),
+            "already": self.already.iter().map(track_json).collect::<Vec<_>>(),
+        })
+    }
+}
+
 /// A track met again in a playlist: its position, and the position of the occurrence it repeats.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Duplicate {
@@ -134,6 +148,17 @@ pub struct Duplicates {
     pub total: usize,
     pub exact: Vec<Duplicate>,
     pub similar: Vec<Duplicate>,
+}
+
+impl Duplicates {
+    pub fn to_json(&self) -> Value {
+        let list = |l: &[Duplicate]| {
+            l.iter()
+                .map(|d| json!({"index": d.index, "first": d.first, "track": track_json(&d.track)}))
+                .collect::<Vec<_>>()
+        };
+        json!({"total": self.total, "exact": list(&self.exact), "similar": list(&self.similar)})
+    }
 }
 
 pub fn find_duplicates(entries: &[TrackInfo]) -> Duplicates {
@@ -181,16 +206,18 @@ pub fn duplicates(client: &Client, pid: &str) -> Result<Duplicates, Failure> {
 }
 
 /// Removes the exact duplicates, keeping the first occurrence of each track and the order of
-/// the rest. Similar tracks (other id, same title and artist) are never removed.
+/// the rest. Similar tracks (other id, same title and artist) are never removed. Returns what
+/// was found: `exact` is what went, `similar` what stayed.
 pub fn remove_duplicates(
     client: &Client,
     conn: Option<&Connection>,
     pid: &str,
     at: u64,
-) -> Result<Vec<Duplicate>, Failure> {
-    let gone = duplicates(client, pid)?.exact;
+) -> Result<Duplicates, Failure> {
+    let found = duplicates(client, pid)?;
+    let gone = &found.exact;
     if gone.is_empty() {
-        return Ok(gone);
+        return Ok(found);
     }
     // Navidrome reads every `songIndexToRemove` against the order before the call, so they all
     // go in one request, as read.
@@ -204,7 +231,7 @@ pub fn remove_duplicates(
         let secs: i64 = gone.iter().map(|d| d.track.duration as i64).sum();
         db::playlist_adjust(c, pid, -(gone.len() as i64), -secs, &rfc3339(at))?;
     }
-    Ok(gone)
+    Ok(found)
 }
 
 /// Retire le morceau de rang `index` (à partir de 0, comme l'API). Renvoie
@@ -741,7 +768,9 @@ mod tests {
                 ("s0", "T0", "A"),
             ],
         );
-        let gone = remove_duplicates(&client, Some(&conn), "p1", 0).unwrap();
+        let gone = remove_duplicates(&client, Some(&conn), "p1", 0)
+            .unwrap()
+            .exact;
         assert_eq!(gone.iter().map(|d| d.index).collect::<Vec<_>>(), [2, 4, 5]);
         assert_eq!(server_ids(&fake, "p1"), ["s0", "s1", "s2"]);
         assert_eq!(writes(&fake), 1, "one call, indexes of the order before it");
@@ -773,19 +802,18 @@ mod tests {
                 ("s0", "Same", "A"),
             ],
         );
-        remove_duplicates(&client, None, "p1", 0).unwrap();
+        let found = remove_duplicates(&client, None, "p1", 0).unwrap();
         assert_eq!(server_ids(&fake, "p1"), ["s0", "s9"]);
+        assert_eq!(found.exact.len(), 1);
+        assert_eq!(found.similar.len(), 1, "reported, and left in place");
     }
 
     #[test]
     fn removing_duplicates_without_any_writes_nothing() {
         let (_d, _env, fake, client) = setup();
         seed(&fake, "p1", &[("s0", "T0", "A"), ("s1", "T1", "A")]);
-        assert!(
-            remove_duplicates(&client, None, "p1", 0)
-                .unwrap()
-                .is_empty()
-        );
+        let found = remove_duplicates(&client, None, "p1", 0).unwrap();
+        assert!(found.exact.is_empty());
         assert_eq!(writes(&fake), 0);
     }
 }

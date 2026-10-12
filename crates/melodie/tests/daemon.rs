@@ -582,6 +582,91 @@ fn db_value<T: rusqlite::types::FromSql>(sb: &Sandbox, sql: &str) -> T {
         .unwrap()
 }
 
+/// Seeds the fake server's playlist `p1` with these song ids.
+fn seed_playlist(sb: &Sandbox, ids: &[&str]) {
+    let songs = sb.fake.state.songs.lock().unwrap().clone();
+    let list = ids
+        .iter()
+        .map(|id| songs.iter().find(|s| s["id"] == *id).unwrap().clone())
+        .collect();
+    sb.fake
+        .state
+        .playlists
+        .lock()
+        .unwrap()
+        .insert("p1".into(), list);
+}
+
+fn server_playlist(sb: &Sandbox) -> Vec<String> {
+    sb.fake.state.playlists.lock().unwrap()["p1"]
+        .iter()
+        .map(|e| e["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn playlist_duplicates_from_the_command_line() {
+    let sb = Sandbox::new(true);
+    sb.ok(&["sync", "--full"]);
+    seed_playlist(&sb, &["t1"]);
+    let writes = || sb.fake.calls_of("updatePlaylist");
+
+    // A track already there is skipped and said so; nothing is written.
+    let out = sb.ok(&["playlist", "add", "p1", "track", "t1"]);
+    assert!(out.contains("Déjà dans « Daft Mix »"), "{out}");
+    assert_eq!(writes(), 0);
+
+    // An album with one of its three tracks present: two added, one reported, as JSON too.
+    let out = sb.ok(&["playlist", "add", "p1", "album", "al1", "--json"]);
+    let v: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["playlist"], json!({"id": "p1", "name": "Daft Mix"}));
+    let ids = |k: &str| -> Vec<String> {
+        v[k].as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(ids("added"), ["t2", "t3"]);
+    assert_eq!(ids("already"), ["t1"]);
+    assert_eq!(v["added"][0]["title"], "Titre 2");
+    assert_eq!(v["allowDuplicates"], false);
+    assert_eq!(server_playlist(&sb), ["t1", "t2", "t3"]);
+
+    // --allow-duplicates adds it anyway.
+    let out = sb.ok(&["playlist", "add", "p1", "track", "t1", "--allow-duplicates"]);
+    assert!(out.contains("Ajouté à « Daft Mix »"), "{out}");
+    assert_eq!(server_playlist(&sb), ["t1", "t2", "t3", "t1"]);
+
+    // The duplicates command lists, then --remove keeps the first occurrence and the order.
+    let out = sb.ok(&["playlist", "duplicates", "p1"]);
+    assert!(out.contains("rang 3 : Titre 1 (comme le rang 0)"), "{out}");
+    assert_eq!(server_playlist(&sb).len(), 4, "listing writes nothing");
+    let out = sb.ok(&["playlist", "duplicates", "p1", "--remove", "--json"]);
+    let v: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["total"], 4);
+    assert_eq!(v["removed"][0]["index"], 3);
+    assert_eq!(v["removed"][0]["first"], 0);
+    assert_eq!(server_playlist(&sb), ["t1", "t2", "t3"]);
+    let out = sb.ok(&["playlist", "duplicates", "p1"]);
+    assert!(out.contains("Aucun doublon"), "{out}");
+}
+
+#[test]
+fn playlist_json_failure_is_one_launcher_entry() {
+    let sb = Sandbox::new(false);
+    for args in [
+        &["playlist", "add", "p1", "track", "t1", "--json"][..],
+        &["playlist", "duplicates", "p1", "--json"][..],
+    ] {
+        let o = sb.run(args);
+        assert_eq!(o.status.code(), Some(0), "{args:?}");
+        let v: Value = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(v.as_array().unwrap().len(), 1);
+        assert_eq!(v[0]["id"], "login");
+    }
+}
+
 #[test]
 fn favoris_playlists_et_mixes_de_bout_en_bout() {
     let sb = Sandbox::new(true);
@@ -631,10 +716,17 @@ fn favoris_playlists_et_mixes_de_bout_en_bout() {
     // Playlists.
     let count = || db_value::<i64>(&sb, "SELECT songCount FROM playlists WHERE id = 'p1'");
     assert_eq!(count(), 42);
-    sb.ok(&["playlist", "add", "p1", "track", "t3"]);
+    sb.ok(&["playlist", "add", "p1", "track", "t3", "--allow-duplicates"]);
     assert_eq!(query_count(&sb, "updatePlaylist", "songIdToAdd=t3"), 1);
     assert_eq!(count(), 43);
-    sb.ok(&["playlist", "add", "p1", "album", "al1"]);
+    sb.ok(&[
+        "playlist",
+        "add",
+        "p1",
+        "album",
+        "al1",
+        "--allow-duplicates",
+    ]);
     let album_add = sb
         .calls()
         .into_iter()
@@ -785,7 +877,7 @@ fn favoris_playlists_et_mixes_de_bout_en_bout() {
         wait_until(3, "melodie:starred retiré", || !mpris_starred(p));
     }
     let adds = query_count(&sb, "updatePlaylist", &format!("songIdToAdd={id}"));
-    sb.ok(&["playlist", "add", "p1"]);
+    sb.ok(&["playlist", "add", "p1", "--allow-duplicates"]);
     assert_eq!(
         query_count(&sb, "updatePlaylist", &format!("songIdToAdd={id}")),
         adds + 1
