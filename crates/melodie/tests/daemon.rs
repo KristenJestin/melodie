@@ -1323,6 +1323,19 @@ impl Watch {
         wait_until(5, what, || f(&self.events()));
     }
 
+    /// The queue as a client sees it: the last snapshot, then the `queue` events after it.
+    fn latest_queue(&self) -> Value {
+        let events = self.events();
+        let from = events.iter().rposition(|e| e["type"] == "snapshot");
+        let mut queue = json!({"tracks": []});
+        for e in &events[from.unwrap_or(0)..] {
+            if e["type"] == "snapshot" || e["type"] == "queue" {
+                queue = e["queue"].clone();
+            }
+        }
+        queue
+    }
+
     /// Waits for one more event of this type than `before`.
     fn wait_count(&self, t: &str, n: usize) {
         wait_until(5, &format!("{n} events {t}"), || self.of_type(t).len() >= n);
@@ -1653,8 +1666,12 @@ fn watch_survives_a_daemon_restart_by_saying_the_daemon_is_gone() {
 
     sb.ok(&["play", "track", "t3"]);
     w.wait_count("snapshot", 2);
-    let snap = w.of_type("snapshot").pop().unwrap();
-    assert_eq!(ids(&snap["queue"]), ["t3"]);
+    // The daemon listens before `play` has filled the queue: the snapshot can
+    // be empty, and the queue then arrives as an event. A client's view is the
+    // snapshot plus the events after it.
+    wait_until(5, "the new daemon's queue", || {
+        ids(&w.latest_queue()) == ["t3"]
+    });
     assert!(w.child.try_wait().unwrap().is_none(), "watch still runs");
 }
 
