@@ -2,6 +2,7 @@
 //! synchronisation, search, mixes, playlists, likes and the keyring store. The daemon, the
 //! command line and, later, a window are built on it.
 
+pub mod address;
 pub mod api;
 pub mod cover;
 pub mod db;
