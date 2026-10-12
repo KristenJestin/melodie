@@ -9,7 +9,6 @@ pub mod env;
 #[cfg(any(test, feature = "fake"))]
 pub mod fake;
 pub mod likes;
-pub mod migrate;
 pub mod mix;
 pub mod playlists;
 pub mod prefs;

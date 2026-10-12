@@ -66,8 +66,6 @@ configuration (see `AGENTS.md`). The daemon integration test starts its own priv
   then the playlists (same connection states as `search`).
 - `melodie mix me|rediscover|track|album|artist|genre …` and `melodie mixes [--json]`: local mixes
   (see "Mixes").
-- `melodie import-poste`: takes over a setup of the old player (hidden from the help; see "Taking
-  over the old player").
 
 `play` and `queue` start the daemon if it is not running, but only if the connection is good:
 `no-login`, `auth-refused` and `unreachable` give a clear message (code 1, 1 or 2) and a
@@ -107,8 +105,6 @@ exposed), and keeps the queue in step with mpv's playlist.
 - Log: `~/.local/state/melodie/melodie.log`, overwritten at every start, without token.
 - Variables: `MELODIE_AO` sets mpv's audio output (`null` for tests). Reserved for tests:
   `MELODIE_TEST_SECRET` (a file standing for the keyring; with it set, no notification is sent),
-  `MELODIE_TEST_OLD_SECRET` (a file standing for the old player's keyring entry, for
-  `import-poste`; with `MELODIE_TEST_SECRET` set and this one not, the old entry counts as absent),
   `MELODIE_MPRIS_NAME` (replaces the bus name suffix) and `MELODIE_IDLE_SECS` (the idle delay).
 
 ## Favourites and playlists
@@ -199,30 +195,6 @@ result), `--size N` (50 by default).
   `sync.log`: the log of background synchronisations. `XDG_STATE_HOME` honoured.
 - `$XDG_RUNTIME_DIR/melodie/melodie.sock`, `melodie.lock`: the daemon's socket and lock;
   `sync.lock`: the synchronisation lock.
-
-## Taking over the old player
-
-Mélodie was the `music` module of the poste desktop (`poste music`). `melodie import-poste`
-takes over its setup, once, at the switch, without logging in again:
-
-| Old place | New place |
-| --- | --- |
-| `~/.config/poste/music.toml` | `~/.config/melodie/config.toml` |
-| `~/.local/state/poste/music.toml` (volume) | `~/.local/state/melodie/state.toml` |
-| `~/.local/state/poste/music.log`, `music-sync.log` | `~/.local/state/melodie/melodie.log`, `sync.log` |
-| everything in `~/.cache/poste/music/` (`library.db` with the skips, `covers/`, `auth-refused`) | `~/.cache/melodie/` |
-| keyring entry `service=poste-music`, `url=<server>` | `service=melodie`, `url=<server>` |
-
-- Files are moved (a rename, or a copy then a removal across filesystems), never duplicated. The
-  logs move too, so nothing of the player stays in the desktop's folders. `~/.cache/poste/music/`
-  is removed; `~/.config/poste/`, `~/.local/state/poste/` and `~/.cache/poste/` only when empty
-  (the desktop keeps its own files there).
-- The secret is copied in memory, written to the new entry, read back, and the old entry is removed
-  only if the two are equal. It is never printed or written anywhere else.
-- It refuses to run while the old daemon answers on `$XDG_RUNTIME_DIR/poste/music.sock` (a socket
-  file left by a crash does not count); nothing is touched then.
-- Safe to run twice: a new place already taken is kept and the old file left where it is, and it
-  says so; the second run changes nothing ("Rien à importer").
 
 ## Connection states
 
