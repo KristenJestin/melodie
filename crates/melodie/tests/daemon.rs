@@ -279,6 +279,13 @@ fn status(p: &Proxy<'_>) -> String {
 #[test]
 fn lecture_complete_mpris_scrobble_skip_et_fin() {
     let sb = Sandbox::new(true);
+    sb.fake.state.songs.lock().unwrap()[0]["duration"] = json!(60);
+    sb.fake
+        .state
+        .stream_secs_of
+        .lock()
+        .unwrap()
+        .insert("t1".into(), 60);
     sb.ok(&["sync", "--full"]);
     assert!(sb.db().is_file());
 
@@ -301,7 +308,7 @@ fn lecture_complete_mpris_scrobble_skip_et_fin() {
     assert_eq!(now["quality"], "FLAC · 24 bit / 96 kHz · 2304 kbps");
     assert_eq!(now["index"], 1);
     assert_eq!(now["queue_len"], 3);
-    assert_eq!(now["duration"], 3.0);
+    assert_eq!(now["duration"], 60.0);
     let text = sb.ok(&["now"]);
     assert!(text.starts_with("En lecture : Titre 1\n"), "{text}");
     assert!(text.contains("FLAC · 24 bit / 96 kHz · 2304 kbps"));
@@ -349,7 +356,7 @@ fn lecture_complete_mpris_scrobble_skip_et_fin() {
         assert!(id.as_str().starts_with("/org/melodie/track/"));
         assert_eq!(
             m["mpris:length"].try_clone().unwrap().try_into(),
-            Ok(3_000_000i64)
+            Ok(60_000_000i64)
         );
         assert_eq!(strings(&m["xesam:artist"]), ["Beyoncé"]);
         assert_eq!(strings(&m["xesam:albumArtist"]), ["Beyoncé"]);
@@ -398,6 +405,9 @@ fn lecture_complete_mpris_scrobble_skip_et_fin() {
     }
 
     // next tout de suite : morceau passé
+    // Le premier morceau est long (durée annoncée et flux) : sous charge, la
+    // lecture peut dépasser la moitié d'un morceau de 3 s avant ce `next`.
+    // Les suivants durent 3 s, flux compris, pour que la file se termine.
     sb.ok(&["next"]);
     wait_until(5, "titre 2", || sb.now()["title"] == "Titre 2");
     // Le saut est écrit dans la copie un peu après le changement de titre.
@@ -1313,6 +1323,19 @@ impl Watch {
         wait_until(5, what, || f(&self.events()));
     }
 
+    /// The queue as a client sees it: the last snapshot, then the `queue` events after it.
+    fn latest_queue(&self) -> Value {
+        let events = self.events();
+        let from = events.iter().rposition(|e| e["type"] == "snapshot");
+        let mut queue = json!({"tracks": []});
+        for e in &events[from.unwrap_or(0)..] {
+            if e["type"] == "snapshot" || e["type"] == "queue" {
+                queue = e["queue"].clone();
+            }
+        }
+        queue
+    }
+
     /// Waits for one more event of this type than `before`.
     fn wait_count(&self, t: &str, n: usize) {
         wait_until(5, &format!("{n} events {t}"), || self.of_type(t).len() >= n);
@@ -1643,8 +1666,12 @@ fn watch_survives_a_daemon_restart_by_saying_the_daemon_is_gone() {
 
     sb.ok(&["play", "track", "t3"]);
     w.wait_count("snapshot", 2);
-    let snap = w.of_type("snapshot").pop().unwrap();
-    assert_eq!(ids(&snap["queue"]), ["t3"]);
+    // The daemon listens before `play` has filled the queue: the snapshot can
+    // be empty, and the queue then arrives as an event. A client's view is the
+    // snapshot plus the events after it.
+    wait_until(5, "the new daemon's queue", || {
+        ids(&w.latest_queue()) == ["t3"]
+    });
     assert!(w.child.try_wait().unwrap().is_none(), "watch still runs");
 }
 
