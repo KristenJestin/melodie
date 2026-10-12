@@ -47,6 +47,8 @@ configuration (see `AGENTS.md`). The daemon integration test starts its own priv
   `getAlbum`, `getArtist`, `getSong`), not from the local copy.
 - `melodie queue [--next] <kind> <id>`: adds to the queue, at the end or, with `--next`, right
   after the current track (starts playing if nothing plays).
+- `melodie open <address>`: plays or queues what an address names (see "Addresses"). Same checks
+  as `play`, same daemon start.
 - `melodie queue --list [--json] | --play <pos> | --move <from> <to> | --remove <pos> |
   --clear-after`: shows the queue (the current track marked `▶`) and edits it; positions start
   at 1. Like the controls, they never start the daemon; without one, `--list` shows an empty
@@ -76,13 +78,82 @@ configuration (see `AGENTS.md`). The daemon integration test starts its own priv
 - `melodie mix me|rediscover|track|album|artist|genre …` and `melodie mixes [--json]`: local mixes
   (see "Mixes").
 
-`play` and `queue` start the daemon if it is not running, but only if the connection is good:
+`play`, `queue` and `open` start the daemon if it is not running, but only if the connection is good:
 `no-login`, `auth-refused` and `unreachable` give a clear message (code 1, 1 or 2) and a
 `notify-send -a "Mélodie"` notification, without starting the daemon.
 
+## Addresses
+
+The standard way to say "play this", for any program: a `melodie:` address, given to
+`melodie open <address>` or to MPRIS `OpenUri`.
+
+```
+melodie:<kind>/<id>[?<option>=<value>[&<option>=<value>]]
+```
+
+- `kind`: `track`, `album`, `artist` or `playlist` (lowercase). `id`: the server's id, as the
+  Subsonic API gives it (`melodie:album/4Zq0Aw-9`). What `play <kind> <id>` plays, `open` plays:
+  an album in the server's order, an artist's albums by year then name, a playlist in its order.
+- `shuffle=true|false`: shuffles what is played or added. Default `false`.
+- `queue=next|last`: adds to the queue instead of replacing it, right after the current track
+  (`next`) or at the end (`last`); starts playing if nothing plays. Without it, the address
+  replaces the queue and plays. With `shuffle=true`, the added tracks are shuffled among
+  themselves, the rest of the queue stays as it is.
+
+```
+melodie open 'melodie:album/4Zq0Aw-9'
+melodie open 'melodie:playlist/p1?shuffle=true'
+melodie open 'melodie:track/9fQ2?queue=next'
+gdbus call --session --dest org.mpris.MediaPlayer2.melodie \
+  --object-path /org/mpris/MediaPlayer2 \
+  --method org.mpris.MediaPlayer2.Player.OpenUri 'melodie:artist/ar1?queue=last'
+```
+
+An address comes from outside, so it is read strictly and refused with a message that says why
+(`invalid address: …`) when it is not exactly in this grammar. Nothing is guessed:
+
+- the scheme is `melodie` (any case); the kind and the options are case-sensitive; an unknown
+  kind, an unknown or repeated option, an option without a value, a value other than the ones
+  above, a fragment (`#…`) and a missing id are refused;
+- the id is made of ASCII letters, digits, `-`, `_` and `.`, 128 characters at most. Percent
+  encoding (`%2D`) is accepted and undone once, then the result is checked like any id: `%2F` or
+  `%2541` do not get through. An id is never put in a URL unescaped;
+- a refused address changes nothing: `melodie open` exits with code 1 before it reads the keyring,
+  asks the server or starts the daemon; `OpenUri` answers `org.freedesktop.DBus.Error.InvalidArgs`
+  and the queue is untouched.
+
+`melodie open` checks the connection like `play` does: `no-login`, `auth-refused` (both code 1) and
+`unreachable` (code 2) are told apart, with a notification, and the daemon is not started. It has
+no `--json`: like `play`, it prints one line ("Lecture : 3 morceaux") and acts.
+
+`OpenUri` runs in the daemon and does not wait for the server: the address is read on the D-Bus
+thread (so a malformed one is an error for the caller), then handed to a thread of the daemon that
+asks the API for the tracks, one address after the other and in the order received, and gives the
+queue request to the player. So the call returns before the music changes, and a valid address
+that the server cannot serve (unknown id, server down) is not an error of the call: it is written
+in the log (`OpenUri <kind> <id> : …`, without the server's address) and the queue stays as it was.
+A refused token is handled as for a stream the server refused: `auth-refused` marker, notification,
+the daemon stops.
+
+Mélodie does not register itself as the handler of `melodie:` links: it has no installer, and a
+`.desktop` file written into the user's folders by the program would be a side effect nobody asked
+for. A desktop that wants `xdg-open melodie:album/…` to work adds the entry itself:
+
+```
+[Desktop Entry]
+Type=Application
+Name=Mélodie (addresses)
+Exec=melodie open %u
+MimeType=x-scheme-handler/melodie;
+NoDisplay=true
+```
+
+then `xdg-mime default <that file>.desktop x-scheme-handler/melodie`. The address survives the
+trip through `xdg-open` and `%u` as it is (no `//` is needed after `melodie:`).
+
 ## The daemon
 
-`melodie daemon` (a hidden subcommand) is started detached (new session) by `play` or `queue`.
+`melodie daemon` (a hidden subcommand) is started detached (new session) by `play`, `queue` or `open`.
 Only one at a time (lock `$XDG_RUNTIME_DIR/melodie/melodie.lock`). It holds libmpv (crate
 `libmpv2`, default `ao`, so PipeWire), plays the streams
 `<server>/rest/stream.view?id=…&format=raw&…` handed to mpv in memory (never written, logged or
@@ -97,7 +168,9 @@ exposed), and keeps the queue in step with mpv's playlist.
   `xesam:album`, `xesam:albumArtist`, `mpris:artUrl` (local cover), `xesam:comment`,
   `melodie:starred` (boolean, the track is a favourite) and `melodie:quality` (quality, for example
   "FLAC · 24 bit / 96 kHz · 2304 kbps", "MP3 · 320 kbps"). No `xesam:url`. `PropertiesChanged` on
-  every change of track, state or volume; `Seeked` on a jump.
+  every change of track, state or volume; `Seeked` on a jump. `OpenUri` takes a `melodie:`
+  address (see "Addresses"), and `SupportedUriSchemes` lists `melodie`. `SupportedMimeTypes`
+  stays empty: no file is opened, only addresses.
 - Volume: starts at the remembered volume (100 % the first time, like other applications). mpv
   applies ReplayGain per track (`replaygain=track`, `replaygain-preamp=4`, `replaygain-clip=yes`,
   `replaygain-fallback=0`): files without tags are not corrected.
