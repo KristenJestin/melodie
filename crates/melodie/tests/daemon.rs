@@ -1973,3 +1973,146 @@ fn open_without_login_says_no_login_and_starts_no_daemon() {
     assert!(!sb.socket().exists());
     assert!(!sb.home().join(".cache/melodie/auth-refused").exists());
 }
+
+/// A client of the player on the private bus, or `None` (and a note) without `dbus-daemon`.
+fn bus_player(sb: &Sandbox) -> Option<(Connection, Proxy<'static>)> {
+    let Some(addr) = &sb.bus_addr else {
+        eprintln!("NOTE : dbus-daemon absent, vérifications MPRIS sautées");
+        return None;
+    };
+    let conn = zbus::blocking::connection::Builder::address(addr.as_str())
+        .unwrap()
+        .build()
+        .unwrap();
+    let p = mpris(&conn, &format!("org.mpris.MediaPlayer2.{}", sb.bus_name));
+    Some((conn, p))
+}
+
+fn open_uri(p: &Proxy<'_>, uri: &str) -> zbus::Result<()> {
+    p.call("OpenUri", &(uri,))
+}
+
+#[test]
+fn open_uri_on_mpris_plays_each_kind() {
+    let sb = Sandbox::new(true);
+    addressable_library(&sb);
+    // Any command that starts the daemon will do: the bus is served by it.
+    sb.ok(&["play", "track", "t3"]);
+    let Some((_conn, p)) = bus_player(&sb) else {
+        return;
+    };
+    for (uri, expected) in ADDRESSES {
+        open_uri(&p, uri).unwrap();
+        wait_until(5, uri, || queue_ids(&sb) == ids_of(expected));
+        wait_until(5, "lecture", || {
+            sb.now()["state"] == "playing" && sb.now()["id"] == expected[0]
+        });
+        assert_eq!(status(&p), "Playing");
+    }
+    // The options are the same as on the command line.
+    open_uri(&p, "melodie:album/al2").unwrap();
+    wait_until(5, "al2", || queue_ids(&sb) == ids_of(&["t4", "t5"]));
+    open_uri(&p, "melodie:track/t1?queue=last").unwrap();
+    wait_until(5, "last", || queue_ids(&sb) == ids_of(&["t4", "t5", "t1"]));
+    open_uri(&p, "melodie:track/t2?queue=next").unwrap();
+    wait_until(5, "next", || {
+        queue_ids(&sb) == ids_of(&["t4", "t2", "t5", "t1"])
+    });
+    open_uri(&p, "melodie:artist/ar1?shuffle=true").unwrap();
+    wait_until(5, "shuffled", || queue_ids(&sb).len() == 5);
+    assert_eq!(sorted(queue_ids(&sb)), sorted(ids_of(ADDRESSES[3].1)),);
+    // Two addresses in a row are served in that order.
+    open_uri(&p, "melodie:album/al2").unwrap();
+    open_uri(&p, "melodie:track/t1?queue=last").unwrap();
+    wait_until(5, "in order", || {
+        queue_ids(&sb) == ids_of(&["t4", "t5", "t1"])
+    });
+    assert_no_secret(&sb.log());
+}
+
+#[test]
+fn open_uri_on_mpris_refuses_a_malformed_address_and_changes_nothing() {
+    let sb = Sandbox::new(true);
+    addressable_library(&sb);
+    sb.ok(&["open", "melodie:album/al1"]);
+    let Some((_conn, p)) = bus_player(&sb) else {
+        return;
+    };
+    let calls = lookups(&sb);
+    for uri in MALFORMED {
+        let err = open_uri(&p, uri).expect_err(uri);
+        let zbus::Error::MethodError(name, text, _) = &err else {
+            panic!("{uri}: {err}");
+        };
+        assert_eq!(
+            name.as_str(),
+            "org.freedesktop.DBus.Error.InvalidArgs",
+            "{uri}"
+        );
+        assert!(
+            text.as_deref().unwrap_or("").contains("invalid address"),
+            "{uri}: {err}"
+        );
+    }
+    // Refused on the spot: no request left for the server, nothing queued, still playing.
+    assert_eq!(queue_ids(&sb), ids_of(&["t1", "t2", "t3"]));
+    assert_eq!(sb.now()["id"], "t1");
+    assert_eq!(status(&p), "Playing");
+    assert_eq!(lookups(&sb), calls);
+}
+
+#[test]
+fn open_uri_on_mpris_of_something_the_server_does_not_have_changes_nothing() {
+    let sb = Sandbox::new(true);
+    addressable_library(&sb);
+    sb.ok(&["open", "melodie:album/al1"]);
+    let Some((_conn, p)) = bus_player(&sb) else {
+        return;
+    };
+    // The answer comes before the server's, so the call itself succeeds; the log tells.
+    open_uri(&p, "melodie:track/nope").unwrap();
+    wait_until(5, "log", || sb.log().contains("OpenUri"));
+    assert!(
+        sb.log().contains("track/nope") || sb.log().contains("track nope"),
+        "{}",
+        sb.log()
+    );
+    assert_eq!(queue_ids(&sb), ids_of(&["t1", "t2", "t3"]));
+    assert_no_secret(&sb.log());
+}
+
+#[test]
+fn open_uri_on_mpris_with_a_refused_token_quits_like_a_refused_stream() {
+    let sb = Sandbox::new(true);
+    addressable_library(&sb);
+    sb.ok(&["open", "melodie:album/al1"]);
+    let Some((_conn, p)) = bus_player(&sb) else {
+        return;
+    };
+    *sb.fake.state.expected_token.lock().unwrap() = "autre".into();
+    open_uri(&p, "melodie:album/al2").unwrap();
+    wait_until(20, "daemon quit", || !sb.socket().exists());
+    assert!(sb.home().join(".cache/melodie/auth-refused").exists());
+}
+
+#[test]
+fn mpris_lists_the_scheme_it_opens() {
+    let sb = Sandbox::new(true);
+    addressable_library(&sb);
+    sb.ok(&["open", "melodie:track/t1"]);
+    let Some((conn, _p)) = bus_player(&sb) else {
+        return;
+    };
+    let root = Proxy::new(
+        &conn,
+        format!("org.mpris.MediaPlayer2.{}", sb.bus_name),
+        "/org/mpris/MediaPlayer2",
+        "org.mpris.MediaPlayer2",
+    )
+    .unwrap();
+    let schemes: Vec<String> = root.get_property("SupportedUriSchemes").unwrap();
+    assert_eq!(schemes, ["melodie"]);
+    // Only addresses are opened, never a file: no media type to announce.
+    let types: Vec<String> = root.get_property("SupportedMimeTypes").unwrap();
+    assert!(types.is_empty());
+}

@@ -13,12 +13,14 @@ use crate::rules::{self, ScrobbleClock};
 use anyhow::{Context, Result, bail};
 use libmpv2::events::{Event as MpvRaw, PropertyData};
 use libmpv2::{Format, Mpv};
+use melodie_core::address::Address;
 use melodie_core::api::Client;
 use melodie_core::cover;
 use melodie_core::db;
 use melodie_core::env::Env;
 use melodie_core::prefs::{self, Prefs};
 use melodie_core::proto::{self, Event, Now, QueueEntry, QueueView, Request, Response};
+use melodie_core::resolve;
 use melodie_core::state::{self, Failure};
 use melodie_core::store;
 use melodie_core::time::{now_secs, rfc3339};
@@ -216,6 +218,39 @@ fn spawn_events(mpv: &Mpv, tx: Sender<Msg>) -> Result<()> {
 
 /// Turns a connection into the event stream: the engine queues lines, this
 /// thread writes them, so a client that stops reading only holds up itself.
+/// Serves the addresses MPRIS `OpenUri` hands over, one at a time and in order: asks the
+/// server for the tracks, then gives the engine the request. The wait for the server is here,
+/// never in the engine nor on the D-Bus thread. What fails is logged (it is never a stream
+/// address); a refused token is told to the engine like a stream that could not open.
+fn spawn_opener(client: Arc<Client>, tx: Sender<Msg>) -> Sender<Address> {
+    let (open, rx) = channel::<Address>();
+    std::thread::spawn(move || {
+        for addr in rx {
+            match resolve::resolve(&client, addr.kind, &addr.id) {
+                Ok(tracks) => {
+                    let (reply, _) = channel();
+                    let req = rules::open_request(&addr, tracks);
+                    if tx.send(Msg::Req(req, reply)).is_err() {
+                        return;
+                    }
+                }
+                Err(f) => {
+                    // Without the server's address, which does not belong in a log.
+                    let why = match &f {
+                        Failure::Unreachable { detail, .. } => format!("{} : {detail}", f.state()),
+                        other => other.to_string(),
+                    };
+                    dlog!("OpenUri {} {} : {why}", addr.kind.word(), addr.id);
+                    if matches!(f, Failure::AuthRefused(_)) && tx.send(Msg::AuthRefused).is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+    });
+    open
+}
+
 fn stream_events(out: UnixStream, tx: &Sender<Msg>) {
     let (etx, erx) = sync_channel::<Arc<str>>(SUBSCRIBER_BUFFER);
     let (done_tx, done) = channel::<()>();
@@ -1215,7 +1250,8 @@ pub fn run(env: &Env) -> Result<()> {
         volume: f64::from(volume) / 100.0,
         ..Snapshot::stopped()
     }));
-    let conn = match mpris::start(tx.clone(), shared.clone(), mpv.clone()) {
+    let open = spawn_opener(client.clone(), tx.clone());
+    let conn = match mpris::start(tx.clone(), shared.clone(), mpv.clone(), open) {
         Ok(c) => {
             dlog!("MPRIS publié ({})", mpris::bus_name());
             Some(c)
