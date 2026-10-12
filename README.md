@@ -92,6 +92,9 @@ have is "not found" (code 5, see "Connection states"), also without starting the
 driver, and the `melodie` program beside it (same folder, as a build leaves them) or on the
 `PATH`.
 
+Screenshots and a recording of the animations, made with invented data, are in
+[docs/window](docs/window).
+
 - **A client, nothing more.** It follows the daemon through the event stream
   ([docs/events.md](docs/events.md)) and sends its requests on the socket; it never plays sound,
   never reads the keyring and never holds a token or a stream address. Closing it never stops the
