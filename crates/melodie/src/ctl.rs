@@ -2,7 +2,9 @@
 //! démarre au besoin pour `play` et `queue`.
 
 use crate::notify;
+use crate::rules;
 use anyhow::{Context, Result, anyhow, bail};
+use melodie_core::address::{Address, Place};
 use melodie_core::api::Client;
 use melodie_core::env::Env;
 use melodie_core::prefs::{self, Prefs};
@@ -223,18 +225,24 @@ pub fn deliver(
     } else {
         Request::Play { tracks, shuffle }
     };
+    send(env, ready, &req)?;
+    Ok(n)
+}
+
+/// Sends a request that loads tracks to the daemon (started if needed).
+fn send(env: &Env, ready: Ready, req: &Request) -> Result<(), Failure> {
     let stream = match ready.running {
         Some(s) => s,
         None => ensure_daemon(env)?,
     };
-    let reply = exchange(&stream, &req)?;
+    let reply = exchange(&stream, req)?;
     if !reply.ok {
         return Err(Failure::Internal(anyhow!(
             "{}",
             reply.error.unwrap_or_else(|| "refusé par le démon".into())
         )));
     }
-    Ok(n)
+    Ok(())
 }
 
 fn try_play_or_queue(
@@ -249,6 +257,36 @@ fn try_play_or_queue(
     let result = resolve::resolve(&client, kind, id);
     state::record(env, &result);
     deliver(env, ready, result?, shuffle, queue, next)
+}
+
+/// `open`: plays or queues what an address names. A malformed address is refused before
+/// anything else happens: no keyring, no network, no daemon.
+pub fn open(env: &Env, uri: &str) -> ExitCode {
+    let addr = match Address::parse(uri) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("{e}");
+            notify::send("Mélodie : adresse refusée", &e.to_string());
+            return ExitCode::from(1);
+        }
+    };
+    match try_open(env, &addr) {
+        Ok(n) => {
+            announce(n, addr.place != Place::Replace);
+            ExitCode::SUCCESS
+        }
+        Err(f) => report(&f),
+    }
+}
+
+fn try_open(env: &Env, addr: &Address) -> Result<usize, Failure> {
+    let (client, ready) = prepare(env)?;
+    let result = resolve::resolve(&client, addr.kind, &addr.id);
+    state::record(env, &result);
+    let tracks = result?;
+    let n = tracks.len();
+    send(env, ready, &rules::open_request(addr, tracks))?;
+    Ok(n)
 }
 
 /// `mix` : envoie une liste déjà calculée localement.

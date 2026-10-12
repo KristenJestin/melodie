@@ -1,6 +1,10 @@
 //! Règles de lecture sans effet de bord : écoute à signaler, morceau passé,
 //! mélange.
 
+use melodie_core::address::{Address, Place};
+use melodie_core::proto::Request;
+use melodie_core::track::TrackInfo;
+
 /// Au plus 4 minutes écoutées avant de signaler l'écoute.
 pub const SCROBBLE_MAX_SECS: f64 = 240.0;
 /// Un morceau passé avant 30 s compte comme « passé ».
@@ -81,6 +85,26 @@ pub fn random_below(n: usize) -> usize {
     (u64::from_le_bytes(buf) % n.max(1) as u64) as usize
 }
 
+/// What the daemon is asked once the tracks of an address are known: replace the queue (the
+/// daemon shuffles), or add to it, shuffled here first when asked.
+pub fn open_request(addr: &Address, mut tracks: Vec<TrackInfo>) -> Request {
+    match addr.place {
+        Place::Replace => Request::Play {
+            tracks,
+            shuffle: addr.shuffle,
+        },
+        Place::Next | Place::Last => {
+            if addr.shuffle {
+                shuffle(&mut tracks, random_below);
+            }
+            Request::Queue {
+                tracks,
+                next: addr.place == Place::Next,
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,5 +178,51 @@ mod tests {
         shuffle(&mut one, |_| 0);
         assert_eq!(one, [1]);
         assert!(random_below(5) < 5);
+    }
+
+    #[test]
+    fn open_request_follows_the_address() {
+        let tracks: Vec<TrackInfo> = (0..40)
+            .map(|i| TrackInfo {
+                id: format!("t{i}"),
+                ..TrackInfo::default()
+            })
+            .collect();
+        let at = |uri: &str| Address::parse(uri).unwrap();
+        assert_eq!(
+            open_request(&at("melodie:album/a?shuffle=true"), tracks.clone()),
+            Request::Play {
+                tracks: tracks.clone(),
+                shuffle: true
+            }
+        );
+        assert_eq!(
+            open_request(&at("melodie:album/a"), tracks.clone()),
+            Request::Play {
+                tracks: tracks.clone(),
+                shuffle: false
+            }
+        );
+        assert_eq!(
+            open_request(&at("melodie:album/a?queue=next"), tracks.clone()),
+            Request::Queue {
+                tracks: tracks.clone(),
+                next: true
+            }
+        );
+        let Request::Queue { tracks: got, next } = open_request(
+            &at("melodie:album/a?queue=last&shuffle=true"),
+            tracks.clone(),
+        ) else {
+            panic!("expected a queue request");
+        };
+        assert!(!next);
+        assert_ne!(got, tracks, "40 tracks left in their order");
+        let key = |t: &TrackInfo| t.id.clone();
+        let mut a: Vec<_> = got.iter().map(key).collect();
+        let mut b: Vec<_> = tracks.iter().map(key).collect();
+        a.sort();
+        b.sort();
+        assert_eq!(a, b);
     }
 }

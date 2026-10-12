@@ -4,6 +4,7 @@
 
 use crate::daemon::Msg;
 use libmpv2::Mpv;
+use melodie_core::address::{self, Address};
 use melodie_core::proto::Request;
 use std::collections::HashMap;
 use std::sync::mpsc::{Sender, channel};
@@ -150,7 +151,7 @@ impl Root {
 
     #[zbus(property)]
     fn supported_uri_schemes(&self) -> Vec<String> {
-        Vec::new()
+        vec![address::SCHEME.to_string()]
     }
 
     #[zbus(property)]
@@ -163,6 +164,8 @@ struct Player {
     tx: Sender<Msg>,
     shared: Arc<Mutex<Snapshot>>,
     mpv: Arc<Mpv>,
+    /// Addresses to open, served one after the other by a thread of the daemon.
+    open: Sender<Address>,
 }
 
 impl Player {
@@ -211,10 +214,13 @@ impl Player {
         }
     }
 
-    fn open_uri(&self, _uri: String) -> fdo::Result<()> {
-        Err(fdo::Error::NotSupported(
-            "ouverture d'adresse non prise en charge".into(),
-        ))
+    /// Reads the address here, so a malformed one is an error for the caller; the server is
+    /// asked by another thread, so this one is never held up by the network.
+    fn open_uri(&self, uri: String) -> fdo::Result<()> {
+        let addr = Address::parse(&uri).map_err(|e| fdo::Error::InvalidArgs(e.to_string()))?;
+        self.open
+            .send(addr)
+            .map_err(|_| fdo::Error::Failed("the player is quitting".into()))
     }
 
     #[zbus(signal)]
@@ -335,11 +341,20 @@ pub fn start(
     tx: Sender<Msg>,
     shared: Arc<Mutex<Snapshot>>,
     mpv: Arc<Mpv>,
+    open: Sender<Address>,
 ) -> zbus::Result<Connection> {
     Builder::session()?
         .name(bus_name())?
         .serve_at(OBJECT_PATH, Root { tx: tx.clone() })?
-        .serve_at(OBJECT_PATH, Player { tx, shared, mpv })?
+        .serve_at(
+            OBJECT_PATH,
+            Player {
+                tx,
+                shared,
+                mpv,
+                open,
+            },
+        )?
         .build()
 }
 

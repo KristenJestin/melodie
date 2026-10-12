@@ -192,6 +192,11 @@ enum Cmd {
         #[arg(long)]
         shuffle: bool,
     },
+    /// Plays or queues what an address names: `melodie:<kind>/<id>[?shuffle=true][&queue=next|last]`
+    Open {
+        /// For example `melodie:album/4Zq0Aw`; kinds: track, album, artist, playlist
+        address: String,
+    },
     /// Adds to the queue, or shows and edits it (positions start at 1)
     #[command(group(
         clap::ArgGroup::new("action")
@@ -348,6 +353,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             false,
             false,
         )),
+        Cmd::Open { address } => Ok(ctl::open(&env, &address)),
         Cmd::Queue {
             kind,
             id,
