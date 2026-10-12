@@ -923,6 +923,7 @@ dependencies = [
  "getrandom 0.3.4",
  "libc",
  "libmpv2",
+ "libmpv2-sys",
  "melodie-core",
  "rpassword",
  "rusqlite",

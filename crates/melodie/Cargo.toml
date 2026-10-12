@@ -20,4 +20,5 @@ zbus = "5"
 
 [dev-dependencies]
 melodie-core = { path = "../melodie-core", features = ["fake"] }
+libmpv2-sys = "4"
 tempfile = "3"
