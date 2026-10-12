@@ -363,7 +363,7 @@ pub fn pick(conn: &Connection, user: &str, target: &Target) -> anyhow::Result<Ve
         "subtitle": "Créer une playlist et y ajouter",
         "icon": ICON_NEW,
         "action": {"type": "command",
-            "command": format!("xdg-terminal-exec poste music playlist create --prompt {}", target.words())}
+            "command": format!("xdg-terminal-exec melodie playlist create --prompt {}", target.words())}
     })];
     let mut st = conn.prepare(
         "SELECT id, name, songCount, duration, coverArt FROM playlists
@@ -386,7 +386,7 @@ pub fn pick(conn: &Connection, user: &str, target: &Target) -> anyhow::Result<Ve
             "subtitle": format!("Playlist · {count} {} · {}", if count == 1 { "track" } else { "tracks" }, human_duration(duration)),
             "icon": ICON_PLAYLIST,
             "action": {"type": "command",
-                "command": format!("poste music playlist add {} {}", shell_word(&id), target.words())}
+                "command": format!("melodie playlist add {} {}", shell_word(&id), target.words())}
         });
         if let Some(c) = cover {
             v["_cover"] = json!(c);
@@ -596,18 +596,18 @@ mod tests {
         assert_eq!(v[0]["action"]["type"], "command");
         assert_eq!(
             v[0]["action"]["command"],
-            "xdg-terminal-exec poste music playlist create --prompt track s1"
+            "xdg-terminal-exec melodie playlist create --prompt track s1"
         );
         assert_eq!(v[1]["name"], "Daft Mix");
         assert_eq!(
             v[1]["action"]["command"],
-            "poste music playlist add p1 track s1"
+            "melodie playlist add p1 track s1"
         );
         assert_eq!(v[1]["subtitle"], "Playlist · 42 tracks · 2 h 05");
         let v = pick(&conn, "kris", &Target::Current).unwrap();
         assert_eq!(
             v[1]["action"]["command"],
-            "poste music playlist add p1 current"
+            "melodie playlist add p1 current"
         );
         let v = pick(&conn, "kris", &Target::Album("al1".into())).unwrap();
         assert!(v[0]["action"]["command"]

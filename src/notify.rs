@@ -1,4 +1,4 @@
-//! Notifications de bureau de l'application « Musique ».
+//! Notifications de bureau de l'application « Mélodie ».
 
 use crate::store::TEST_SECRET_VAR;
 use std::os::unix::process::CommandExt;
@@ -9,10 +9,10 @@ fn muted() -> bool {
     std::env::var_os(TEST_SECRET_VAR).is_some_and(|v| !v.is_empty())
 }
 
-/// `notify-send -a Musique -- <résumé> <corps>`.
+/// `notify-send -a Mélodie -- <résumé> <corps>`.
 pub fn command(summary: &str, body: &str) -> Command {
     let mut c = Command::new("notify-send");
-    c.args(["-a", "Musique", "--", summary, body]);
+    c.args(["-a", "Mélodie", "--", summary, body]);
     c
 }
 
@@ -29,12 +29,12 @@ pub fn send(summary: &str, body: &str) {
 }
 
 /// Script du processus détaché : attend le clic puis ouvre la reconnexion.
-const RECONNECT_SCRIPT: &str = r#"a=$(notify-send -a Musique -t 60000 -A "default=Se reconnecter" -- "$1" "$2" 2>/dev/null)
-[ "$a" = default ] && exec xdg-terminal-exec poste music login
+const RECONNECT_SCRIPT: &str = r#"a=$(notify-send -a Mélodie -t 60000 -A "default=Se reconnecter" -- "$1" "$2" 2>/dev/null)
+[ "$a" = default ] && exec xdg-terminal-exec melodie login
 exit 0"#;
 
 /// Commande de la notification « reconnexion requise » : un clic lance
-/// `xdg-terminal-exec poste music login`.
+/// `xdg-terminal-exec melodie login`.
 pub fn reconnect_command() -> Command {
     let mut c = Command::new("sh");
     c.args([
@@ -42,7 +42,7 @@ pub fn reconnect_command() -> Command {
         RECONNECT_SCRIPT,
         "sh",
         "Navidrome : reconnexion requise",
-        "Clique pour lancer poste music login",
+        "Clique pour lancer melodie login",
     ]);
     c
 }
@@ -78,7 +78,7 @@ mod tests {
             .get_args()
             .map(|a| a.to_string_lossy().to_string())
             .collect();
-        assert_eq!(args, ["-a", "Musique", "--", "Titre", "Corps"]);
+        assert_eq!(args, ["-a", "Mélodie", "--", "Titre", "Corps"]);
     }
 
     #[test]
@@ -88,8 +88,8 @@ mod tests {
             .get_args()
             .map(|a| a.to_string_lossy().to_string())
             .collect();
-        assert!(args[1].contains("xdg-terminal-exec poste music login"));
-        assert!(args[1].contains("-a Musique"));
+        assert!(args[1].contains("xdg-terminal-exec melodie login"));
+        assert!(args[1].contains("-a Mélodie"));
         assert_eq!(args[3], "Navidrome : reconnexion requise");
     }
 }

@@ -1,4 +1,4 @@
-//! Le démon de lecture (`poste-music daemon`, sous-commande cachée) : un seul
+//! Le démon de lecture (`melodie daemon`, sous-commande cachée) : un seul
 //! processus, libmpv dans le même processus, contrôle par socket Unix, service
 //! MPRIS, écoutes signalées à Navidrome.
 //!
@@ -104,7 +104,7 @@ impl Status {
     }
 }
 
-/// Verrou exclusif sur `music.lock` ; `None` si un autre démon le tient.
+/// Verrou exclusif sur `melodie.lock` ; `None` si un autre démon le tient.
 fn acquire_lock(path: &std::path::Path) -> Result<Option<std::fs::File>> {
     let f = std::fs::OpenOptions::new()
         .create(true)
@@ -127,7 +127,7 @@ fn acquire_lock(path: &std::path::Path) -> Result<Option<std::fs::File>> {
 }
 
 fn new_mpv(volume: u32) -> Result<Mpv> {
-    let ao = std::env::var("POSTE_MUSIC_AO")
+    let ao = std::env::var("MELODIE_AO")
         .ok()
         .filter(|s| !s.is_empty());
     Mpv::with_initializer(|init| {
@@ -138,7 +138,7 @@ fn new_mpv(volume: u32) -> Result<Mpv> {
         init.set_option("cache", "yes")?;
         init.set_option("ytdl", "no")?;
         init.set_option("idle", "yes")?;
-        init.set_option("audio-client-name", "Musique")?;
+        init.set_option("audio-client-name", "Mélodie")?;
         init.set_option("network-timeout", "15")?;
         init.set_option("volume", i64::from(volume))?;
         // Normalisation entre morceaux avec les tags ReplayGain des fichiers
@@ -160,7 +160,7 @@ fn new_mpv(volume: u32) -> Result<Mpv> {
 /// Fil des événements de mpv, sur un client séparé.
 fn spawn_events(mpv: &Mpv, tx: Sender<Msg>) -> Result<()> {
     let ev = mpv
-        .create_client(Some("poste-events"))
+        .create_client(Some("melodie-events"))
         .map_err(|e| anyhow::anyhow!("client mpv : {e}"))?;
     for (id, name, fmt) in [
         (1, "playlist-pos", Format::Int64),
@@ -240,7 +240,7 @@ struct Engine {
     covers_pending: HashSet<String>,
     last_ping: Option<Instant>,
     idle_timeout: Duration,
-    /// Dernier volume écrit dans `music.toml` d'état (pourcentage).
+    /// Dernier volume écrit dans `state.toml` (pourcentage).
     saved_volume: u32,
     /// Depuis quand le volume actuel diffère de celui qui est écrit.
     volume_dirty: Option<Instant>,
@@ -799,10 +799,10 @@ impl Engine {
     }
 }
 
-/// Durée d'inactivité tolérée : 10 minutes (`POSTE_MUSIC_IDLE_SECS` la
+/// Durée d'inactivité tolérée : 10 minutes (`MELODIE_IDLE_SECS` la
 /// remplace, pour les tests).
 fn idle_timeout() -> Duration {
-    std::env::var("POSTE_MUSIC_IDLE_SECS")
+    std::env::var("MELODIE_IDLE_SECS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .map_or(IDLE_TIMEOUT, Duration::from_secs)

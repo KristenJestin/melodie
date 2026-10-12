@@ -36,25 +36,25 @@ fn secs_env(name: &str, default: u64) -> u64 {
 }
 
 pub fn stale_secs() -> u64 {
-    secs_env("POSTE_MUSIC_STALE_SECS", STALE_SECS)
+    secs_env("MELODIE_STALE_SECS", STALE_SECS)
 }
 
 pub fn daemon_fresh_secs() -> u64 {
-    secs_env("POSTE_MUSIC_DAEMON_FRESH_SECS", DAEMON_FRESH_SECS)
+    secs_env("MELODIE_DAEMON_FRESH_SECS", DAEMON_FRESH_SECS)
 }
 
 pub fn daemon_every_secs() -> u64 {
-    secs_env("POSTE_MUSIC_DAEMON_EVERY_SECS", DAEMON_EVERY_SECS)
+    secs_env("MELODIE_DAEMON_EVERY_SECS", DAEMON_EVERY_SECS)
 }
 
-/// `$XDG_RUNTIME_DIR/poste/music-sync.lock`.
+/// `$XDG_RUNTIME_DIR/melodie/sync.lock`.
 pub fn lock_path() -> Result<PathBuf> {
-    Ok(proto::runtime_dir()?.join("music-sync.lock"))
+    Ok(proto::runtime_dir()?.join("sync.lock"))
 }
 
-/// `~/.local/state/poste/music-sync.log`.
+/// `~/.local/state/melodie/sync.log`.
 pub fn log_path(env: &Env) -> PathBuf {
-    env.state_dir().join("music-sync.log")
+    env.state_dir().join("sync.log")
 }
 
 /// Prend le verrou de synchronisation ; `None` si une autre synchronisation le tient.
@@ -114,7 +114,7 @@ pub fn plan(age: Option<u64>, running: bool, max_age: u64) -> Plan {
     }
 }
 
-/// Lance `poste-music sync --background [--full]` détaché (nouvelle session, aucune
+/// Lance `melodie sync --background [--full]` détaché (nouvelle session, aucune
 /// entrée ni sortie). Il relit le trousseau lui-même.
 pub fn spawn_background(full: bool) -> Result<()> {
     let exe = std::env::current_exe().context("chemin du programme")?;
@@ -248,7 +248,7 @@ mod tests {
     #[test]
     fn verrou_exclusif() {
         let d = tempfile::tempdir().unwrap();
-        let p = d.path().join("run/music-sync.lock");
+        let p = d.path().join("run/sync.lock");
         let a = try_lock(&p).unwrap();
         assert!(a.is_some());
         assert!(try_lock(&p).unwrap().is_none());

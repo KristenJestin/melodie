@@ -1,4 +1,4 @@
-//! `poste-music` : client Navidrome (API Subsonic/OpenSubsonic), copie locale
+//! `melodie` : client Navidrome (API Subsonic/OpenSubsonic), copie locale
 //! de la bibliothèque, recherche, et lecteur de fond (démon libmpv + MPRIS).
 
 mod api;
@@ -38,8 +38,8 @@ use std::process::ExitCode;
 
 #[derive(Parser)]
 #[command(
-    name = "poste music",
-    bin_name = "poste music",
+    name = "melodie",
+    bin_name = "melodie",
     version,
     about = "Client Navidrome : connexion, copie locale, recherche"
 )]
@@ -164,7 +164,7 @@ enum Cmd {
         /// Copie complète, sans comparer le dernier scan du serveur
         #[arg(long)]
         full: bool,
-        /// Synchronisation de fond (lancée par le module : silencieuse, journal dans music-sync.log)
+        /// Synchronisation de fond (lancée par le module : silencieuse, journal dans sync.log)
         #[arg(long, hide = true)]
         background: bool,
     },
@@ -172,7 +172,7 @@ enum Cmd {
     Search {
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
-        /// Sortie JSON au format du lanceur de l'île
+        /// Sortie JSON au format du lanceur
         #[arg(long)]
         json: bool,
     },
@@ -210,7 +210,7 @@ enum Cmd {
     },
     /// Morceau en cours, position, qualité, état
     Now {
-        /// Sortie JSON pour l'île
+        /// Sortie JSON
         #[arg(long)]
         json: bool,
     },
@@ -279,7 +279,7 @@ fn main() -> ExitCode {
     match run(cli) {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("poste music : {e:#}");
+            eprintln!("melodie : {e:#}");
             ExitCode::from(1)
         }
     }
@@ -430,7 +430,7 @@ fn playlist_cmd(env: &Env, cmd: PlaylistCmd) -> ExitCode {
         })
     })();
     r.unwrap_or_else(|e| {
-        eprintln!("poste music : {e:#}");
+        eprintln!("melodie : {e:#}");
         ExitCode::from(1)
     })
 }

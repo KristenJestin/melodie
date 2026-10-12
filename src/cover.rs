@@ -1,5 +1,5 @@
-//! Pochettes locales : `~/.cache/poste/music/covers/<id>.img`, téléchargées
-//! une seule fois, en arrière-plan (démon, 512 px). Le lanceur de l'île utilise
+//! Pochettes locales : `~/.cache/melodie/covers/<id>.img`, téléchargées
+//! une seule fois, en arrière-plan (démon, 512 px). Le lanceur utilise
 //! de petites vignettes (128 px) dans `covers/thumbs/<id>.img`.
 
 use crate::api::{pct_encode, Client};
@@ -172,7 +172,7 @@ pub fn apply(env: &Env, entries: &mut [Value]) {
         || crate::state::open_client(env).ok(),
         |ids| {
             if let Err(e) = spawn_background(ids) {
-                eprintln!("poste music : pochettes en arrière-plan : {e:#}");
+                eprintln!("melodie : pochettes en arrière-plan : {e:#}");
             }
         },
     );
@@ -234,7 +234,7 @@ pub fn apply_with(
     }
 }
 
-/// Lance `poste-music cover-fetch` détaché ; les identifiants passent par son
+/// Lance `melodie cover-fetch` détaché ; les identifiants passent par son
 /// entrée standard et le processus relit lui-même le trousseau (aucun jeton
 /// dans les arguments ni l'environnement).
 fn spawn_background(ids: &[String]) -> Result<()> {
@@ -314,7 +314,7 @@ mod tests {
         let env = Env::with_home("/home/k");
         assert_eq!(
             path(&env, "al-1"),
-            PathBuf::from("/home/k/.cache/poste/music/covers/al-1.img")
+            PathBuf::from("/home/k/.cache/melodie/covers/al-1.img")
         );
         assert_eq!(
             file_url(Path::new("/home/k m/.cache/a.img")),

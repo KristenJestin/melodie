@@ -157,14 +157,14 @@ pub fn mixes_in(conn: &rusqlite::Connection) -> Result<Vec<Value>, Failure> {
             "Mix perso",
             "Mix · Favorites, familiar and new",
             ICON_MIX,
-            "poste music mix me",
+            "melodie mix me",
         ),
         entry(
             "mix:rediscover",
             "Redécouvertes",
             "Mix · Albums not played for 90 days",
             ICON_REDISCOVER,
-            "poste music mix rediscover",
+            "melodie mix rediscover",
         ),
     ];
     for (name, _hot, total) in mix::top_genres(&lib, 6) {
@@ -176,7 +176,7 @@ pub fn mixes_in(conn: &rusqlite::Connection) -> Result<Vec<Value>, Failure> {
                 if total == 1 { "track" } else { "tracks" }
             ),
             ICON_MIX,
-            &format!("poste music mix genre {}", shell_word(&name)),
+            &format!("melodie mix genre {}", shell_word(&name)),
         ));
     }
     Ok(out)

@@ -1,5 +1,5 @@
 //! Ce que le module garde entre deux lancements : réglages non secrets
-//! (`music.toml`), secret dans le trousseau (Secret Service), dernier refus connu.
+//! (`config.toml`), secret dans le trousseau (Secret Service), dernier refus connu.
 
 use crate::api::Creds;
 use anyhow::{anyhow, Context, Result};
@@ -11,9 +11,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Valeur de l'attribut `service` des secrets de ce module.
-pub const SERVICE: &str = "poste-music";
+pub const SERVICE: &str = "melodie";
 
-/// `~/.config/poste/music.toml` : adresse et utilisateur, rien de secret.
+/// `~/.config/melodie/config.toml` : adresse et utilisateur, rien de secret.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Settings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -24,7 +24,7 @@ pub struct Settings {
 
 impl Settings {
     pub fn path(env: &Env) -> PathBuf {
-        env.config_home.join("poste/music.toml")
+        env.config_home.join("melodie/config.toml")
     }
 
     /// Réglages lus ; un fichier absent donne des réglages vides.
@@ -76,9 +76,9 @@ fn attrs(url: Option<&str>) -> HashMap<&str, &str> {
     a
 }
 
-/// Réservé aux tests : si `POSTE_MUSIC_TEST_SECRET` est défini, il désigne un
+/// Réservé aux tests : si `MELODIE_TEST_SECRET` est défini, il désigne un
 /// fichier qui tient lieu de trousseau (jamais le vrai trousseau).
-pub const TEST_SECRET_VAR: &str = "POSTE_MUSIC_TEST_SECRET";
+pub const TEST_SECRET_VAR: &str = "MELODIE_TEST_SECRET";
 
 fn test_secret_file() -> Option<PathBuf> {
     std::env::var_os(TEST_SECRET_VAR)

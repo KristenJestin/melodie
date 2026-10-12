@@ -56,7 +56,7 @@ impl Failure {
                 "name": "Se connecter à Navidrome",
                 "subtitle": "Connexion requise",
                 "icon": "󰍂",
-                "action": {"type": "command", "command": "xdg-terminal-exec poste music login"}
+                "action": {"type": "command", "command": "xdg-terminal-exec melodie login"}
             }),
             Failure::Unreachable { url, .. } => json!({
                 "id": "unreachable",
@@ -83,10 +83,10 @@ impl Failure {
 impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Failure::NoLogin => write!(f, "Pas connecté : lance `poste music login`"),
+            Failure::NoLogin => write!(f, "Pas connecté : lance `melodie login`"),
             Failure::AuthRefused(detail) => write!(
                 f,
-                "Connexion refusée par le serveur ({detail}) : lance `poste music login`"
+                "Connexion refusée par le serveur ({detail}) : lance `melodie login`"
             ),
             Failure::Unreachable { url, detail } => {
                 write!(f, "Serveur injoignable ({url}) : {detail}")
@@ -172,7 +172,7 @@ mod tests {
             assert_eq!(e["action"]["type"], "command");
             assert_eq!(
                 e["action"]["command"],
-                "xdg-terminal-exec poste music login"
+                "xdg-terminal-exec melodie login"
             );
         }
     }
@@ -184,7 +184,7 @@ mod tests {
         assert_eq!(e["name"], "Copie de la bibliothèque en cours…");
         assert_eq!(e["icon"], "󰑓");
         assert!(e.get("action").is_none());
-        assert!(!Failure::Syncing.to_string().contains("poste music login"));
+        assert!(!Failure::Syncing.to_string().contains("melodie login"));
     }
 
     #[test]
@@ -199,7 +199,7 @@ mod tests {
         assert_eq!(e["subtitle"], "http://h:4533");
         assert_eq!(e["icon"], "󰅛");
         assert!(e.get("action").is_none());
-        assert!(!f.to_string().contains("poste music login"));
+        assert!(!f.to_string().contains("melodie login"));
     }
 
     #[test]

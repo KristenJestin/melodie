@@ -6,9 +6,9 @@ use rusqlite::{params, Connection, Transaction};
 use serde_json::Value;
 use std::path::PathBuf;
 
-/// `$XDG_CACHE_HOME/poste/music`.
+/// `$XDG_CACHE_HOME/melodie`.
 pub fn cache_dir(env: &Env) -> PathBuf {
-    env.cache_dir().join("music")
+    env.cache_dir()
 }
 
 pub fn db_path(env: &Env) -> PathBuf {

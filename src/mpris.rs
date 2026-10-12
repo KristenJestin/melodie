@@ -1,4 +1,4 @@
-//! Service MPRIS 2 (`org.mpris.MediaPlayer2.poste_music`) : le démon se montre
+//! Service MPRIS 2 (`org.mpris.MediaPlayer2.melodie`) : le démon se montre
 //! au bureau (touches multimédia, barre, `playerctl`). Aucune adresse de flux
 //! n'y figure : pas de `xesam:url`.
 
@@ -16,7 +16,7 @@ use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 pub const OBJECT_PATH: &str = "/org/mpris/MediaPlayer2";
 pub const PLAYER_IFACE: &str = "org.mpris.MediaPlayer2.Player";
 const NO_TRACK: &str = "/org/mpris/MediaPlayer2/TrackList/NoTrack";
-const TRACK_PREFIX: &str = "/org/poste/music/track/";
+const TRACK_PREFIX: &str = "/org/melodie/track/";
 
 /// Ce que MPRIS dit du morceau en cours.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -30,7 +30,7 @@ pub struct MetaInfo {
     pub length_us: i64,
     pub art_url: Option<String>,
     pub quality: String,
-    /// Morceau aimé (clé `poste:starred`).
+    /// Morceau aimé (clé `melodie:starred`).
     pub starred: bool,
 }
 
@@ -100,11 +100,11 @@ pub fn metadata(meta: &Option<MetaInfo>) -> HashMap<String, OwnedValue> {
     if let Some(u) = &t.art_url {
         m.insert("mpris:artUrl".into(), owned(Value::from(u.clone())));
     }
-    m.insert("poste:starred".into(), owned(Value::Bool(t.starred)));
+    m.insert("melodie:starred".into(), owned(Value::Bool(t.starred)));
     if !t.quality.is_empty() {
         m.insert("xesam:comment".into(), string_list(vec![t.quality.clone()]));
         m.insert(
-            "poste:quality".into(),
+            "melodie:quality".into(),
             owned(Value::from(t.quality.clone())),
         );
     }
@@ -145,7 +145,7 @@ impl Root {
 
     #[zbus(property)]
     fn identity(&self) -> String {
-        "Musique".to_string()
+        "Mélodie".to_string()
     }
 
     #[zbus(property)]
@@ -320,12 +320,12 @@ pub fn position_us(mpv: &Mpv) -> i64 {
         .unwrap_or(0)
 }
 
-/// Nom de bus ; `POSTE_MUSIC_MPRIS_NAME` (réservé aux tests) remplace le suffixe.
+/// Nom de bus ; `MELODIE_MPRIS_NAME` (réservé aux tests) remplace le suffixe.
 pub fn bus_name() -> String {
-    let suffix = std::env::var("POSTE_MUSIC_MPRIS_NAME")
+    let suffix = std::env::var("MELODIE_MPRIS_NAME")
         .ok()
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "poste_music".to_string());
+        .unwrap_or_else(|| "melodie".to_string());
     format!("org.mpris.MediaPlayer2.{suffix}")
 }
 
@@ -403,8 +403,8 @@ mod tests {
 
     #[test]
     fn identifiants_de_morceau() {
-        assert_eq!(track_path(7), "/org/poste/music/track/7");
-        assert_eq!(seq_of_path("/org/poste/music/track/7"), Some(7));
+        assert_eq!(track_path(7), "/org/melodie/track/7");
+        assert_eq!(seq_of_path("/org/melodie/track/7"), Some(7));
         assert_eq!(seq_of_path("/autre/7"), None);
         assert!(ObjectPath::try_from(track_path(12345)).is_ok());
     }
@@ -417,11 +417,11 @@ mod tests {
         assert_eq!(
             keys,
             [
+                "melodie:quality",
+                "melodie:starred",
                 "mpris:artUrl",
                 "mpris:length",
                 "mpris:trackid",
-                "poste:quality",
-                "poste:starred",
                 "xesam:album",
                 "xesam:albumArtist",
                 "xesam:artist",
@@ -430,7 +430,7 @@ mod tests {
             ]
         );
         assert!(!m.contains_key("xesam:url"));
-        assert!(m["poste:starred"].downcast_ref::<bool>().unwrap());
+        assert!(m["melodie:starred"].downcast_ref::<bool>().unwrap());
         let text = format!("{m:?}");
         assert!(!text.contains("stream.view") && !text.contains("http"));
         assert_eq!(

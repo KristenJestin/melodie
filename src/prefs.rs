@@ -1,6 +1,6 @@
 //! Réglages de lecture mémorisés entre deux démarrages du démon :
-//! `~/.local/state/poste/music.toml` (aujourd'hui, seulement le volume).
-//! Distinct de `~/.config/poste/music.toml` (connexion), que le module n'écrit pas ici.
+//! `~/.local/state/melodie/state.toml` (aujourd'hui, seulement le volume).
+//! Distinct de `~/.config/melodie/config.toml` (connexion), que le module n'écrit pas ici.
 
 use crate::store::write_atomic;
 use anyhow::Result;
@@ -23,7 +23,7 @@ pub struct Prefs {
 
 impl Prefs {
     pub fn path(env: &Env) -> PathBuf {
-        env.state_dir().join("music.toml")
+        env.state_dir().join("state.toml")
     }
 
     /// Réglages lus ; absents ou illisibles donnent les valeurs par défaut

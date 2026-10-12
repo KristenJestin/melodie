@@ -44,14 +44,14 @@ impl Env {
         }
     }
 
-    /// `$XDG_STATE_HOME/poste`.
+    /// `$XDG_STATE_HOME/melodie`.
     pub fn state_dir(&self) -> PathBuf {
-        self.state_home.join("poste")
+        self.state_home.join("melodie")
     }
 
-    /// `$XDG_CACHE_HOME/poste`.
+    /// `$XDG_CACHE_HOME/melodie`.
     pub fn cache_dir(&self) -> PathBuf {
-        self.cache_home.join("poste")
+        self.cache_home.join("melodie")
     }
 }
 
@@ -63,7 +63,7 @@ mod tests {
     fn default_folders_under_home() {
         let e = Env::with_home("/h");
         assert_eq!(e.config_home, PathBuf::from("/h/.config"));
-        assert_eq!(e.state_dir(), PathBuf::from("/h/.local/state/poste"));
-        assert_eq!(e.cache_dir(), PathBuf::from("/h/.cache/poste"));
+        assert_eq!(e.state_dir(), PathBuf::from("/h/.local/state/melodie"));
+        assert_eq!(e.cache_dir(), PathBuf::from("/h/.cache/melodie"));
     }
 }

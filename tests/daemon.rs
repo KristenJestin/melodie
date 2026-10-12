@@ -1,6 +1,6 @@
-//! Test d'intégration du démon, sans son : `POSTE_MUSIC_AO=null`, faux serveur
+//! Test d'intégration du démon, sans son : `MELODIE_AO=null`, faux serveur
 //! Navidrome local, HOME et XDG_* temporaires, trousseau remplacé par un fichier
-//! (`POSTE_MUSIC_TEST_SECRET`), nom MPRIS propre au test.
+//! (`MELODIE_TEST_SECRET`), nom MPRIS propre au test.
 //!
 //! Le service MPRIS vit sur un bus de session privé (`dbus-daemon` lancé par le test, jamais le vrai bus) ; sans `dbus-daemon`,
 //! les vérifications MPRIS sont sautées avec un message.
@@ -53,7 +53,7 @@ fn wait_until(secs: u64, what: &str, mut f: impl FnMut() -> bool) {
 }
 
 /// Bus de session privé du test (jamais le vrai bus de l'utilisateur, où le
-/// faux lecteur apparaîtrait dans l'île). `None` si `dbus-daemon` est absent.
+/// faux lecteur apparaîtrait dans les lecteurs du bureau). `None` si `dbus-daemon` est absent.
 fn private_bus() -> Option<(std::process::Child, String)> {
     let mut child = Command::new("dbus-daemon")
         .args(["--session", "--nofork", "--print-address=1"])
@@ -101,7 +101,7 @@ impl Sandbox {
         ];
         let (bus, bus_addr) = private_bus().unzip();
         let sb = Sandbox {
-            bus_name: format!("poste_music_test_{}_{n}", std::process::id()),
+            bus_name: format!("melodie_test_{}_{n}", std::process::id()),
             bus_addr,
             bus,
             dir,
@@ -111,10 +111,10 @@ impl Sandbox {
             std::fs::create_dir_all(sb.dir.path().join(d)).unwrap();
         }
         if with_login {
-            let conf = sb.dir.path().join("home/.config/poste");
+            let conf = sb.dir.path().join("home/.config/melodie");
             std::fs::create_dir_all(&conf).unwrap();
             std::fs::write(
-                conf.join("music.toml"),
+                conf.join("config.toml"),
                 format!("url = \"{}\"\nuser = \"kris\"\n", sb.fake.url),
             )
             .unwrap();
@@ -140,7 +140,7 @@ impl Sandbox {
     }
 
     fn cmd(&self, args: &[&str]) -> Command {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_poste-music"));
+        let mut c = Command::new(env!("CARGO_BIN_EXE_melodie"));
         let h = self.home();
         c.env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
@@ -150,9 +150,9 @@ impl Sandbox {
             .env("XDG_DATA_HOME", h.join(".local/share"))
             .env("XDG_STATE_HOME", h.join(".local/state"))
             .env("XDG_RUNTIME_DIR", self.run_dir())
-            .env("POSTE_MUSIC_TEST_SECRET", self.secret_file())
-            .env("POSTE_MUSIC_AO", "null")
-            .env("POSTE_MUSIC_MPRIS_NAME", &self.bus_name)
+            .env("MELODIE_TEST_SECRET", self.secret_file())
+            .env("MELODIE_AO", "null")
+            .env("MELODIE_MPRIS_NAME", &self.bus_name)
             .args(args);
         if let Some(a) = &self.bus_addr {
             c.env("DBUS_SESSION_BUS_ADDRESS", a);
@@ -188,16 +188,16 @@ impl Sandbox {
     }
 
     fn socket(&self) -> PathBuf {
-        self.run_dir().join("poste/music.sock")
+        self.run_dir().join("melodie/melodie.sock")
     }
 
     fn log(&self) -> String {
-        std::fs::read_to_string(self.home().join(".local/state/poste/music.log"))
+        std::fs::read_to_string(self.home().join(".local/state/melodie/melodie.log"))
             .unwrap_or_default()
     }
 
     fn db(&self) -> PathBuf {
-        self.home().join(".cache/poste/music/library.db")
+        self.home().join(".cache/melodie/library.db")
     }
 
     fn calls(&self) -> Vec<String> {
@@ -296,9 +296,9 @@ fn lecture_complete_mpris_scrobble_skip_et_fin() {
     let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode(&sock), 0o600);
     assert_eq!(mode(sock.parent().unwrap()), 0o700);
-    assert!(sock.parent().unwrap().join("music.lock").exists());
+    assert!(sock.parent().unwrap().join("melodie.lock").exists());
 
-    // état en JSON, tel que l'île le lira
+    // état en JSON, tel que le lanceur le lira
     let now = sb.now();
     println!("now --json : {now}");
     assert_eq!(now["title"], "Titre 1");
@@ -350,7 +350,7 @@ fn lecture_complete_mpris_scrobble_skip_et_fin() {
         let m = metadata(p);
         assert_eq!(status(p), "Playing");
         let id: OwnedObjectPath = m["mpris:trackid"].try_clone().unwrap().try_into().unwrap();
-        assert!(id.as_str().starts_with("/org/poste/music/track/"));
+        assert!(id.as_str().starts_with("/org/melodie/track/"));
         assert_eq!(
             m["mpris:length"].try_clone().unwrap().try_into(),
             Ok(3_000_000i64)
@@ -361,7 +361,7 @@ fn lecture_complete_mpris_scrobble_skip_et_fin() {
         assert_eq!(album, "Discovery");
         let q = "FLAC · 24 bit / 96 kHz · 2304 kbps";
         assert_eq!(strings(&m["xesam:comment"]), [q]);
-        let pq: String = m["poste:quality"].try_clone().unwrap().try_into().unwrap();
+        let pq: String = m["melodie:quality"].try_clone().unwrap().try_into().unwrap();
         assert_eq!(pq, q);
         assert!(!m.contains_key("xesam:url"));
         for (k, v) in &m {
@@ -378,7 +378,7 @@ fn lecture_complete_mpris_scrobble_skip_et_fin() {
         let file = art.strip_prefix("file://").expect("file://");
         let png = std::fs::read(file).unwrap();
         assert_eq!(&png[1..4], b"PNG");
-        assert!(file.ends_with("/.cache/poste/music/covers/al-al1.img"));
+        assert!(file.ends_with("/.cache/melodie/covers/al-al1.img"));
         let ident: String = Proxy::new(
             conn.as_ref().unwrap(),
             format!("org.mpris.MediaPlayer2.{}", sb.bus_name),
@@ -388,7 +388,7 @@ fn lecture_complete_mpris_scrobble_skip_et_fin() {
         .unwrap()
         .get_property("Identity")
         .unwrap();
-        assert_eq!(ident, "Musique");
+        assert_eq!(ident, "Mélodie");
         let vol: f64 = p.get_property("Volume").unwrap();
         assert!((vol - 1.0).abs() < 1e-9, "volume par défaut : {vol}");
         p.set_property("Volume", 0.8f64).unwrap();
@@ -412,7 +412,7 @@ fn lecture_complete_mpris_scrobble_skip_et_fin() {
     if let Some(p) = &proxy {
         wait_until(3, "MPRIS titre 2", || title(p) == "Titre 2");
         let m = metadata(p);
-        let q: String = m["poste:quality"].try_clone().unwrap().try_into().unwrap();
+        let q: String = m["melodie:quality"].try_clone().unwrap().try_into().unwrap();
         assert_eq!(q, "MP3 · 320 kbps");
         assert!(p_changes
             .as_ref()
@@ -494,7 +494,7 @@ fn lecture_complete_mpris_scrobble_skip_et_fin() {
 fn stop_puis_inactivite_arrete_le_demon() {
     let sb = Sandbox::new(true);
     let mut c = sb.cmd(&["play", "track", "t2"]);
-    c.env("POSTE_MUSIC_IDLE_SECS", "2");
+    c.env("MELODIE_IDLE_SECS", "2");
     let o = c.output().unwrap();
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     wait_until(5, "lecture", || {
@@ -517,7 +517,7 @@ fn jeton_refuse_pendant_la_lecture() {
     // le serveur refuse désormais le jeton : le prochain flux échoue
     *sb.fake.state.expected_token.lock().unwrap() = "autre".into();
     wait_until(20, "arrêt sur refus", || !sb.socket().exists());
-    assert!(sb.home().join(".cache/poste/music/auth-refused").exists());
+    assert!(sb.home().join(".cache/melodie/auth-refused").exists());
     assert!(
         sb.log().contains("authentification refusée"),
         "{}",
@@ -531,7 +531,7 @@ fn pas_de_demarrage_sans_connexion_ni_serveur() {
     let sb = Sandbox::new(false);
     let o = sb.run(&["play", "album", "al1"]);
     assert_eq!(o.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&o.stderr).contains("poste music login"));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("melodie login"));
     assert!(!sb.socket().exists());
     let o = sb.run(&["queue", "album", "al1"]);
     assert_eq!(o.status.code(), Some(1));
@@ -541,7 +541,7 @@ fn pas_de_demarrage_sans_connexion_ni_serveur() {
     *sb.fake.state.expected_token.lock().unwrap() = "autre".into();
     let o = sb.run(&["play", "album", "al1"]);
     assert_eq!(o.status.code(), Some(1));
-    assert!(sb.home().join(".cache/poste/music/auth-refused").exists());
+    assert!(sb.home().join(".cache/melodie/auth-refused").exists());
     assert!(!sb.socket().exists());
 
     // serveur injoignable
@@ -551,7 +551,7 @@ fn pas_de_demarrage_sans_connexion_ni_serveur() {
     assert_eq!(o.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&o.stderr).contains("injoignable"));
     assert!(!sb.socket().exists());
-    assert!(!sb.home().join(".cache/poste/music/auth-refused").exists());
+    assert!(!sb.home().join(".cache/melodie/auth-refused").exists());
 
     // sans démon : état arrêté, contrôles refusés
     assert_eq!(sb.now()["state"], "stopped");
@@ -668,18 +668,18 @@ fn favoris_playlists_et_mixes_de_bout_en_bout() {
     assert_eq!(pick[0]["name"], "Nouvelle playlist…");
     assert_eq!(
         pick[0]["action"]["command"],
-        "xdg-terminal-exec poste music playlist create --prompt track t1"
+        "xdg-terminal-exec melodie playlist create --prompt track t1"
     );
     assert_eq!(
         pick[1]["action"]["command"],
-        "poste music playlist add p1 track t1"
+        "melodie playlist add p1 track t1"
     );
 
     // Mixes locaux.
     let mixes: Value = serde_json::from_str(&sb.ok(&["mixes", "--json"])).unwrap();
     assert_eq!(mixes[0]["name"], "Mix perso");
     assert_eq!(mixes[0]["icon"], "󰒝");
-    assert_eq!(mixes[0]["action"]["command"], "poste music mix me");
+    assert_eq!(mixes[0]["action"]["command"], "melodie mix me");
     assert_eq!(mixes[1]["name"], "Redécouvertes");
     assert_eq!(mixes[1]["icon"], "󰄉");
     let streams = sb
@@ -700,7 +700,7 @@ fn favoris_playlists_et_mixes_de_bout_en_bout() {
     assert!(list[0]["action"]["command"]
         .as_str()
         .unwrap()
-        .starts_with("poste music play track t"));
+        .starts_with("melodie play track t"));
     assert_eq!(
         sb.calls()
             .iter()
@@ -747,14 +747,14 @@ fn favoris_playlists_et_mixes_de_bout_en_bout() {
         .as_ref()
         .map(|c| mpris(c, &format!("org.mpris.MediaPlayer2.{}", sb.bus_name)));
     let mpris_starred = |p: &Proxy<'_>| -> bool {
-        metadata(p)["poste:starred"]
+        metadata(p)["melodie:starred"]
             .try_clone()
             .unwrap()
             .try_into()
             .unwrap()
     };
     if let Some(p) = &proxy {
-        wait_until(5, "MPRIS", || metadata(p).contains_key("poste:starred"));
+        wait_until(5, "MPRIS", || metadata(p).contains_key("melodie:starred"));
         assert!(!mpris_starred(p));
     }
     let out = sb.ok(&["like"]);
@@ -766,12 +766,12 @@ fn favoris_playlists_et_mixes_de_bout_en_bout() {
         &format!("SELECT starred IS NOT NULL FROM tracks WHERE id = '{id}'")
     ));
     if let Some(p) = &proxy {
-        wait_until(3, "poste:starred", || mpris_starred(p));
+        wait_until(3, "melodie:starred", || mpris_starred(p));
     }
     sb.ok(&["like", "--toggle"]);
     assert_eq!(sb.now()["starred"], false);
     if let Some(p) = &proxy {
-        wait_until(3, "poste:starred retiré", || !mpris_starred(p));
+        wait_until(3, "melodie:starred retiré", || !mpris_starred(p));
     }
     let adds = query_count(&sb, "updatePlaylist", &format!("songIdToAdd={id}"));
     sb.ok(&["playlist", "add", "p1"]);
@@ -809,7 +809,7 @@ fn favoris_et_mixes_selon_l_etat_de_connexion() {
         let o = sb.run(args);
         assert_eq!(o.status.code(), Some(1), "{args:?}");
         assert!(
-            String::from_utf8_lossy(&o.stderr).contains("poste music login"),
+            String::from_utf8_lossy(&o.stderr).contains("melodie login"),
             "{args:?}"
         );
     }
@@ -832,7 +832,7 @@ fn favoris_et_mixes_selon_l_etat_de_connexion() {
     *sb.fake.state.expected_token.lock().unwrap() = "autre".into();
     let o = sb.run(&["like", "track", "t1"]);
     assert_eq!(o.status.code(), Some(1));
-    assert!(sb.home().join(".cache/poste/music/auth-refused").exists());
+    assert!(sb.home().join(".cache/melodie/auth-refused").exists());
     assert!(!db_value::<bool>(
         &sb,
         "SELECT starred IS NOT NULL FROM tracks WHERE id = 't1'"
@@ -850,7 +850,7 @@ fn favoris_et_mixes_selon_l_etat_de_connexion() {
     *sb.fake.state.raw.lock().unwrap() = Some((503, "x".into()));
     let o = sb.run(&["like", "track", "t1"]);
     assert_eq!(o.status.code(), Some(2));
-    assert!(!String::from_utf8_lossy(&o.stderr).contains("poste music login"));
+    assert!(!String::from_utf8_lossy(&o.stderr).contains("melodie login"));
     let o = sb.run(&["playlist", "add", "p1", "track", "t1"]);
     assert_eq!(o.status.code(), Some(2));
     assert_eq!(
@@ -867,7 +867,7 @@ fn favoris_et_mixes_selon_l_etat_de_connexion() {
     let o = sb.run(&["mix", "me", "--seed", "1"]);
     assert_eq!(o.status.code(), Some(2));
     assert!(!sb.socket().exists());
-    assert!(!sb.home().join(".cache/poste/music/auth-refused").exists());
+    assert!(!sb.home().join(".cache/melodie/auth-refused").exists());
 }
 
 // ---- synchronisation automatique de la copie ----
@@ -899,7 +899,7 @@ fn scans(sb: &Sandbox) -> usize {
 }
 
 fn sync_log(sb: &Sandbox) -> String {
-    std::fs::read_to_string(sb.home().join(".local/state/poste/music-sync.log")).unwrap_or_default()
+    std::fs::read_to_string(sb.home().join(".local/state/melodie/sync.log")).unwrap_or_default()
 }
 
 fn quit_daemon(sb: &Sandbox) {
@@ -913,9 +913,9 @@ fn quit_daemon(sb: &Sandbox) {
 /// Tient le verrou de synchronisation comme le ferait une synchronisation en cours.
 fn hold_sync_lock(sb: &Sandbox) -> std::fs::File {
     use std::os::fd::AsRawFd;
-    let dir = sb.run_dir().join("poste");
+    let dir = sb.run_dir().join("melodie");
     std::fs::create_dir_all(&dir).unwrap();
-    let f = std::fs::File::create(dir.join("music-sync.lock")).unwrap();
+    let f = std::fs::File::create(dir.join("sync.lock")).unwrap();
     assert_eq!(
         unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
         0
@@ -1003,7 +1003,7 @@ fn refus_en_fond_pose_le_marqueur_sans_jeton() {
     set_synced_at(&sb, 1);
     *sb.fake.state.fail_code.lock().unwrap() = Some(40);
     sb.ok(&["search", "--json", "titre"]);
-    let marker = sb.home().join(".cache/poste/music/auth-refused");
+    let marker = sb.home().join(".cache/melodie/auth-refused");
     wait_until(10, "marqueur auth-refused", || marker.exists());
     wait_until(5, "journal", || sync_log(&sb).contains("auth-refused"));
     let log = sync_log(&sb);
@@ -1021,7 +1021,7 @@ fn demon_synchronise_au_demarrage_puis_periodiquement() {
     sb.fake.clear_calls();
     let play = |sb: &Sandbox, every: &str| {
         let mut c = sb.cmd(&["play", "album", "al1"]);
-        c.env("POSTE_MUSIC_DAEMON_EVERY_SECS", every);
+        c.env("MELODIE_DAEMON_EVERY_SECS", every);
         let o = c.output().unwrap();
         assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
         wait_until(5, "démon", || {
@@ -1047,7 +1047,7 @@ fn demon_synchronise_au_demarrage_puis_periodiquement() {
 }
 
 fn volume_file(sb: &Sandbox) -> String {
-    std::fs::read_to_string(sb.home().join(".local/state/poste/music.toml")).unwrap_or_default()
+    std::fs::read_to_string(sb.home().join(".local/state/melodie/state.toml")).unwrap_or_default()
 }
 
 #[test]

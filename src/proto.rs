@@ -10,25 +10,25 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// `$XDG_RUNTIME_DIR/poste`.
+/// `$XDG_RUNTIME_DIR/melodie`.
 pub fn runtime_dir() -> Result<PathBuf> {
     let base = std::env::var_os("XDG_RUNTIME_DIR")
         .filter(|v| !v.is_empty())
         .context("la variable XDG_RUNTIME_DIR n'est pas définie")?;
-    Ok(PathBuf::from(base).join("poste"))
+    Ok(PathBuf::from(base).join("melodie"))
 }
 
 pub fn socket_path() -> Result<PathBuf> {
-    Ok(runtime_dir()?.join("music.sock"))
+    Ok(runtime_dir()?.join("melodie.sock"))
 }
 
 pub fn lock_path() -> Result<PathBuf> {
-    Ok(runtime_dir()?.join("music.lock"))
+    Ok(runtime_dir()?.join("melodie.lock"))
 }
 
-/// `~/.local/state/poste/music.log`.
+/// `~/.local/state/melodie/melodie.log`.
 pub fn log_path(env: &Env) -> PathBuf {
-    env.state_dir().join("music.log")
+    env.state_dir().join("melodie.log")
 }
 
 /// Ce qu'on peut demander au démon.

@@ -11,7 +11,7 @@ use std::io::Read;
 use std::time::Duration;
 
 const API_VERSION: &str = "1.16.1";
-const CLIENT_NAME: &str = "poste-music";
+const CLIENT_NAME: &str = "melodie";
 const TIMEOUT: Duration = Duration::from_secs(8);
 const MAX_BODY: u64 = 64 * 1024 * 1024;
 const MAX_IMAGE: u64 = 16 * 1024 * 1024;
@@ -424,7 +424,7 @@ mod tests {
             .starts_with("http://h:4533/rest/search3.view?u=kris&t="));
         assert!(req
             .full_url()
-            .contains("&v=1.16.1&c=poste-music&f=json&query="));
+            .contains("&v=1.16.1&c=melodie&f=json&query="));
         for text in [
             format!("{req}"),
             format!("{req:?}"),
@@ -447,7 +447,7 @@ mod tests {
             raw.starts_with("http://h:4533/rest/stream.view?id=a%20b%26c&format=raw&u=kr%20is&t=")
         );
         assert!(raw.contains(&creds.t) && raw.contains(&creds.s));
-        assert!(raw.ends_with("&v=1.16.1&c=poste-music"));
+        assert!(raw.ends_with("&v=1.16.1&c=melodie"));
         for text in [format!("{url}"), format!("{url:?}")] {
             assert!(!text.contains(&creds.t) && !text.contains(&creds.s));
             assert!(!text.contains("stream.view"));

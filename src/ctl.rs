@@ -90,8 +90,8 @@ pub fn report(f: &Failure) -> ExitCode {
     let summary = match f {
         Failure::NoLogin | Failure::AuthRefused(_) => "Navidrome : connexion requise",
         Failure::Unreachable { .. } => "Navidrome injoignable",
-        Failure::Syncing => "Musique : copie de la bibliothèque en cours",
-        Failure::Internal(_) => "Musique : erreur",
+        Failure::Syncing => "Mélodie : copie de la bibliothèque en cours",
+        Failure::Internal(_) => "Mélodie : erreur",
     };
     notify::send(summary, &f.to_string());
     ExitCode::from(f.exit_code())
@@ -121,7 +121,7 @@ pub fn report_oops(o: &Oops) -> ExitCode {
     match o {
         Oops::NothingPlaying => {
             eprintln!("Rien en lecture (le démon ne tourne pas ou la file est vide)");
-            notify::send("Musique", "Rien en lecture");
+            notify::send("Mélodie", "Rien en lecture");
             ExitCode::from(1)
         }
         Oops::Failure(f) => report(f),
@@ -268,7 +268,7 @@ pub fn control(req: Request) -> ExitCode {
             ExitCode::from(1)
         }
         Err(e) => {
-            eprintln!("poste music : {e:#}");
+            eprintln!("melodie : {e:#}");
             ExitCode::from(1)
         }
     }
@@ -311,7 +311,7 @@ pub fn volume(env: &Env, change: Option<&str>) -> ExitCode {
                     return ExitCode::from(1);
                 }
                 Err(e) => {
-                    eprintln!("poste music : {e:#}");
+                    eprintln!("melodie : {e:#}");
                     return ExitCode::from(1);
                 }
             }
@@ -320,7 +320,7 @@ pub fn volume(env: &Env, change: Option<&str>) -> ExitCode {
             let mut p = Prefs::load(env);
             p.volume = Some(target);
             if let Err(e) = p.save(env) {
-                eprintln!("poste music : {e:#}");
+                eprintln!("melodie : {e:#}");
                 return ExitCode::from(3);
             }
         }
@@ -370,7 +370,7 @@ pub fn now(json: bool) -> ExitCode {
                 return ExitCode::from(1);
             }
             Err(e) => {
-                eprintln!("poste music : {e:#}");
+                eprintln!("melodie : {e:#}");
                 return ExitCode::from(1);
             }
         },
@@ -379,7 +379,7 @@ pub fn now(json: bool) -> ExitCode {
         match serde_json::to_string(&n) {
             Ok(s) => println!("{s}"),
             Err(e) => {
-                eprintln!("poste music : {e}");
+                eprintln!("melodie : {e}");
                 return ExitCode::from(3);
             }
         }

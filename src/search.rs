@@ -329,13 +329,13 @@ impl Hit {
             format!(" {flag}")
         };
         format!(
-            "poste music {verb} {} {}{flag}",
+            "melodie {verb} {} {}{flag}",
             self.kind.word(),
             shell_word(&self.id)
         )
     }
 
-    /// Entrée au format du lanceur de l'île.
+    /// Entrée au format du lanceur.
     pub fn to_json(&self) -> Value {
         let cmd = |c: String| json!({"type": "command", "command": c});
         let act = |label: &str, icon: &str, c: String| json!({"label": label, "icon": icon, "action": cmd(c)});
@@ -373,7 +373,7 @@ impl Hit {
                 "label": "Ajouter à une playlist…",
                 "icon": ICON_TO_PLAYLIST,
                 "action": {"type": "submenu",
-                    "command": format!("poste music playlist pick --json {} {}", self.kind.word(), shell_word(&self.id))}
+                    "command": format!("melodie playlist pick --json {} {}", self.kind.word(), shell_word(&self.id))}
             }));
         }
         let mut v = json!({
@@ -539,7 +539,7 @@ mod tests {
         assert_eq!(pl["subtitle"], "Playlist · 42 tracks · 2 h 05");
         assert_eq!(pl["verb"], "Play");
         assert_eq!(pl["action"]["type"], "command");
-        assert_eq!(pl["action"]["command"], "poste music play playlist p1 --shuffle");
+        assert_eq!(pl["action"]["command"], "melodie play playlist p1 --shuffle");
         assert!(pl.get("_cover").is_none());
         let acts = pl["actions"].as_array().unwrap();
         let labels: Vec<_> = acts.iter().map(|a| a["label"].as_str().unwrap()).collect();
@@ -552,13 +552,13 @@ mod tests {
         assert_eq!(acts[0]["icon"], "󰒟");
         assert_eq!(
             acts[0]["action"]["command"],
-            "poste music play playlist p1 --shuffle"
+            "melodie play playlist p1 --shuffle"
         );
-        assert_eq!(acts[1]["action"]["command"], "poste music play playlist p1");
+        assert_eq!(acts[1]["action"]["command"], "melodie play playlist p1");
         assert_eq!(acts[2]["icon"], "󰐕");
         assert_eq!(
             acts[2]["action"]["command"],
-            "poste music queue playlist p1"
+            "melodie queue playlist p1"
         );
         // Un morceau n'a pas de lecture aléatoire.
         let t = v[3]["actions"].as_array().unwrap();
@@ -574,14 +574,14 @@ mod tests {
             ]
         );
         assert_eq!(t[2]["icon"], "󰒝");
-        assert_eq!(t[2]["action"]["command"], "poste music mix track t1");
+        assert_eq!(t[2]["action"]["command"], "melodie mix track t1");
         assert_eq!(t[3]["icon"], "󰋑");
-        assert_eq!(t[3]["action"]["command"], "poste music like track t1");
+        assert_eq!(t[3]["action"]["command"], "melodie like track t1");
         assert_eq!(t[4]["icon"], "󰲸");
         assert_eq!(t[4]["action"]["type"], "submenu");
         assert_eq!(
             t[4]["action"]["command"],
-            "poste music playlist pick --json track t1"
+            "melodie playlist pick --json track t1"
         );
         // Album : même sous-menu, avec `album <id>` ; artiste : pas de playlist ; playlist : ni l'un ni l'autre.
         let al: Vec<_> = v[2]["actions"]
@@ -603,11 +603,11 @@ mod tests {
         );
         assert_eq!(
             v[2]["actions"][5]["action"]["command"],
-            "poste music playlist pick --json album al1"
+            "melodie playlist pick --json album al1"
         );
         assert_eq!(
             v[2]["actions"][3]["action"]["command"],
-            "poste music mix album al1"
+            "melodie mix album al1"
         );
         let ar: Vec<_> = v[1]["actions"]
             .as_array()
@@ -629,7 +629,7 @@ mod tests {
         assert_eq!(v[1]["_cover"], "ar-ar1");
         assert_eq!(v[2]["subtitle"], "Album · Daft Punk · 2001");
         assert_eq!(v[3]["subtitle"], "Track · Daft Punk · Discovery");
-        assert_eq!(v[3]["action"]["command"], "poste music play track t1");
+        assert_eq!(v[3]["action"]["command"], "melodie play track t1");
         assert_eq!(v[3]["_cover"], "mf-t1");
     }
 
@@ -648,7 +648,7 @@ mod tests {
         let a = &v["actions"][3];
         assert_eq!(a["label"], "Je n'aime plus");
         assert_eq!(a["icon"], "󰋕");
-        assert_eq!(a["action"]["command"], "poste music unlike track t1");
+        assert_eq!(a["action"]["command"], "melodie unlike track t1");
         assert!(!r.iter().find(|h| h.kind == Kind::Album).unwrap().starred);
     }
 
