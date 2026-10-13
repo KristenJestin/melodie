@@ -6,6 +6,7 @@ mod app;
 mod catalog;
 mod cover_cache;
 mod dialogs;
+mod home_page;
 mod mini;
 mod motion;
 mod pages;
@@ -28,6 +29,7 @@ use dialogs::{Dialogs, DialogsHandle};
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use home_page::HomeView;
 use melodie_core::env::Env;
 use melodie_core::proto::{self, Request};
 use melodie_desktop::account::{self, Screen};
@@ -36,7 +38,7 @@ use melodie_desktop::keys::{self, Act, Key, Situation, Thumb};
 use melodie_desktop::layout::{self, QUEUE_WIDTH};
 use melodie_desktop::theme::{self, Active, Choice, Palette};
 use mini::MiniPlayer;
-use pages::{HomeView, PageView, SelectionBar};
+use pages::{PageView, SelectionBar};
 use player::{PlayerView, palette};
 use queue::QueuePanel;
 use search::SearchView;
@@ -53,6 +55,7 @@ gpui_kit::assets::icon_assets!(
         AudioLines,
         Check,
         ChevronLeft,
+        ChevronRight,
         CircleUser,
         Copy,
         CopyX,

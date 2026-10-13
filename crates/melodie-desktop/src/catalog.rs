@@ -10,31 +10,22 @@ use melodie_core::env::Env;
 use melodie_core::library::{
     self as lib, Album, AlbumBy, Artist, ArtistBy, Playlist, Sort, Track, TrackBy,
 };
-use melodie_core::mix;
 use melodie_core::store;
 use melodie_core::time::now_secs;
 use melodie_desktop::browse::{Nav, Place};
+use melodie_desktop::home::{self, Highlight, Home, Row};
 use melodie_desktop::launch::{self, Job};
 use melodie_desktop::selection::{How, Selection};
+use melodie_desktop::theme::Tint;
+use melodie_desktop::tint;
 use rusqlite::Connection;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-/// Albums shown on the home page in each section.
-const HOME_ALBUMS: usize = 24;
 /// Top tracks on an artist's page.
 const TOP_TRACKS: usize = 10;
-/// Genre mixes on the home page, as many as `melodie mixes` offers.
-const GENRES: usize = 6;
-
-pub struct Home {
-    pub recent: Arc<[Album]>,
-    pub most_played: Arc<[Album]>,
-    /// The genres most present among the liked or frequent tracks, with their track counts.
-    pub genres: Vec<(String, usize)>,
-}
 
 pub enum Page {
     Album {
@@ -72,7 +63,12 @@ pub struct Catalog {
     pub artist_sort: Sort<ArtistBy>,
     pub tracks: Option<Arc<[Track]>>,
     pub track_sort: Sort<TrackBy>,
-    pub home: Option<Arc<Home>>,
+    home: Option<Home>,
+    /// What the home shows, from what it read and the playlists.
+    pub home_view: Option<Arc<home::View>>,
+    /// The colour of the highlights' covers, by cover id, as far as it was read.
+    pub tints: Arc<HashMap<String, Option<Tint>>>,
+    tinting: HashSet<String>,
     pub playlists: Arc<[Playlist]>,
     pub pages: HashMap<Place, Arc<Page>>,
     /// Cover files by cover id, as far as they were looked up (a copy of the cache's, which
@@ -97,6 +93,7 @@ impl Catalog {
         // a file that lands shows in every view of the catalog, without a restart
         cx.observe(&cover_cache, |this, cache, cx| {
             this.covers = cache.read(cx).files.clone();
+            this.want_tints(cx);
             cx.notify();
         })
         .detach();
@@ -110,6 +107,9 @@ impl Catalog {
             tracks: None,
             track_sort: Sort::asc(TrackBy::Artist),
             home: None,
+            home_view: None,
+            tints: Arc::default(),
+            tinting: HashSet::new(),
             playlists: Arc::from([]),
             pages: HashMap::new(),
             covers: Arc::default(),
@@ -349,6 +349,7 @@ impl Catalog {
         self.load("playlists", cx, lib::playlists, |this, list, cx| {
             this.want_covers(list.iter().filter_map(|p| p.cover.clone()), cx);
             this.playlists = list.into();
+            this.home_changed(cx);
         });
     }
 
@@ -356,25 +357,71 @@ impl Catalog {
         self.load(
             "home",
             cx,
-            |c| {
-                // the genres `melodie mixes` offers, by the same code
-                let library = mix::Library::load(c, now_secs() as i64)?;
-                Ok(Home {
-                    recent: lib::recently_added(c, HOME_ALBUMS)?.into(),
-                    most_played: lib::most_played(c, HOME_ALBUMS)?.into(),
-                    genres: mix::top_genres(&library, GENRES)
-                        .into_iter()
-                        .map(|(name, _, total)| (name, total))
-                        .collect(),
-                })
-            },
+            |c| Home::read(c, now_secs() as i64),
             |this, home, cx| {
-                let ids = home.recent.iter().chain(home.most_played.iter());
-                this.want_covers(ids.filter_map(|a| a.cover.clone()).collect::<Vec<_>>(), cx);
-                this.home = Some(Arc::new(home));
+                this.home = Some(home);
+                this.home_changed(cx);
             },
         );
         self.load_playlists(cx);
+    }
+
+    /// Builds the home again from what it read, and asks for what it shows.
+    fn home_changed(&mut self, cx: &mut Context<Self>) {
+        let Some(home) = &self.home else { return };
+        let view = home::view(home, &self.playlists);
+        let covers: Vec<String> = view
+            .sections
+            .iter()
+            .flat_map(|s| -> Vec<Option<String>> {
+                match &s.row {
+                    Row::Albums(v) => v.iter().map(|a| a.cover.clone()).collect(),
+                    Row::Artists(v) => v.iter().map(|a| a.cover.clone()).collect(),
+                    Row::Mixes(_) | Row::Playlists(_) => vec![],
+                }
+            })
+            .flatten()
+            .collect();
+        self.home_view = Some(Arc::new(view));
+        self.want_covers(covers, cx);
+        self.want_tints(cx);
+    }
+
+    /// Reads the colour of the highlights' covers that are on disk, away from the window.
+    fn want_tints(&mut self, cx: &mut Context<Self>) {
+        let Some(view) = &self.home_view else { return };
+        let todo: Vec<(String, PathBuf)> = view
+            .highlights
+            .iter()
+            .filter_map(|h| match h {
+                Highlight::Album { album, .. } => album.cover.clone(),
+                Highlight::Mix => None,
+            })
+            .filter(|id| !self.tints.contains_key(id) && !self.tinting.contains(id))
+            .filter_map(|id| self.covers.get(&id).map(|p| (id, p.clone())))
+            .collect();
+        if todo.is_empty() {
+            return;
+        }
+        self.tinting.extend(todo.iter().map(|(id, _)| id.clone()));
+        let task = cx.background_spawn(async move {
+            todo.into_iter()
+                .map(|(id, path)| (id, tint::of_file(&path)))
+                .collect::<Vec<_>>()
+        });
+        cx.spawn(async move |this, cx| {
+            let found = task.await;
+            let _ = this.update(cx, |this, cx| {
+                let mut tints = (*this.tints).clone();
+                for (id, t) in found {
+                    this.tinting.remove(&id);
+                    tints.insert(id, t);
+                }
+                this.tints = Arc::new(tints);
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn load_albums(&mut self, cx: &mut Context<Self>) {

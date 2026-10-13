@@ -83,7 +83,12 @@ pub fn album_cell(
         .flex_none()
         .gap_1()
         .cursor_pointer()
-        .on_click(move |_, _, cx| open.update(cx, |c, cx| c.go(Place::Album(id.clone()), cx)))
+        .on_click(move |_, _, cx| {
+            // the end of a drag of the home's rows is not a click
+            if !cx.has_active_drag() {
+                open.update(cx, |c, cx| c.go(Place::Album(id.clone()), cx))
+            }
+        })
         .child(
             div()
                 .relative()
@@ -113,6 +118,9 @@ pub fn album_cell(
                             .tip("Play")
                             .on_click(move |_, _, cx| {
                                 cx.stop_propagation();
+                                if cx.has_active_drag() {
+                                    return;
+                                }
                                 play.update(cx, |c, cx| {
                                     c.run(
                                         Job::Play {
@@ -263,6 +271,8 @@ impl Render for AlbumGrid {
                     (AlbumBy::Name, "Name", false),
                     (AlbumBy::Artist, "Artist", false),
                     (AlbumBy::Year, "Year", true),
+                    (AlbumBy::Plays, "Most played", true),
+                    (AlbumBy::Played, "Recently played", true),
                 ],
                 pal,
                 move |s, cx| catalog.update(cx, |c, cx| c.sort_albums(s, cx)),
