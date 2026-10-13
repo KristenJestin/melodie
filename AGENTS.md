@@ -149,7 +149,7 @@ git config core.hooksPath .githooks     # once per clone: the commit-msg and pre
   refactor, test, docs, chore, build, ci, perf. `tools/commit-message.sh` is the judge (the
   `commit-msg` hook and CI run it).
 - Scopes: `library`, `api`, `sync`, `search`, `mix`, `playlists`, `daemon`, `cli`, `migrate`,
-  `gui`, `repo`, `ci`.
+  `desktop`, `repo`, `ci`.
 - **Pull requests are merged by squash only.** The title is a plain Angular subject. The
   description is written in the first person as the maintainer and ends with `Closes #<n>`.
 
