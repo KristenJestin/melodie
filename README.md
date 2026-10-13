@@ -118,6 +118,15 @@ Screenshots and a recording of the animations, made with invented data, are in
   current one marked, the next ones. A click plays a track; drag a track onto another to move it
   there; the cross on a row removes it; the button at the top removes what comes after the
   current track.
+- **The player bar**, at the bottom of every place but the player: on the left the cover, the
+  title (opens the album) and the artist (opens the artist), and the heart; in the middle
+  previous, play/pause and next, and under them the position bar to drag, with the elapsed and
+  the total time; on the right the volume (the icon mutes, a second click brings the volume back:
+  the window mutes by setting 0, the daemon has no mute), the queue button and a button that opens
+  the player. Both sides get the same room, so play/pause sits on the axis of the main area. On a
+  narrow main area (the queue docked counts) the parts go in this order: the volume, the times,
+  the title and the artist, the heart; play/pause never. The colours follow the cover; the cover
+  and the title cross-fade at each track, and play and pause turn into each other.
 - **The library**, in the sidebar: Home, Albums, Artists, Tracks, and the playlists. Everything is
   read from the local copy, away from the window's thread: browsing never touches the network.
   - Home: the albums added last, the mixes (the personal mix, the rediscoveries, and a mix for

@@ -6,9 +6,9 @@ mod app;
 mod catalog;
 mod cover_cache;
 mod dialogs;
-mod mini;
 mod motion;
 mod pages;
+mod playbar;
 mod player;
 mod queue;
 mod search;
@@ -19,6 +19,7 @@ mod stats;
 mod tables;
 mod timing;
 mod tips;
+mod volume;
 mod widgets;
 
 use albums::AlbumGrid;
@@ -31,19 +32,21 @@ use gpui_kit::*;
 use melodie_core::env::Env;
 use melodie_core::proto::{self, Request};
 use melodie_desktop::account::{self, Screen};
+use melodie_desktop::bar;
 use melodie_desktop::browse::Place;
 use melodie_desktop::keys::{self, Act, Key, Situation, Thumb};
 use melodie_desktop::layout::{self, QUEUE_WIDTH};
 use melodie_desktop::theme::{self, Active, Choice, Palette};
-use mini::MiniPlayer;
 use pages::{HomeView, PageView, SelectionBar};
-use player::{PlayerView, palette};
+use playbar::PlayBar;
+use player::{Bar, PlayerView, palette};
 use queue::QueuePanel;
 use search::SearchView;
 use sidebar::Sidebar;
 use signin::{Account, SignInView};
 use std::process::ExitCode;
 use tables::{ArtistList, TrackList};
+use volume::Volume;
 
 gpui_kit::assets::icon_assets!(
     Icons,
@@ -69,6 +72,7 @@ gpui_kit::assets::icon_assets!(
         ListX,
         LogIn,
         LogOut,
+        Maximize2,
         MicVocal,
         Music,
         Pause,
@@ -86,7 +90,9 @@ gpui_kit::assets::icon_assets!(
         Sparkles,
         Tag,
         Trash,
+        Volume1,
         Volume2,
+        VolumeX,
         X,
     ]
 );
@@ -103,7 +109,7 @@ struct Views {
     tracks: Entity<TrackList>,
     page: Entity<PageView>,
     search: Entity<SearchView>,
-    mini: Entity<MiniPlayer>,
+    playbar: Entity<PlayBar>,
     sign_in: Entity<SignInView>,
     dialogs: Entity<Dialogs>,
     picked: Entity<SelectionBar>,
@@ -416,11 +422,11 @@ impl Render for Root {
             Place::Search | Place::Found(_) => v.search.clone().into(),
         };
         let (scrim, card_scrim) = (self.shared.clone(), self.shared.clone());
-        // the notice stays above the mini player
+        // the notice stays above the player bar
         let lift = if here == Place::Player {
             0.
         } else {
-            mini::HEIGHT
+            bar::HEIGHT
         };
         div()
             .id("root")
@@ -464,7 +470,7 @@ impl Render for Root {
                                         |el, t| el.opacity(t).mt(px((1.0 - t) * 10.0)),
                                     ),
                             )
-                            .when(here != Place::Player, |d| d.child(v.mini.clone())),
+                            .when(here != Place::Player, |d| d.child(v.playbar.clone())),
                     )
                     // the panel moves with the column's edge, so it slides in as the column opens
                     .when(col > 0.0, |d| {
@@ -492,7 +498,7 @@ impl Render for Root {
                         )
                     }),
             )
-            // the rows picked: what can be done with them, above the mini player
+            // the rows picked: what can be done with them, above the player bar
             .child(
                 div()
                     .absolute()
@@ -643,8 +649,14 @@ fn main() -> ExitCode {
             let catalog = cx.new(|cx| Catalog::new(env.clone(), shared.clone(), cx));
             let account = cx.new(|cx| Account::new(env.clone(), shared.clone(), cx));
             let (s, c) = (&shared, &catalog);
+            let volume = cx.new(|cx| Volume::new(s.clone(), window, cx));
+            // the player and the bar each have a position bar of their own: the layouts differ
+            let position = |inline: bool, window: &mut Window, cx: &mut App| {
+                cx.new(|cx| Bar::new(s.clone(), clock.clone(), inline, window, cx))
+            };
+            let (stacked, inline) = (position(false, window, cx), position(true, window, cx));
             let views = Views {
-                player: cx.new(|cx| PlayerView::new(s.clone(), clock, window, cx)),
+                player: cx.new(|_| PlayerView::new(s.clone(), stacked, volume.clone())),
                 queue: cx.new(|cx| QueuePanel::new(s.clone(), cx)),
                 sidebar: cx.new(|_| Sidebar::new(s.clone(), c.clone())),
                 home: cx.new(|_| HomeView::new(s.clone(), c.clone())),
@@ -653,7 +665,7 @@ fn main() -> ExitCode {
                 tracks: cx.new(|_| TrackList::new(s.clone(), c.clone())),
                 page: cx.new(|_| PageView::new(s.clone(), c.clone())),
                 search: cx.new(|cx| SearchView::new(s.clone(), c.clone(), env.clone(), window, cx)),
-                mini: cx.new(|_| MiniPlayer::new(s.clone(), c.clone())),
+                playbar: cx.new(|_| PlayBar::new(s.clone(), c.clone(), volume.clone(), inline)),
                 sign_in: cx.new(|cx| SignInView::new(s.clone(), account.clone(), window, cx)),
                 dialogs: cx.new(|cx| Dialogs::new(s.clone(), c.clone(), window, cx)),
                 picked: cx.new(|_| SelectionBar::new(s.clone(), c.clone())),

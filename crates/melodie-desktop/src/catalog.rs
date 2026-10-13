@@ -54,6 +54,13 @@ pub enum Page {
     Gone,
 }
 
+/// Which page of a track to open.
+#[derive(Clone, Copy)]
+pub enum Facet {
+    Album,
+    Artist,
+}
+
 /// Why a view has nothing to list.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Empty {
@@ -133,6 +140,28 @@ impl Catalog {
         if self.nav.go(to) {
             self.moved(cx);
         }
+    }
+
+    /// Opens the page of the album or the artist of a track. A queue entry holds only their
+    /// names, so the local copy says which they are.
+    pub fn open_of_track(&mut self, track: String, facet: Facet, cx: &mut Context<Self>) {
+        self.load(
+            "track",
+            cx,
+            move |c| lib::track(c, &track),
+            move |this, found, cx| {
+                let to = found.and_then(|t| match facet {
+                    Facet::Album => t.album_id.map(Place::Album),
+                    Facet::Artist => t.artist_id.map(Place::Artist),
+                });
+                match to {
+                    Some(to) => this.go(to, cx),
+                    None => this
+                        .shared
+                        .update(cx, |s, cx| s.say("It is not in the library", cx)),
+                }
+            },
+        );
     }
 
     /// Goes to what the sidebar holds: it starts over.

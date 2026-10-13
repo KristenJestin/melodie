@@ -230,6 +230,16 @@ pub fn album_tracks(conn: &Connection, id: &str) -> Result<Vec<Track>> {
     )
 }
 
+/// One track by its id, with the album and the artist it belongs to (a queue entry has only
+/// their names).
+pub fn track(conn: &Connection, id: &str) -> Result<Option<Track>> {
+    Ok(
+        all(conn, &format!("{TRACK} WHERE t.id = ?1"), [id], track_row)?
+            .into_iter()
+            .next(),
+    )
+}
+
 const ARTIST: &str = "SELECT a.id, a.name, a.albumCount, COALESCE(n.c, 0), a.coverArt FROM artists a
     LEFT JOIN (SELECT artistId, count(*) AS c FROM tracks GROUP BY artistId) n ON n.artistId = a.id";
 
@@ -567,6 +577,16 @@ mod tests {
             ["t2", "t1", "t3"]
         );
         assert_eq!(album(&conn, "al1").unwrap().unwrap().name, "Lanterns");
+    }
+
+    #[test]
+    fn a_track_is_found_by_its_id_with_its_album_and_artist_ids() {
+        let (_d, conn) = library();
+        let t = track(&conn, "t4").unwrap().unwrap();
+        assert_eq!(t.title, "Glasshouse");
+        assert_eq!(t.album_id.as_deref(), Some("al2"));
+        assert_eq!(t.artist_id.as_deref(), Some("ar2"));
+        assert_eq!(track(&conn, "nope").unwrap(), None);
     }
 
     #[test]

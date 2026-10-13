@@ -3,6 +3,7 @@
 use crate::app::{Shared, Shown};
 use crate::dialogs::{self, Dialog};
 use crate::motion;
+use crate::volume::Volume;
 use crate::widgets::IconButton;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
@@ -14,7 +15,7 @@ use melodie_core::proto::Request;
 use melodie_core::track::clock;
 use melodie_desktop::launch::{Adding, Job};
 use melodie_desktop::layout;
-use melodie_desktop::model::{Clock, PlayState, VOLUME_SLIDER_MAX, volume_percent};
+use melodie_desktop::model::{Clock, PlayState};
 use melodie_desktop::theme::Palette;
 use std::time::{Duration, Instant};
 
@@ -30,66 +31,19 @@ const TICK: Duration = Duration::from_millis(250);
 /// Room for the buttons on each side of the three at the middle: the widest side holds two
 /// buttons of 40 px and the gap between them. Both sides get it, so play/pause stays centered.
 const SIDE: f32 = 2.0 * 40.0 + 12.0;
-/// The volume is sent at most this often while it is dragged.
-const VOLUME_EVERY: Duration = Duration::from_millis(60);
 
 pub struct PlayerView {
     shared: Entity<Shared>,
     bar: Entity<Bar>,
-    volume: Entity<SliderState>,
-    volume_dragged: bool,
-    volume_sent: Option<Instant>,
-    _subs: Vec<Subscription>,
+    volume: Entity<Volume>,
 }
 
 impl PlayerView {
-    pub fn new(
-        shared: Entity<Shared>,
-        clock: Entity<Clock>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let bar = cx.new(|cx| Bar::new(shared.clone(), clock, window, cx));
-        let v = shared.read(cx).player.volume;
-        let volume = cx.new(|_| {
-            SliderState::new()
-                .min(0.)
-                .max(VOLUME_SLIDER_MAX)
-                .step(1.)
-                .default_value(volume_percent(v))
-        });
-        let subs = vec![
-            cx.subscribe_in(&volume, window, |this, _, ev: &SliderEvent, _, cx| {
-                let (value, done) = match ev {
-                    SliderEvent::Change(v) => (v.end(), false),
-                    SliderEvent::Release(v) => (v.end(), true),
-                };
-                this.volume_dragged = !done;
-                let due = this.volume_sent.is_none_or(|t| t.elapsed() >= VOLUME_EVERY);
-                if done || due {
-                    this.volume_sent = Some(Instant::now());
-                    let volume = f64::from(value) / 100.0;
-                    this.shared
-                        .update(cx, |s, cx| s.send(Request::SetVolume { volume }, cx));
-                }
-            }),
-            cx.observe_in(&shared, window, |this, shared, window, cx| {
-                if this.volume_dragged {
-                    return;
-                }
-                let v = volume_percent(shared.read(cx).player.volume);
-                if this.volume.read(cx).value().end() != v {
-                    this.volume.update(cx, |s, cx| s.set_value(v, window, cx));
-                }
-            }),
-        ];
+    pub fn new(shared: Entity<Shared>, bar: Entity<Bar>, volume: Entity<Volume>) -> Self {
         Self {
             shared,
             bar,
             volume,
-            volume_dragged: false,
-            volume_sent: None,
-            _subs: subs,
         }
     }
 }
@@ -359,7 +313,7 @@ impl Render for PlayerView {
                     )
                     .child(
                         div().flex_1().child(
-                            Slider::new(&self.volume)
+                            Slider::new(self.volume.read(cx).slider())
                                 .disabled(!following)
                                 .bg(pal.secondary)
                                 .text_color(pal.fg),
@@ -374,6 +328,9 @@ impl Render for PlayerView {
 pub struct Bar {
     shared: Entity<Shared>,
     clock: Entity<Clock>,
+    /// On one line, between the elapsed and the total time (the bar at the bottom of the
+    /// window); else under the slider, as in the player.
+    inline: bool,
     slider: Entity<SliderState>,
     /// Where the thumb is held, while it is dragged (0 to 1000).
     held: Option<f32>,
@@ -384,9 +341,10 @@ pub struct Bar {
 const BAR_STEPS: f32 = 1000.0;
 
 impl Bar {
-    fn new(
+    pub fn new(
         shared: Entity<Shared>,
         clock: Entity<Clock>,
+        inline: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -420,6 +378,7 @@ impl Bar {
         Self {
             shared,
             clock,
+            inline,
             slider,
             held: None,
             _subs: subs,
@@ -480,15 +439,30 @@ impl Render for Bar {
             Some(v) => f64::from(v / BAR_STEPS) * c.duration,
             None => c.at(Instant::now()),
         };
+        let slider = Slider::new(&self.slider)
+            .disabled(!has_track)
+            .bg(pal.accent)
+            .text_color(pal.fg);
+        if self.inline {
+            let times = crate::playbar::parts(&self.shared, window, cx).times;
+            // fixed widths: the slider does not shift when 9:59 becomes 10:00; the elapsed time
+            // leans against the slider, the total time too
+            let time = |t: f64| div().w(px(40.)).flex_none().child(clock(t));
+            return h_flex()
+                .w_full()
+                .gap_2()
+                .items_center()
+                .text_xs()
+                .text_color(pal.secondary)
+                .when(times, |d| d.child(time(position).flex().justify_end()))
+                .child(div().flex_1().min_w_0().child(slider))
+                .when(times, |d| d.child(time(c.duration)))
+                .into_any_element();
+        }
         v_flex()
             .w_full()
             .gap_1()
-            .child(
-                Slider::new(&self.slider)
-                    .disabled(!has_track)
-                    .bg(pal.accent)
-                    .text_color(pal.fg),
-            )
+            .child(slider)
             .child(
                 h_flex()
                     .justify_between()
@@ -497,5 +471,6 @@ impl Render for Bar {
                     .child(clock(position))
                     .child(clock(c.duration)),
             )
+            .into_any_element()
     }
 }
