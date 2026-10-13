@@ -12,6 +12,7 @@ mod notify;
 mod playlists_cmd;
 mod queue;
 mod rules;
+mod waveform_cmd;
 
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -340,6 +341,9 @@ enum Cmd {
     /// Downloads thumbnails (ids on standard input, started by search)
     #[command(hide = true)]
     CoverFetch,
+    /// Computes waveforms (track ids on standard input, started by the window)
+    #[command(hide = true)]
+    WaveformFetch,
     /// Playback daemon (started by `play` and `queue`)
     #[command(hide = true)]
     Daemon,
@@ -474,6 +478,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Cmd::Mixes { json } => Ok(emit_values(&env, mixcmd::mixes(&env), json)),
         Cmd::Home { json } => Ok(emit_values(&env, mixcmd::home(&env), json)),
         Cmd::CoverFetch => cover_cmd::fetch_cmd(&env),
+        Cmd::WaveformFetch => waveform_cmd::fetch_cmd(&env),
         Cmd::Daemon => {
             daemon::run(&env)?;
             Ok(ExitCode::SUCCESS)

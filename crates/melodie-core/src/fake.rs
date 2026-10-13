@@ -46,6 +46,9 @@ pub struct State {
     pub stream_secs: AtomicUsize,
     /// Stream length in seconds for the tracks that must differ from `stream_secs`, by song id.
     pub stream_secs_of: Mutex<HashMap<String, usize>>,
+    /// Songs whose stream is a tone growing louder, from silence to full ([`wav_ramp`]), instead
+    /// of silence: a sound whose loudness is known along it.
+    pub stream_ramp: Mutex<Vec<String>>,
     pub n_requests: AtomicUsize,
     /// Délai en millisecondes avant chaque pochette servie.
     pub cover_delay_ms: AtomicUsize,
@@ -161,6 +164,7 @@ impl Fake {
             stop: AtomicBool::new(false),
             stream_secs: AtomicUsize::new(3),
             stream_secs_of: Mutex::new(HashMap::new()),
+            stream_ramp: Mutex::new(Vec::new()),
             n_requests: AtomicUsize::new(0),
             cover_delay_ms: AtomicUsize::new(0),
             hold: AtomicBool::new(false),
@@ -427,7 +431,14 @@ impl State {
             let own = param(query, "id")
                 .and_then(|id| self.stream_secs_of.lock().unwrap().get(&id).copied());
             let secs = own.unwrap_or_else(|| self.stream_secs.load(Ordering::SeqCst)) as u32;
-            (200, "audio/wav", wav_silence(secs))
+            let ramp =
+                param(query, "id").is_some_and(|id| self.stream_ramp.lock().unwrap().contains(&id));
+            let wav = if ramp {
+                wav_ramp(secs)
+            } else {
+                wav_silence(secs)
+            };
+            (200, "audio/wav", wav)
         } else {
             let ms = self.cover_delay_ms.load(Ordering::SeqCst) as u64;
             std::thread::sleep(std::time::Duration::from_millis(ms));
@@ -463,6 +474,19 @@ pub fn wav_silence(secs: u32) -> Vec<u8> {
     w.extend_from_slice(b"data");
     w.extend_from_slice(&data.to_le_bytes());
     w.resize(44 + data as usize, 0);
+    w
+}
+
+/// The same WAV holding a 440 Hz tone whose amplitude grows evenly from silence to full.
+pub fn wav_ramp(secs: u32) -> Vec<u8> {
+    let mut w = wav_silence(secs);
+    let n = (w.len() - 44) / 2;
+    for i in 0..n {
+        let t = i as f32 / 8000.0;
+        let amp = 30000.0 * i as f32 / n as f32;
+        let s = (amp * (t * 440.0 * std::f32::consts::TAU).sin()) as i16;
+        w[44 + 2 * i..46 + 2 * i].copy_from_slice(&s.to_le_bytes());
+    }
     w
 }
 
