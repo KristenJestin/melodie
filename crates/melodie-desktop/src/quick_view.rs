@@ -18,12 +18,11 @@ use gpui_kit::*;
 use melodie_core::db;
 use melodie_core::env::Env;
 use melodie_core::search::{self as core, Genre};
+use melodie_desktop::covers::{Covers, Use};
 use melodie_desktop::find::{self, Latest};
 use melodie_desktop::launch::Job;
 use melodie_desktop::quick::{self, Do, Group, How, Item, Recent, Section, Seen};
 use melodie_desktop::theme::Palette;
-use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -197,7 +196,8 @@ impl QuickSearch {
                             Item::Genre(_) => None,
                         });
                     let ids: Vec<String> = ids.collect();
-                    this.catalog.update(cx, |c, cx| c.want_covers(ids, cx));
+                    this.catalog
+                        .update(cx, |c, cx| c.want_covers(ids, Use::SMALL, true, cx));
                 }
                 this.shown = shown;
                 this.chosen = 0;
@@ -358,7 +358,7 @@ fn row(
     item: &Item,
     section: Section,
     chosen: bool,
-    covers: &HashMap<String, PathBuf>,
+    covers: &Covers,
     pal: Palette,
 ) -> AnyElement {
     let (name, picture) = match item {
@@ -368,7 +368,7 @@ fn row(
             } else {
                 5.
             };
-            let path = h.cover.as_ref().and_then(|c| covers.get(c));
+            let path = h.cover.as_ref().and_then(|c| covers.get(c, 36.));
             (h.name.clone(), cover_box(path, 36., round, pal))
         }
         Item::Genre(g) => (
@@ -461,7 +461,7 @@ impl Render for QuickSearch {
             return div().into_any_element();
         }
         let pal = palette(&self.shared, window, cx);
-        let covers = self.catalog.read(cx).covers.clone();
+        let covers = Covers::new(self.catalog.read(cx).covers.clone(), window.scale_factor());
         let this = cx.entity();
         let groups: Arc<[Group]> = match &self.shown {
             Shown::Rows(g) => g.clone(),
