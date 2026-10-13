@@ -336,8 +336,8 @@ impl Shared {
             let playing = self.player.track().and_then(|t| t.cover_id.clone());
             let wanted = thumbs::wanted(&tracks);
             self.covers.update(cx, |c, cx| {
-                c.want(playing, Use::Small, true, cx);
-                c.want(wanted, Use::Small, false, cx);
+                c.want(playing, Use::SMALL, true, cx);
+                c.want(wanted, Use::SMALL, false, cx);
             });
         }
         self.thumbs_of = Some(tracks.clone());

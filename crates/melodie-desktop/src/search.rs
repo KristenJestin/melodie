@@ -184,7 +184,7 @@ impl SearchView {
             .flat_map(|(_, hits)| hits.iter());
         let ids: Vec<String> = shown.chain(all).filter_map(|h| h.cover.clone()).collect();
         self.catalog
-            .update(cx, |c, cx| c.want_covers(ids, Use::Small, cx));
+            .update(cx, |c, cx| c.want_covers(ids, Use::SMALL, true, cx));
     }
 }
 

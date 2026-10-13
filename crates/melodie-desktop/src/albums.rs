@@ -14,11 +14,13 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use melodie_core::library::{Album, AlbumBy, Sort};
 use melodie_desktop::browse::{self, Place};
-use melodie_desktop::covers::{Cover, Covers};
+use melodie_desktop::covers::{Cover, Covers, Use};
 use melodie_desktop::launch::{Job, Kind};
 use melodie_desktop::layout;
 use melodie_desktop::theme::Palette;
+use std::cell::Cell;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 
 /// The narrowest a cover gets before a column goes.
@@ -239,6 +241,9 @@ pub struct AlbumGrid {
     scroll: UniformListScrollHandle,
     /// The sort the list was last shown in: another one starts from the top.
     shown_sort: Option<Sort<AlbumBy>>,
+    /// What the covers of the rows shown were last asked for, so that a frame that shows the same
+    /// rows asks nothing.
+    asked: Rc<Cell<Option<(usize, usize, usize, usize, u32)>>>,
 }
 
 impl AlbumGrid {
@@ -248,6 +253,7 @@ impl AlbumGrid {
             catalog,
             scroll: UniformListScrollHandle::new(),
             shown_sort: None,
+            asked: Rc::default(),
         }
     }
 }
@@ -311,7 +317,24 @@ impl Render for AlbumGrid {
             Some(list) => {
                 let rows = list.len().div_ceil(cols);
                 let catalog = self.catalog.clone();
-                uniform_list("album-rows", rows, move |range, _, _| {
+                let asked = self.asked.clone();
+                uniform_list("album-rows", rows, move |range, _, cx| {
+                    // the library came at thumbnail size; the rows shown want their own, before
+                    // anything that waits. Asked later: nothing here reads a file.
+                    let key = (
+                        Arc::as_ptr(&list) as *const Album as usize,
+                        range.start,
+                        range.end,
+                        cols,
+                        side as u32,
+                    );
+                    if asked.replace(Some(key)) != Some(key) {
+                        let ids = browse::row_covers(&list, range.clone(), cols);
+                        let catalog = catalog.clone();
+                        cx.defer(move |cx| {
+                            catalog.update(cx, |c, cx| c.want_covers(ids, Use::of(side), true, cx))
+                        });
+                    }
                     range
                         .map(|row| {
                             let start = row * cols;

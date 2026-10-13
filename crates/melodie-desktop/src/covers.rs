@@ -16,25 +16,30 @@ const BATCH: usize = 48;
 /// How long to wait before asking again when another `cover-fetch` held the lock.
 pub const LOCK_WAIT: Duration = Duration::from_secs(2);
 
-/// What the window draws a cover for, which tells the tier it wants. The sides are the largest
-/// the views draw (the grids' cells grow with the window).
+/// The side, in logical pixels, a cover is drawn at: which tier it needs depends on it and on
+/// the screen's scale factor. Callers pass the side they draw; the constants are the usual ones.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Use {
-    /// The pictures of a list row.
-    Small,
-    /// Albums, playlists and artists in grids, rows and page headers.
-    Tile,
-    /// The home's highlight.
-    Card,
-}
+pub struct Use(u32);
 
 impl Use {
+    /// The pictures of a list row.
+    pub const SMALL: Use = Use(56);
+    /// Albums, playlists and artists in rows and page headers.
+    pub const TILE: Use = Use(180);
+    /// The home's highlight.
+    pub const CARD: Use = Use(212);
+
+    /// A cover drawn `side` pixels wide.
+    pub fn of(side: f32) -> Use {
+        Use(side.ceil().max(0.0) as u32)
+    }
+
     pub fn side(self) -> f32 {
-        match self {
-            Use::Small => 56.0,
-            Use::Tile => 260.0,
-            Use::Card => 212.0,
-        }
+        self.0 as f32
+    }
+
+    fn max_side(self, other: Use) -> Use {
+        Use(self.0.max(other.0))
     }
 
     /// The tier that is not upscaled on a screen of this scale factor.
@@ -205,8 +210,14 @@ pub fn round(env: &Env, batch: &[Want], fetch: impl FnOnce(&[Want]) -> Fetch) ->
 pub struct Queue {
     seen: HashSet<Want>,
     pending: Vec<Want>,
+    /// What `pending` holds, to queue a cover once without scanning it.
+    waiting: HashSet<Want>,
     tries: HashMap<Want, u32>,
     running: bool,
+    /// The largest side each cover was asked at: asked again at the right tier when the scale
+    /// factor changes. One entry per cover, whatever the sides it was drawn at (a window being
+    /// resized draws the grid at a different side at every step).
+    asked: HashMap<String, Use>,
 }
 
 impl Queue {
@@ -218,20 +229,55 @@ impl Queue {
             .collect()
     }
 
+    /// Asks for covers drawn as `usage` on a screen of this scale factor: those not asked before
+    /// at that tier, to look up on disk.
+    pub fn ask(&mut self, ids: Vec<String>, usage: Use, scale: f32) -> Vec<Want> {
+        let tier = usage.tier(scale);
+        for id in &ids {
+            let largest = self.asked.entry(id.clone()).or_insert(usage);
+            *largest = (*largest).max_side(usage);
+        }
+        self.see(ids.into_iter().map(|id| Want::new(id, tier)))
+    }
+
+    /// The screen's scale factor changed: what was asked, at the tier that suits it now (what the
+    /// new tier already has is not asked twice).
+    pub fn ask_again(&mut self, scale: f32) -> Vec<Want> {
+        let again: Vec<Want> = self
+            .asked
+            .iter()
+            .map(|(id, usage)| Want::new(id.clone(), usage.tier(scale)))
+            .collect();
+        self.see(again)
+    }
+
     /// Queues covers that have no file yet, behind those already waiting.
     pub fn missing(&mut self, wants: impl IntoIterator<Item = Want>) {
         for w in wants {
-            if !self.pending.contains(&w) {
+            if self.waiting.insert(w.clone()) {
                 self.pending.push(w);
             }
         }
     }
 
-    /// Queues covers that have no file yet, before those already waiting: what is playing.
+    /// Queues covers that have no file yet, before those already waiting: what is playing, what
+    /// is on screen.
     pub fn missing_first(&mut self, wants: Vec<Want>) {
         let rest = std::mem::take(&mut self.pending);
+        self.waiting.clear();
         self.missing(wants);
         self.missing(rest);
+    }
+
+    fn forget(&mut self, gone: impl Fn(&Want) -> bool) {
+        let waiting = &mut self.waiting;
+        self.pending.retain(|w| {
+            let keep = !gone(w);
+            if !keep {
+                waiting.remove(w);
+            }
+            keep
+        });
     }
 
     /// The covers for the next round, unless one is running or nothing waits. A round takes a
@@ -252,7 +298,7 @@ impl Queue {
             .iter()
             .filter(|w| !round.missing.contains(w))
             .collect();
-        self.pending.retain(|w| !gone.contains(w));
+        self.forget(|w| gone.contains(w));
         match round.fetch {
             None => {}
             // nothing was done: the covers keep their tries
@@ -262,7 +308,7 @@ impl Queue {
                     let tries = self.tries.entry(w.clone()).or_default();
                     *tries += 1;
                     if *tries >= MAX_TRIES {
-                        self.pending.retain(|p| p != w);
+                        self.forget(|p| p == w);
                     }
                 }
             }
@@ -593,10 +639,125 @@ mod tests {
 
     #[test]
     fn the_window_asks_for_the_tier_of_what_it_draws_times_the_scale() {
-        assert_eq!(Use::Small.tier(1.0), Tier::Thumb);
-        assert_eq!(Use::Tile.tier(1.0), Tier::Row);
-        assert_eq!(Use::Card.tier(1.0), Tier::Row);
-        assert_eq!(Use::Tile.tier(2.0), Tier::Large);
-        assert_eq!(Use::Small.tier(2.0), Tier::Thumb);
+        assert_eq!(Use::SMALL.tier(1.0), Tier::Thumb);
+        assert_eq!(Use::TILE.tier(1.0), Tier::Row);
+        assert_eq!(Use::CARD.tier(1.0), Tier::Row);
+        assert_eq!(Use::TILE.tier(2.0), Tier::Large);
+        assert_eq!(Use::SMALL.tier(2.0), Tier::Thumb);
+    }
+
+    #[test]
+    fn a_tile_is_not_fetched_larger_than_it_is_drawn() {
+        // the sides drawn are 168 to 180 px (up to ~250 in a two-column grid): at a scale of 1.25
+        // a 300 px file is enough for the first, and not for the last
+        for scale in [1.0, 1.25] {
+            assert_eq!(Use::TILE.tier(scale), Tier::Row, "scale {scale}");
+            assert_eq!(Use::of(168.0).tier(scale), Tier::Row, "scale {scale}");
+        }
+        assert_eq!(Use::TILE.tier(2.0), Tier::Large);
+        assert_eq!(Use::of(250.0).tier(1.0), Tier::Row);
+        assert_eq!(Use::of(250.0).tier(1.25), Tier::Large, "313 px are drawn");
+        // what is asked is what is drawn from
+        for side in [148.0, 168.0, 180.0, 212.0, 250.0] {
+            for scale in [1.0, 1.25, 2.0] {
+                assert_eq!(Use::of(side).tier(scale), Tier::for_draw(side, scale));
+            }
+        }
+    }
+
+    #[test]
+    fn a_scale_change_asks_again_what_was_seen_at_the_tier_that_suits_it() {
+        let mut q = Queue::default();
+        let ids = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            q.ask(ids(&["a", "b"]), Use::TILE, 1.0),
+            at(&["a", "b"], Tier::Row)
+        );
+        q.ask(ids(&["s"]), Use::SMALL, 1.0);
+        assert!(q.ask(ids(&["a"]), Use::TILE, 1.0).is_empty(), "once");
+        assert!(q.ask_again(1.0).is_empty(), "same scale, nothing new");
+        let mut again = q.ask_again(2.0);
+        again.sort_by_key(|w| w.id.clone());
+        assert_eq!(
+            again,
+            at(&["a", "b"], Tier::Large),
+            "the tiles need more pixels; the small one is still a thumbnail"
+        );
+        assert!(q.ask_again(2.0).is_empty(), "and only once");
+        assert_eq!(
+            q.ask_again(1.0).len(),
+            0,
+            "back on the first screen: seen already"
+        );
+    }
+
+    #[test]
+    fn only_what_was_seen_is_asked_again_and_a_resize_does_not_grow_it() {
+        let mut q = Queue::default();
+        q.ask(vec!["seen".to_string()], Use::TILE, 1.0);
+        assert_eq!(q.ask_again(2.0), at(&["seen"], Tier::Large));
+        // a window being resized draws its grid at a different side at every step
+        for side in 160..260 {
+            q.ask(vec!["seen".to_string()], Use::of(side as f32), 1.0);
+        }
+        assert_eq!(q.asked.len(), 1);
+    }
+
+    #[test]
+    fn a_visible_ask_jumps_ahead_of_a_backlog() {
+        let mut q = Queue::default();
+        let backlog: Vec<Want> = (0..BATCH * 3)
+            .map(|i| Want::new(format!("lib{i}"), Tier::Thumb))
+            .collect();
+        q.missing(backlog);
+        q.missing_first(at(&["seen-now-1", "seen-now-2"], Tier::Row));
+        let batch = q.start().unwrap();
+        assert_eq!(batch[0], Want::new("seen-now-1", Tier::Row));
+        assert_eq!(batch[1], Want::new("seen-now-2", Tier::Row));
+        assert_eq!(
+            batch[2],
+            Want::new("lib0", Tier::Thumb),
+            "the backlog follows"
+        );
+        // what was seen later goes before what was seen earlier (it is the one on screen)
+        let mut q = Queue::default();
+        q.missing(at(&["old"], Tier::Row));
+        q.missing_first(at(&["new"], Tier::Row));
+        assert_eq!(q.start().unwrap(), at(&["new", "old"], Tier::Row));
+    }
+
+    #[test]
+    fn a_cover_waiting_is_queued_once_even_after_the_queue_was_reordered() {
+        let mut q = Queue::default();
+        q.missing(at(&["a", "b"], Tier::Row));
+        q.missing_first(at(&["b", "c"], Tier::Row));
+        q.missing(at(&["a", "c"], Tier::Row));
+        assert_eq!(q.start().unwrap(), at(&["b", "c", "a"], Tier::Row));
+    }
+
+    #[test]
+    fn a_queue_of_thousands_is_deduplicated_without_a_quadratic_scan() {
+        let mut q = Queue::default();
+        let many: Vec<Want> = (0..20_000)
+            .map(|i| Want::new(format!("c{i}"), Tier::Row))
+            .collect();
+        let t = Instant::now();
+        q.missing(many.clone());
+        q.missing(many.clone());
+        q.missing_first(many);
+        assert!(t.elapsed() < Duration::from_secs(1), "{:?}", t.elapsed());
+        assert_eq!(q.start().unwrap().len(), BATCH);
+    }
+
+    #[test]
+    fn the_default_image_the_daemon_wrote_is_not_a_cover() {
+        // an album without art that was played: the daemon wrote the server's default image to its
+        // own file, beside the marker the thumbnail fetch left
+        let (_d, env) = env();
+        put_placeholder(&env, "p");
+        put_tier(&env, "p", Tier::Large);
+        let (found, missing) = resolve(&env, &at(&["p"], Tier::Row));
+        assert!(found.is_empty(), "the glyph, not the server's image");
+        assert!(missing.is_empty(), "and nothing to fetch");
     }
 }

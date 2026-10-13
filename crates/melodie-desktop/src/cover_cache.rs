@@ -8,7 +8,7 @@ use melodie_core::cover::{Disk, Want};
 use melodie_core::env::Env;
 use melodie_desktop::covers::{self, Fetch, Files, LOCK_WAIT, Queue, Use, resolve};
 use melodie_desktop::launch;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io::Write as _;
 use std::sync::Arc;
 use std::time::Instant;
@@ -20,8 +20,6 @@ pub struct CoverCache {
     pub files: Arc<Files>,
     /// The screen's scale factor: a cover is asked at the pixels it is drawn with.
     scale: f32,
-    /// What was asked for, to ask again at the right tier when the scale factor changes.
-    asked: HashSet<(String, Use)>,
 }
 
 impl CoverCache {
@@ -31,7 +29,6 @@ impl CoverCache {
             queue: Queue::default(),
             files: Arc::default(),
             scale,
-            asked: HashSet::new(),
         }
     }
 
@@ -46,19 +43,14 @@ impl CoverCache {
             return;
         }
         self.scale = scale;
-        let asked: Vec<(String, Use)> = self.asked.iter().cloned().collect();
-        for usage in [Use::Small, Use::Tile, Use::Card] {
-            let ids = asked
-                .iter()
-                .filter(|(_, u)| *u == usage)
-                .map(|(id, _)| id.clone());
-            self.want(ids, usage, false, cx);
-        }
+        let new = self.queue.ask_again(scale);
+        self.look_up(new, false, cx);
     }
 
     /// Looks up the covers not asked before; those with no file as large as `usage` draws them
     /// are fetched, a few at a time, until they are on disk, are the server's default image or
-    /// have failed for good. With `first`, the missing ones go before those already waiting.
+    /// have failed for good. With `first`, the missing ones go before those already waiting:
+    /// what is on screen does not wait for a library.
     pub fn want(
         &mut self,
         ids: impl IntoIterator<Item = String>,
@@ -66,12 +58,11 @@ impl CoverCache {
         first: bool,
         cx: &mut Context<Self>,
     ) {
-        let tier = usage.tier(self.scale);
-        let ids: Vec<String> = ids.into_iter().collect();
-        self.asked.extend(ids.iter().map(|id| (id.clone(), usage)));
-        let new = self
-            .queue
-            .see(ids.into_iter().map(|id| Want::new(id, tier)));
+        let new = self.queue.ask(ids.into_iter().collect(), usage, self.scale);
+        self.look_up(new, first, cx);
+    }
+
+    fn look_up(&mut self, new: Vec<Want>, first: bool, cx: &mut Context<Self>) {
         if new.is_empty() {
             return;
         }

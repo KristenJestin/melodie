@@ -28,8 +28,8 @@ use std::rc::Rc;
 const CARD: f32 = 260.0;
 const CARD_COVER: f32 = 212.0;
 /// The side of an album or a playlist in a row, of an artist's circle.
-const SQUARE: f32 = 168.0;
-const CIRCLE: f32 = 148.0;
+pub const SQUARE: f32 = 168.0;
+pub const CIRCLE: f32 = 148.0;
 /// A mix card.
 const MIX_W: f32 = 232.0;
 const MIX_H: f32 = 148.0;

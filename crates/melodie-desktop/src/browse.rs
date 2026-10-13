@@ -1,6 +1,9 @@
 //! Where the window is in the library, and the pieces of browsing that need no window: the way
 //! back from a page, how many covers a row holds.
 
+use melodie_core::library::Album;
+use std::ops::Range;
+
 /// A place of the window: a section of the sidebar, or a page opened from one.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Place {
@@ -119,6 +122,16 @@ impl Nav {
 /// How many covers fit across `width` pixels, each at least `min` wide with `gap` between them.
 pub fn columns(width: f32, min: f32, gap: f32) -> usize {
     (((width + gap) / (min + gap)).floor() as usize).max(1)
+}
+
+/// The covers of the albums in rows `rows` of a grid `cols` across: what a virtual list shows.
+pub fn row_covers(albums: &[Album], rows: Range<usize>, cols: usize) -> Vec<String> {
+    let end = (rows.end * cols).min(albums.len());
+    let start = (rows.start * cols).min(end);
+    albums[start..end]
+        .iter()
+        .filter_map(|a| a.cover.clone())
+        .collect()
 }
 
 #[cfg(test)]
@@ -264,5 +277,20 @@ mod tests {
         assert_eq!(columns(1000.0, 160.0, 20.0), 5);
         assert_eq!(columns(159.0, 160.0, 20.0), 1, "always one");
         assert_eq!(columns(340.0, 160.0, 20.0), 2);
+    }
+
+    #[test]
+    fn a_list_asks_for_the_covers_of_the_rows_it_shows() {
+        let albums: Vec<Album> = (0..10)
+            .map(|i| Album {
+                id: format!("al{i}"),
+                cover: (i != 4).then(|| format!("c{i}")),
+                ..Album::default()
+            })
+            .collect();
+        // 3 columns: row 1 holds albums 3 to 5 (the fifth has no cover)
+        assert_eq!(row_covers(&albums, 1..2, 3), ["c3", "c5"]);
+        assert_eq!(row_covers(&albums, 2..4, 3), ["c6", "c7", "c8", "c9"]);
+        assert!(row_covers(&albums, 4..9, 3).is_empty(), "past the end");
     }
 }
