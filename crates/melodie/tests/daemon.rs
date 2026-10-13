@@ -1891,8 +1891,6 @@ const MALFORMED: [&str; 9] = [
     "https://example.org/album/al1",
 ];
 
-/// Requests that look something up or check the connection; the player's own reports to the
-/// server (now playing, scrobble, cover) come on their own time and are not counted.
 /// Waits for the copy the daemon's first background synchronisation makes: it reads the
 /// playlists (`getPlaylist`), which `lookups` would otherwise count against `open`.
 fn wait_for_the_first_copy(sb: &Sandbox) {
@@ -1904,6 +1902,8 @@ fn wait_for_the_first_copy(sb: &Sandbox) {
     }
 }
 
+/// Requests that look something up or check the connection; the player's own reports to the
+/// server (now playing, scrobble, cover) come on their own time and are not counted.
 fn lookups(sb: &Sandbox) -> usize {
     sb.calls()
         .iter()
