@@ -3,6 +3,7 @@
 
 pub mod browse;
 pub mod find;
+pub mod keys;
 pub mod launch;
 pub mod link;
 pub mod model;

@@ -26,6 +26,7 @@ use gpui_kit::*;
 use melodie_core::env::Env;
 use melodie_core::proto::{self, Request};
 use melodie_desktop::browse::Place;
+use melodie_desktop::keys::{self, Act, Key, Situation};
 use melodie_desktop::theme::{self, Active, Choice, Palette};
 use mini::MiniPlayer;
 use pages::{HomeView, PageView};
@@ -115,6 +116,14 @@ impl Root {
                     cx.notify()
                 });
             }),
+            // the field stays focused when it is no longer drawn: the root takes the focus back,
+            // or Space and / would go on being ignored
+            cx.observe_in(&catalog, window, |this, catalog, window, cx| {
+                let left = !keys::in_search(catalog.read(cx).here());
+                if left && this.views.search.read(cx).has_focus(window, cx) {
+                    window.focus(&this.focus, cx);
+                }
+            }),
             cx.observe(&shared, move |this, shared, cx| {
                 let open = shared.read(cx).queue_open;
                 if open && !was_open {
@@ -134,51 +143,48 @@ impl Root {
     }
 
     fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let typing = self.views.search.read(cx).has_focus(window, cx);
         let k = &ev.keystroke;
-        // the search, from anywhere: Ctrl+F, or / when not typing
-        if (k.modifiers.control && k.key == "f") || (!typing && k.key_char.as_deref() == Some("/"))
-        {
-            self.catalog
-                .update(cx, |c, cx| c.start_at(Place::Search, cx));
-            self.views.search.update(cx, |v, cx| v.focus(window, cx));
-            cx.stop_propagation();
-            return;
-        }
-        match k.key.as_str() {
-            // what is open closes first; then a page goes back
-            "escape" => {
-                let open = {
-                    let s = self.shared.read(cx);
-                    s.queue_open || s.settings_open
-                };
-                if open {
-                    self.shared.update(cx, |s, cx| {
-                        s.queue_open = false;
-                        s.settings_open = false;
-                        cx.notify()
-                    })
-                } else if self.catalog.read(cx).picker_open {
-                    self.catalog.update(cx, |c, cx| {
-                        c.picker_open = false;
-                        cx.notify()
-                    })
-                } else if *self.catalog.read(cx).here() == Place::Search
-                    && self.views.search.update(cx, |v, cx| v.clear(window, cx))
-                {
-                    // the field empties first, then the search is left
-                } else {
-                    self.catalog.update(cx, |c, cx| c.back(cx))
-                }
+        let key = Key::read(k.modifiers.control, &k.key, k.key_char.as_deref());
+        let situation = {
+            let (s, c, v) = (
+                self.shared.read(cx),
+                self.catalog.read(cx),
+                self.views.search.read(cx),
+            );
+            Situation {
+                here: c.here(),
+                field_focused: v.has_focus(window, cx),
+                overlay_open: s.queue_open || s.settings_open,
+                picker_open: c.picker_open,
+                field_empty: v.is_empty(),
             }
-            // a space typed in the field is text
-            "space" if typing => return,
-            "space" => self.shared.update(cx, |s, cx| {
+        };
+        match keys::act(key, situation) {
+            Act::OpenSearch => {
+                self.catalog
+                    .update(cx, |c, cx| c.start_at(Place::Search, cx));
+                self.views.search.update(cx, |v, cx| v.focus(window, cx));
+            }
+            // what is open closes first; then a page goes back
+            Act::CloseOverlays => self.shared.update(cx, |s, cx| {
+                s.queue_open = false;
+                s.settings_open = false;
+                cx.notify()
+            }),
+            Act::ClosePicker => self.catalog.update(cx, |c, cx| {
+                c.picker_open = false;
+                cx.notify()
+            }),
+            Act::ClearField => {
+                self.views.search.update(cx, |v, cx| v.clear(window, cx));
+            }
+            Act::Back => self.catalog.update(cx, |c, cx| c.back(cx)),
+            Act::PlayPause => self.shared.update(cx, |s, cx| {
                 if s.player.current.is_some() {
                     s.send(Request::Toggle, cx)
                 }
             }),
-            _ => return,
+            Act::Pass => return,
         }
         cx.stop_propagation();
     }

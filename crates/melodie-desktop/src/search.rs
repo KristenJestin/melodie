@@ -125,6 +125,10 @@ impl SearchView {
         self.input.read(cx).focus_handle(cx).is_focused(window)
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.text.is_empty()
+    }
+
     /// Empties the field; false when it was empty already.
     pub fn clear(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if self.text.is_empty() {
