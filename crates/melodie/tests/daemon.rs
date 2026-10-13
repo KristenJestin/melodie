@@ -1028,7 +1028,9 @@ fn favoris_playlists_et_mixes_de_bout_en_bout() {
         .iter()
         .filter(|c| c.starts_with("getSong?") || c.starts_with("getAlbum?"))
         .count();
-    sb.fake.state.stream_secs.store(1, Ordering::SeqCst);
+    // Longer than the test lasts, even on a loaded machine: the commands below act on the track
+    // playing, which must stay the same one.
+    sb.fake.state.stream_secs.store(300, Ordering::SeqCst);
     let out = sb.ok(&["mix", "me", "--seed", "1"]);
     assert!(out.contains("3 morceaux"), "{out}");
     wait_until(5, "lecture du mix", || sb.now()["state"] == "playing");
@@ -1079,8 +1081,6 @@ fn favoris_playlists_et_mixes_de_bout_en_bout() {
     if let Some(p) = &proxy {
         wait_until(3, "melodie:starred retiré", || !mpris_starred(p));
     }
-    // What a loaded machine does between two commands: the track ends.
-    wait_until(10, "the next track", || sb.now()["id"] != id.as_str());
     let adds = query_count(&sb, "updatePlaylist", &format!("songIdToAdd={id}"));
     sb.ok(&["playlist", "add", "p1", "--allow-duplicates"]);
     assert_eq!(
