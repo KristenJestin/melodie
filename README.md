@@ -105,7 +105,8 @@ Screenshots and a recording of the animations, made with invented data, are in
   music; opening it shows the current state at once (the snapshot). Without a daemon it says
   "Nothing playing" and looks for one every half second.
 - **The player**: the cover, large; title, artist, album; the quality of the stream; a position
-  bar to drag; play/pause, previous, next; the volume; the heart. Play without a daemon starts the
+  bar to drag; play/pause, previous, next (play/pause on the axis of the cover, the other buttons
+  placed with the same room on each side); the volume; the heart. Play without a daemon starts the
   personal mix (`melodie mix me`, which starts the daemon); the heart runs `melodie like track
   <id>` or `unlike`: what needs the server goes through `melodie`. A failure is said at the
   bottom of the window for a few seconds, and so is an `unreachable` server.
@@ -146,7 +147,11 @@ Screenshots and a recording of the animations, made with invented data, are in
   - Actions run `melodie` (`play`, `queue`, `mix`, `playlist add|create|rename|delete|remove|move|
     duplicates`): what needs the server still goes through it, and the window reads the local copy
     again when it is done. The jobs of one playlist run one after the other, in the order asked. Covers come from `~/.cache/melodie/covers/` (the 128 px thumbnails
-    first); the missing ones are fetched by `melodie cover-fetch`, in the background.
+    first); the missing ones are fetched by `melodie cover-fetch`, in the background, by one process
+    at a time fed from a queue of missing ids, for every place that shows a cover (grids, pages,
+    search, the queue, the player, the bottom bar). An id is asked again until it is on disk, is
+    the server's default image (the glyph stays) or came back missing three times from a finished
+    fetch; a fetch that found the lock taken costs no try. What lands shows without a restart.
   - At the bottom, what plays: play or pause, next; a click opens the player.
 - **The search**, first in the sidebar: one field, and as you type the artists, albums, tracks and
   playlists of the local copy, grouped by kind. The kind whose best result is the most relevant
@@ -161,6 +166,13 @@ Screenshots and a recording of the animations, made with invented data, are in
   it is a letter); Escape closes a dialog, else the queue laid over a narrow window or the
   settings, else unpicks the rows picked, else empties the search field, else goes back. In a
   dialog, Enter does what its main button does (Escape cancels).
+- **The mouse's back and forward buttons** go back and forward between the pages, like the
+  browser's: back goes back a page (it closes the queue laid over a narrow window or the settings first), forward returns
+  to the page back left, and does nothing when there is none (a page opened after going
+  back forgets it). They do nothing behind a dialog or the sign-in screen.
+- **Tooltips**: every button that shows an icon alone says what it does when the pointer rests on
+  it for about 0.4 s: a short fade and rise, beside the button, never over it. They go at a press
+  or a key.
 - **Signing in**: with no login, or when the server refused it (`no-login`, `auth-refused`), the
   window shows a sign-in screen: the server's address, the user, the password. It runs `melodie
   login --password-stdin`, the password written on its input: the window keeps no password and no
@@ -536,7 +548,8 @@ downloaded in parallel (8 requests, `getCoverArt` 128) within a total budget of 
 that, the entry keeps its glyph and the rest goes to a detached process (`melodie cover-fetch`,
 new session, hidden subcommand) for the next keystroke. The ids reach it on its standard input and
 it reads the keyring itself: no token in the arguments, the environment or the output. One
-`cover-fetch` at a time (lock `covers/.fetch.lock`). The keyring is read only if a thumbnail is
+`cover-fetch` at a time (lock `covers/.fetch.lock`); one that finds the lock taken exits at once
+with code 75 and downloads nothing (the launcher ignores the code, the window asks again). The keyring is read only if a thumbnail is
 missing. Navidrome's default image (md5 `fcec14e686ad5159a8ed7c51936116d7`) is never shown: a
 `.none` marker avoids downloading it again.
 

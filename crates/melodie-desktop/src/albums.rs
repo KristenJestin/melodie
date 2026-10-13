@@ -110,6 +110,7 @@ pub fn album_cell(
                                 pal,
                             )
                             .primary()
+                            .tip("Play")
                             .on_click(move |_, _, cx| {
                                 cx.stop_propagation();
                                 play.update(cx, |c, cx| {

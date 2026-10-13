@@ -39,6 +39,14 @@ impl Key {
     }
 }
 
+/// The mouse buttons that move through the places, as far as the window cares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Thumb {
+    /// The thumb button towards the back of the mouse.
+    Back,
+    Forward,
+}
+
 /// What the window knows when a key is pressed.
 #[derive(Debug, Clone, Copy)]
 pub struct Situation<'a> {
@@ -69,6 +77,7 @@ pub enum Act {
     ClearSelection,
     ClearField,
     Back,
+    Forward,
     PlayPause,
     /// Show or hide the queue.
     ToggleQueue,
@@ -117,6 +126,20 @@ pub fn act(key: Key, s: Situation) -> Act {
     }
 }
 
+/// What a mouse button makes the window do: the same as Escape for back, once what is open is
+/// closed, and forward only when `Nav` has a page ahead.
+pub fn pointer_act(button: Thumb, s: Situation) -> Act {
+    if s.sign_in || s.dialog_open {
+        return Act::Pass;
+    }
+    match button {
+        Thumb::Back if s.overlay_open => Act::CloseOverlays,
+        Thumb::Back => Act::Back,
+        Thumb::Forward if s.overlay_open => Act::Pass,
+        Thumb::Forward => Act::Forward,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,6 +183,63 @@ mod tests {
         for key in [Key::Find, Key::Slash, Key::Escape, Key::Enter, Key::Other] {
             assert_eq!(act(key, covered(false)), Act::Pass, "{key:?}");
             assert_eq!(act(key, covered(true)), Act::Pass, "{key:?}");
+        }
+    }
+
+    #[test]
+    fn the_mouse_back_and_forward_buttons_move_through_the_places() {
+        for here in [Place::Home, Place::Album("al1".into()), Place::Search] {
+            // the field's focus and a filled field do not matter: the mouse is not typing
+            for focused in [false, true] {
+                let s = Situation {
+                    field_empty: false,
+                    ..at(&here, focused)
+                };
+                assert_eq!(pointer_act(Thumb::Back, s), Act::Back);
+                assert_eq!(pointer_act(Thumb::Forward, s), Act::Forward);
+            }
+        }
+    }
+
+    #[test]
+    fn the_mouse_back_button_closes_the_queue_before_leaving_the_page() {
+        let page = Place::Album("al1".into());
+        let open = Situation {
+            overlay_open: true,
+            ..at(&page, false)
+        };
+        assert_eq!(pointer_act(Thumb::Back, open), Act::CloseOverlays);
+        // forward has nothing to do behind a panel, and does not close it
+        assert_eq!(pointer_act(Thumb::Forward, open), Act::Pass);
+        // rows picked do not hold it: going back unpicks them with the page
+        let picked = Situation {
+            selection: true,
+            ..at(&page, false)
+        };
+        assert_eq!(pointer_act(Thumb::Back, picked), Act::Back);
+    }
+
+    #[test]
+    fn the_mouse_buttons_do_nothing_under_a_dialog_or_the_sign_in_screen() {
+        let page = Place::Playlist("p1".into());
+        let covered = [
+            Situation {
+                dialog_open: true,
+                ..at(&page, false)
+            },
+            Situation {
+                sign_in: true,
+                ..at(&page, false)
+            },
+            Situation {
+                dialog_open: true,
+                overlay_open: true,
+                ..at(&page, false)
+            },
+        ];
+        for s in covered {
+            assert_eq!(pointer_act(Thumb::Back, s), Act::Pass);
+            assert_eq!(pointer_act(Thumb::Forward, s), Act::Pass);
         }
     }
 

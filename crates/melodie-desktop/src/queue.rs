@@ -3,6 +3,7 @@
 
 use crate::app::Shared;
 use crate::player::palette;
+use crate::tips::Tipped as _;
 use crate::widgets::IconButton;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
@@ -87,13 +88,18 @@ impl Render for QueuePanel {
                     .child(
                         IconButton::new("clear-next", IconName::ListX, pal)
                             .disabled(!has_next)
+                            .tip("Clear what comes next")
                             .on_click(move |_, _, cx| {
                                 clear.update(cx, |s, cx| s.send(Request::QueueClearAfter, cx))
                             }),
                     )
-                    .child(IconButton::new("close-queue", IconName::X, pal).on_click(
-                        move |_, _, cx| close.update(cx, |s, cx| s.show_queue(false, cx)),
-                    )),
+                    .child(
+                        IconButton::new("close-queue", IconName::X, pal)
+                            .tip("Close the queue")
+                            .on_click(move |_, _, cx| {
+                                close.update(cx, |s, cx| s.show_queue(false, cx))
+                            }),
+                    ),
             )
             .child(self.list.clone())
     }
@@ -298,6 +304,7 @@ impl Render for QueueList {
                                 .invisible()
                                 .group_hover("queue-row", |s| s.visible())
                                 .hover(|s| s.bg(Hsla { a: 0.10, ..pal.fg }))
+                                .tip("Remove from the queue", pal)
                                 .on_click(move |_, _, cx| {
                                     cx.stop_propagation();
                                     remove.update(cx, |s, cx| {

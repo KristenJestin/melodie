@@ -7,6 +7,7 @@ use crate::app::Shared;
 use crate::catalog::Catalog;
 use crate::dialogs::{self, Dialog};
 use crate::player::palette;
+use crate::tips::Tipped as _;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::Icon;
@@ -179,6 +180,7 @@ pub fn track_header(
 pub fn row_button(
     id: ElementId,
     icon: IconName,
+    tip: &'static str,
     pal: Palette,
     on_click: impl Fn(&mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
@@ -197,6 +199,7 @@ pub fn row_button(
             on_click(window, cx)
         })
         .child(Icon::new(icon).size(px(16.)).text_color(pal.secondary))
+        .tip(tip, pal)
 }
 
 /// A link to an artist or an album inside a row.
@@ -418,6 +421,7 @@ pub fn track_row(
                         .child(row_button(
                             key("next"),
                             IconName::ListStart,
+                            "Play next",
                             pal,
                             job(|id| Job::Queue {
                                 kind: Kind::Track,
@@ -428,6 +432,7 @@ pub fn track_row(
                         .child(row_button(
                             key("last"),
                             IconName::ListEnd,
+                            "Add to queue",
                             pal,
                             job(|id| Job::Queue {
                                 kind: Kind::Track,
@@ -435,10 +440,17 @@ pub fn track_row(
                                 next: false,
                             }),
                         ))
-                        .child(row_button(key("add"), IconName::ListPlus, pal, pick))
+                        .child(row_button(
+                            key("add"),
+                            IconName::ListPlus,
+                            "Add to playlist",
+                            pal,
+                            pick,
+                        ))
                         .child(row_button(
                             key("mix"),
                             IconName::Sparkles,
+                            "Instant mix",
                             pal,
                             job(|id| Job::Mix {
                                 kind: Kind::Track,
@@ -453,6 +465,7 @@ pub fn track_row(
                                 d.child(row_button(
                                     key("remove"),
                                     IconName::ListMinus,
+                                    "Remove from playlist",
                                     pal,
                                     move |_, cx| {
                                         let job = Job::RemoveFromPlaylist {

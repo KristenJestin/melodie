@@ -2,6 +2,7 @@
 //! buttons change at once).
 
 use crate::motion;
+use crate::tips::{self, Tip};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -28,6 +29,7 @@ pub struct IconButton {
     look: Look,
     selected: bool,
     disabled: bool,
+    tip: Option<SharedString>,
     on_click: Option<OnClick>,
 }
 
@@ -67,8 +69,25 @@ pub fn pointer(
 
 /// Keeps `pointer` up to date from the element's own events.
 pub fn follow_pointer(el: Stateful<Div>, pointer: Entity<Pointer>) -> Stateful<Div> {
+    follow_pointer_tip(el, pointer, None)
+}
+
+/// The same, and the tooltip `tip` while the pointer rests on the element (an element has one
+/// hover listener, so the tooltip rides on it).
+pub fn follow_pointer_tip(
+    el: Stateful<Div>,
+    pointer: Entity<Pointer>,
+    tip: Option<Tip>,
+) -> Stateful<Div> {
     let (hover, press, release, out) = (pointer.clone(), pointer.clone(), pointer.clone(), pointer);
-    el.on_hover(move |on, _, cx| {
+    let el = match &tip {
+        Some(tip) => tip.track(el),
+        None => el,
+    };
+    el.on_hover(move |on, window, cx| {
+        if let Some(tip) = &tip {
+            tip.hovered(*on, window, cx);
+        }
         hover.update(cx, |p, cx| {
             p.hovered = *on;
             p.pressed &= *on;
@@ -76,6 +95,7 @@ pub fn follow_pointer(el: Stateful<Div>, pointer: Entity<Pointer>) -> Stateful<D
         })
     })
     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+        tips::hide(cx);
         press.update(cx, |p, cx| {
             p.pressed = true;
             cx.notify()
@@ -106,8 +126,16 @@ impl IconButton {
             look: Look::Ghost,
             selected: false,
             disabled: false,
+            tip: None,
             on_click: None,
         }
+    }
+
+    /// What the button does, said when the pointer rests on it. Every button without a text
+    /// has one (a test checks).
+    pub fn tip(mut self, text: impl Into<SharedString>) -> Self {
+        self.tip = Some(text.into());
+        self
     }
 
     pub fn diameter(mut self, d: f32) -> Self {
@@ -169,7 +197,8 @@ impl RenderOnce for IconButton {
         };
         let icon_size = (self.diameter * 0.45).round();
         let label = self.label;
-        follow_pointer(div().id(self.id), pointer)
+        let tip = self.tip.map(|text| Tip::new(text, pal));
+        follow_pointer_tip(div().id(self.id), pointer, tip)
             .h(px(self.diameter))
             .when(label.is_none(), |d| d.w(px(self.diameter)))
             .when(label.is_some(), |d| d.pl_3().pr_4().gap_2())
@@ -199,5 +228,101 @@ impl RenderOnce for IconButton {
                         .child(text),
                 )
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The line (from 1) of every `IconButton::new(…)` in `src` whose chain of calls says neither
+    /// `.tip(…)` nor `.label(…)`: a button of an icon alone, mute when the pointer rests on it.
+    fn mute_buttons(src: &str) -> Vec<usize> {
+        let bytes = src.as_bytes();
+        let mut mute = Vec::new();
+        for (at, _) in src.match_indices("IconButton::new(") {
+            let line_start = src[..at].rfind('\n').map_or(0, |n| n + 1);
+            if src[line_start..at].trim_start().starts_with("//") {
+                continue;
+            }
+            // follow `( … ).call( … ).call( … )` to the end of the chain
+            let mut i = at + "IconButton::new".len();
+            loop {
+                let mut depth = 0;
+                while i < bytes.len() {
+                    match bytes[i] {
+                        b'"' => {
+                            i += 1;
+                            while bytes[i] != b'"' {
+                                i += if bytes[i] == b'\\' { 2 } else { 1 };
+                            }
+                        }
+                        b'(' => depth += 1,
+                        b')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    i += 1;
+                }
+                i += 1;
+                let rest = src[i..].trim_start();
+                let Some(call) = rest.strip_prefix('.') else {
+                    break;
+                };
+                let name = call
+                    .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+                    .unwrap_or(call.len());
+                i = src.len() - call.len() + name;
+                if !src[i..].starts_with('(') {
+                    break;
+                }
+            }
+            let chain = &src[at..i];
+            if !chain.contains(".tip(") && !chain.contains(".label(") {
+                mute.push(src[..at].matches('\n').count() + 1);
+            }
+        }
+        mute
+    }
+
+    #[test]
+    fn the_check_finds_a_button_without_a_tip_or_a_label() {
+        let src = r#"
+            IconButton::new("a", IconName::Play, pal).tip("Play (now)").on_click(|_, _, _| {});
+            // IconButton::new("commented", IconName::X, pal)
+            IconButton::new("b", IconName::X, pal)
+                .diameter(34.)
+                .on_click(move |_, _, cx| clear.update(cx, |c, cx| c.unselect(cx))),
+            IconButton::new("c", IconName::Plus, pal).label("New").primary()
+            IconButton::new("d", IconName::Plus, pal).disabled(true)
+        "#;
+        assert_eq!(mute_buttons(src), [4, 8]);
+    }
+
+    #[test]
+    fn every_icon_button_says_what_it_does() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut seen = 0;
+        for file in std::fs::read_dir(dir).unwrap() {
+            let path = file.unwrap().path();
+            if path.extension().is_none_or(|e| e != "rs") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&path).unwrap();
+            seen += src.matches("IconButton::new(").count();
+            // the definition of the button is not a use of it
+            if path.ends_with("widgets.rs") {
+                continue;
+            }
+            assert_eq!(
+                mute_buttons(&src),
+                Vec::<usize>::new(),
+                "{}: an IconButton without .tip(…) or .label(…) (lines)",
+                path.display()
+            );
+        }
+        assert!(seen > 20, "the check looks at the sources: {seen}");
     }
 }

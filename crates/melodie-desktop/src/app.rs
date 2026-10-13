@@ -1,6 +1,7 @@
 //! The state every view reads, and what keeps it in step: the daemon's stream, the covers,
 //! Omarchy's theme, the window's appearance.
 
+use crate::cover_cache::CoverCache;
 use futures::StreamExt as _;
 use gpui_kit::component::{Theme, ThemeMode};
 use gpui_kit::*;
@@ -82,6 +83,11 @@ pub struct Shared {
     pub thumbs: Arc<Thumbs>,
     /// The tracks `thumbs` is being (or was) computed for.
     thumbs_of: Option<Arc<[QueueEntry]>>,
+    /// Which lookup of `thumbs` is the latest: an older one finishing late says nothing.
+    thumbs_gen: u64,
+    /// The cover files of the whole window: the queue, the player and the library views ask
+    /// it, and it fetches what is missing.
+    pub covers: Entity<CoverCache>,
     pub theme: ThemeState,
     /// The desktop asks for dark colours.
     pub dark: bool,
@@ -313,32 +319,39 @@ impl Shared {
         cx.notify();
     }
 
-    /// After the player changed: look up the pictures of the rows if the tracks are new. The
-    /// rows keep what they had meanwhile (entries are kept when they move).
-    fn follow_thumbs(&mut self, cx: &mut Context<Self>) {
+    /// After the player changed, or a cover landed: look up the pictures of the rows. A new queue
+    /// asks for the covers it misses (the playing one first). The rows keep what they had
+    /// meanwhile (entries are kept when they move).
+    fn follow_thumbs(&mut self, force: bool, cx: &mut Context<Self>) {
         let tracks = self.player.tracks.clone();
-        if self
+        let same = self
             .thumbs_of
             .as_ref()
-            .is_some_and(|t| Arc::ptr_eq(t, &tracks))
-        {
+            .is_some_and(|t| Arc::ptr_eq(t, &tracks));
+        if same && !force {
             return;
         }
+        if !same {
+            let playing = self.player.track().and_then(|t| t.cover_id.clone());
+            let wanted = thumbs::wanted(&tracks);
+            self.covers.update(cx, |c, cx| {
+                c.want(playing, true, cx);
+                c.want(wanted, false, cx);
+            });
+        }
         self.thumbs_of = Some(tracks.clone());
+        self.thumbs_gen += 1;
+        let latest = self.thumbs_gen;
         let env = self.env.clone();
-        let task = cx.background_spawn({
-            let tracks = tracks.clone();
-            async move { thumbs::resolve(&env, &tracks) }
-        });
+        let task = cx.background_spawn(async move { thumbs::resolve(&env, &tracks) });
         cx.spawn(async move |this, cx| {
             let found = task.await;
             let _ = this.update(cx, |s, cx| {
-                // Another queue came meanwhile: its own lookup will say.
-                if s.thumbs_of
-                    .as_ref()
-                    .is_some_and(|t| Arc::ptr_eq(t, &tracks))
-                {
+                // Another lookup came meanwhile: it will say.
+                if s.thumbs_gen == latest {
                     s.thumbs = Arc::new(found);
+                    // the player shows a thumbnail while the daemon fetches its own cover
+                    s.follow_cover(cx);
                     cx.notify();
                 }
             });
@@ -348,7 +361,10 @@ impl Shared {
 
     /// After the player changed: load the new cover if there is one.
     fn follow_cover(&mut self, cx: &mut Context<Self>) {
-        let cover = self.player.track().and_then(|t| t.cover.clone());
+        let cover = self
+            .player
+            .track()
+            .and_then(|t| thumbs::big(t, &self.thumbs));
         let key = (self.player.track_change, cover.clone());
         if self.art.want.as_ref() == Some(&key) {
             return;
@@ -471,11 +487,17 @@ pub fn start(
         omarchy,
     };
     let clock = cx.new(|_| Clock::default());
+    let covers = cx.new({
+        let env = env.clone();
+        |_| CoverCache::new(env)
+    });
     let shared = cx.new(|_| Shared {
         player: Player::default(),
         art: Art::default(),
         thumbs: Arc::default(),
         thumbs_of: None,
+        thumbs_gen: 0,
+        covers: covers.clone(),
         theme,
         dark: is_dark(window.appearance()),
         queue_open: settings.queue,
@@ -489,6 +511,12 @@ pub fn start(
     });
     apply_component_theme(shared.read(cx).target_palette(), cx);
     shared.update(cx, |s, cx| s.follow_cover(cx));
+    // a cover that lands shows on the rows of the queue and in the player, without a restart
+    let s = shared.clone();
+    cx.observe(&covers, move |_, cx| {
+        s.update(cx, |s, cx| s.follow_thumbs(true, cx));
+    })
+    .detach();
 
     // The daemon: its thread never touches the window, it hands lines over.
     let (tx, mut rx) = futures::channel::mpsc::unbounded();
@@ -511,7 +539,7 @@ pub fn start(
                     ch
                 });
                 if changed.player {
-                    s.follow_thumbs(cx);
+                    s.follow_thumbs(false, cx);
                     s.follow_cover(cx);
                     cx.notify();
                 }

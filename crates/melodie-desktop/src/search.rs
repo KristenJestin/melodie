@@ -228,6 +228,18 @@ fn icon(action: Action) -> IconName {
     }
 }
 
+/// What the button of an action says when the pointer rests on it.
+fn tip(action: Action) -> &'static str {
+    match action {
+        Action::Play => "Play",
+        Action::Shuffle => "Shuffle",
+        Action::Next => "Play next",
+        Action::Last => "Add to queue",
+        Action::Open => "Open",
+        Action::AddToPlaylist => "Add to playlist",
+    }
+}
+
 /// Does what a result's action says: a job of `melodie`, its page, or the playlist to add to.
 fn act(action: Action, hit: &Hit, catalog: &Entity<Catalog>, window: &mut Window, cx: &mut App) {
     if let Some(job) = find::job(action, hit) {
@@ -314,9 +326,13 @@ fn result_row(
                         .group_hover(list, |s| s.visible())
                         .children(find::buttons(hit).into_iter().map(|a| {
                             let (h, c) = (Arc::new(hit.clone()), catalog.clone());
-                            row_button(key(&format!("{a:?}")), icon(a), pal, move |window, cx| {
-                                act(a, &h, &c, window, cx)
-                            })
+                            row_button(
+                                key(&format!("{a:?}")),
+                                icon(a),
+                                tip(a),
+                                pal,
+                                move |window, cx| act(a, &h, &c, window, cx),
+                            )
                         })),
                 ),
         )
@@ -354,6 +370,7 @@ impl Render for SearchView {
                 let catalog = catalog.clone();
                 d.child(
                     IconButton::new("search-back", IconName::ChevronLeft, pal)
+                        .tip("Back")
                         .on_click(move |_, _, cx| catalog.update(cx, |c, cx| c.back(cx))),
                 )
             })

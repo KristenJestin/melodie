@@ -4,6 +4,7 @@
 mod albums;
 mod app;
 mod catalog;
+mod cover_cache;
 mod dialogs;
 mod mini;
 mod motion;
@@ -17,6 +18,7 @@ mod signin;
 mod stats;
 mod tables;
 mod timing;
+mod tips;
 mod widgets;
 
 use albums::AlbumGrid;
@@ -30,7 +32,7 @@ use melodie_core::env::Env;
 use melodie_core::proto::{self, Request};
 use melodie_desktop::account::{self, Screen};
 use melodie_desktop::browse::Place;
-use melodie_desktop::keys::{self, Act, Key, Situation};
+use melodie_desktop::keys::{self, Act, Key, Situation, Thumb};
 use melodie_desktop::layout::{self, QUEUE_WIDTH};
 use melodie_desktop::theme::{self, Active, Choice, Palette};
 use mini::MiniPlayer;
@@ -184,28 +186,43 @@ impl Root {
         )
     }
 
+    /// What the window knows now, for `keys` to judge by.
+    fn situation<R>(&self, window: &Window, cx: &App, judge: impl FnOnce(Situation) -> R) -> R {
+        let (s, c, v) = (
+            self.shared.read(cx),
+            self.catalog.read(cx),
+            self.views.search.read(cx),
+        );
+        judge(Situation {
+            here: c.here(),
+            field_focused: v.has_focus(window, cx),
+            overlay_open: self.queue_place(window, cx).covers() || s.settings_open,
+            dialog_open: self.views.dialogs.read(cx).is_open(),
+            selection: c.selection.count(c.here()) > 0,
+            field_empty: v.is_empty(),
+            sign_in: self.account.read(cx).screen(cx) == Screen::SignIn,
+            sign_in_field_focused: self.views.sign_in.read(cx).has_focus(window, cx),
+        })
+    }
+
     fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let k = &ev.keystroke;
         let key = Key::read(k.modifiers.control, &k.key, k.key_char.as_deref());
+        let act = self.situation(window, cx, |s| keys::act(key, s));
+        self.run(act, window, cx);
+    }
+
+    fn on_thumb(&mut self, button: Thumb, window: &mut Window, cx: &mut Context<Self>) {
+        let act = self.situation(window, cx, |s| keys::pointer_act(button, s));
+        self.run(act, window, cx);
+    }
+
+    /// Does what a key or a mouse button asked for; what is not ours goes on.
+    fn run(&mut self, act: Act, window: &mut Window, cx: &mut Context<Self>) {
+        // a tooltip would outlive the button of a page that goes
+        tips::hide(cx);
         let covers = self.queue_place(window, cx).covers();
-        let situation = {
-            let (s, c, v) = (
-                self.shared.read(cx),
-                self.catalog.read(cx),
-                self.views.search.read(cx),
-            );
-            Situation {
-                here: c.here(),
-                field_focused: v.has_focus(window, cx),
-                overlay_open: covers || s.settings_open,
-                dialog_open: self.views.dialogs.read(cx).is_open(),
-                selection: c.selection.count(c.here()) > 0,
-                field_empty: v.is_empty(),
-                sign_in: self.account.read(cx).screen(cx) == Screen::SignIn,
-                sign_in_field_focused: self.views.sign_in.read(cx).has_focus(window, cx),
-            }
-        };
-        match keys::act(key, situation) {
+        match act {
             Act::OpenSearch => {
                 self.catalog
                     .update(cx, |c, cx| c.start_at(Place::Search, cx));
@@ -229,6 +246,7 @@ impl Root {
                 self.views.search.update(cx, |v, cx| v.clear(window, cx));
             }
             Act::Back => self.catalog.update(cx, |c, cx| c.back(cx)),
+            Act::Forward => self.catalog.update(cx, |c, cx| c.forward(cx)),
             Act::PlayPause => self.shared.update(cx, |s, cx| {
                 if s.player.current.is_some() {
                     s.send(Request::Toggle, cx)
@@ -408,6 +426,14 @@ impl Render for Root {
             .id("root")
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key))
+            .on_mouse_down(
+                MouseButton::Navigate(NavigationDirection::Back),
+                cx.listener(|this, _, window, cx| this.on_thumb(Thumb::Back, window, cx)),
+            )
+            .on_mouse_down(
+                MouseButton::Navigate(NavigationDirection::Forward),
+                cx.listener(|this, _, window, cx| this.on_thumb(Thumb::Forward, window, cx)),
+            )
             .size_full()
             .relative()
             .overflow_hidden()
@@ -570,6 +596,8 @@ impl Render for Root {
                         ),
                 )
             })
+            // the tooltips, above all
+            .when_some(tips::overlay(cx), |d, tips| d.child(tips))
     }
 }
 
@@ -631,6 +659,7 @@ fn main() -> ExitCode {
                 picked: cx.new(|_| SelectionBar::new(s.clone(), c.clone())),
             };
             cx.set_global(DialogsHandle(views.dialogs.clone()));
+            tips::install(cx);
             cx.new(|cx| Root::new(shared, catalog, account, views, window, cx))
         });
         if let Err(e) = opened {
