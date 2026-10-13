@@ -9,6 +9,7 @@ use gpui_kit::component::Icon;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use melodie_desktop::figures::{self, Line};
+use melodie_desktop::reveal;
 use melodie_desktop::theme::{Palette, mix};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -119,6 +120,47 @@ pub fn follow_pointer_tip(
     })
 }
 
+/// Whether the pointer is on an element that holds something shown only then, and how far that
+/// thing has come in. Make it with `hover`, wire it to the element with `track`, and give the
+/// thing its look with `Revealed::revealed`.
+#[derive(Clone)]
+pub struct Hover {
+    pointer: Entity<Pointer>,
+    pub look: reveal::Look,
+}
+
+/// The hover of the element called `id`: the pointer's place, and the look of what it reveals,
+/// moving towards shown or hidden (a pointer that leaves turns it round where it is).
+pub fn hover(id: impl Into<ElementId>, window: &mut Window, cx: &mut App) -> Hover {
+    let id: ElementId = id.into();
+    let pointer = window.use_keyed_state((id.clone(), "reveal"), cx, |_, _| Pointer::default());
+    let on = pointer.read(cx).hovered;
+    let t = motion::to(
+        (id, "reveal"),
+        if on { 1.0f32 } else { 0.0 },
+        reveal::duration(on),
+        window,
+        cx,
+    );
+    Hover {
+        pointer,
+        look: reveal::at(t),
+    }
+}
+
+impl Hover {
+    /// Makes `el` follow the pointer: the thing it reveals shows while the pointer is on it.
+    pub fn track(&self, el: Stateful<Div>) -> Stateful<Div> {
+        let pointer = self.pointer.clone();
+        el.on_hover(move |on, _, cx| {
+            pointer.update(cx, |p, cx| {
+                p.hovered = *on;
+                cx.notify()
+            })
+        })
+    }
+}
+
 /// A page's title (2xl, bold) and, beside it, a count or a few words (sm) on the title's
 /// baseline. GPUI does not tell the flex layout where a text's baseline is, so `items_baseline`
 /// would bottom-align the two: the smaller text is raised by the difference instead, worked out
@@ -174,6 +216,25 @@ pub fn title_with_aside(
             )
         })
 }
+
+/// How a revealed thing is drawn: it fades in and slides into its place.
+pub trait Revealed: Styled + Sized {
+    /// Faded to `look`, and moved as far as it has still to go: down for a thing that rises,
+    /// to the right for one that slides in from the side. Hidden, it is not drawn at all.
+    fn revealed(self, look: reveal::Look, from_the_side: bool) -> Self {
+        if look.hidden() {
+            return self.invisible();
+        }
+        let moved = self.relative().opacity(look.opacity);
+        if from_the_side {
+            moved.left(px(look.offset))
+        } else {
+            moved.top(px(look.offset))
+        }
+    }
+}
+
+impl<T: Styled> Revealed for T {}
 
 impl IconButton {
     pub fn new(id: impl Into<ElementId>, icon: IconName, pal: Palette) -> Self {

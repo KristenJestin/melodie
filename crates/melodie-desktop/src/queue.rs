@@ -4,7 +4,7 @@
 use crate::app::Shared;
 use crate::player::palette;
 use crate::tips::Tipped as _;
-use crate::widgets::IconButton;
+use crate::widgets::{IconButton, Revealed as _, hover};
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::Icon;
@@ -162,7 +162,7 @@ impl Render for QueueList {
         let pal = palette(&self.shared, window, cx);
         let shared = self.shared.clone();
         let len = tracks.len();
-        uniform_list("queue-rows", len, move |range, _, _| {
+        uniform_list("queue-rows", len, move |range, window, cx| {
             range
                 .map(|ix| {
                     let t = &tracks[ix];
@@ -174,11 +174,11 @@ impl Render for QueueList {
                         .cloned()
                         .or_else(|| t.cover.clone().map(PathBuf::from));
                     let entry = t.entry;
+                    let hover = hover(("queue-hover", entry), window, cx);
                     let (play, remove, dropped) = (shared.clone(), shared.clone(), shared.clone());
                     let accent = pal.accent;
-                    h_flex()
-                        .id(("queue-row", t.entry))
-                        .group("queue-row")
+                    hover
+                        .track(h_flex().id(("queue-row", t.entry)))
                         .h(px(ROW))
                         .w_full()
                         .px_2()
@@ -301,8 +301,7 @@ impl Render for QueueList {
                                 .items_center()
                                 .justify_center()
                                 .rounded_full()
-                                .invisible()
-                                .group_hover("queue-row", |s| s.visible())
+                                .revealed(hover.look, true)
                                 .hover(|s| s.bg(Hsla { a: 0.10, ..pal.fg }))
                                 .tip("Remove from the queue", pal)
                                 .on_click(move |_, _, cx| {

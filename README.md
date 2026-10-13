@@ -211,7 +211,9 @@ Screenshots and a recording of the animations, made with invented data, are in
   `~/.local/state/melodie/window.toml` (`theme = "base"` or `"omarchy"`), a file of the window's
   own, beside `queue = true` while the queue is shown.
 - **Animations**: every change of view, panel or state is short and interruptible, and follows
-  the desktop's reduced-motion setting. An unfocused window keeps animating at the screen's rate.
+  the desktop's reduced-motion setting. What shows under the pointer (the play button on a cover,
+  the buttons of a row) fades and slides in and out. An unfocused window keeps animating at the
+  screen's rate. Times and counts that change in place use tabular digits, so nothing shifts.
 - Measuring: built with the `frame-stats` feature and run with `MELODIE_DESKTOP_FRAME_STATS=<file>`,
   the window writes the time of each frame and how long it took to draw, and says on its error
   output how long each view took to read the local copy (for measurements only).

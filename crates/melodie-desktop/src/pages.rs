@@ -6,7 +6,7 @@ use crate::catalog::{Catalog, Empty, Page};
 use crate::dialogs::{self, Dialog};
 use crate::motion;
 use crate::player::palette;
-use crate::tables::{Cols, RowCtx, track_header, track_row};
+use crate::tables::{Cols, RowCtx, row_hover, track_header, track_row};
 use crate::widgets::IconButton;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
@@ -274,12 +274,12 @@ fn track_list(
         .min_h_0()
         .child(track_header(cols, None, pal, |_, _| {}))
         .child(
-            uniform_list(id, tracks.len(), move |range, _, _| {
+            uniform_list(id, tracks.len(), move |range, window, cx| {
                 range
                     .map(|ix| {
                         let row = RowCtx {
                             playlist: playlist.clone(),
-                            ..RowCtx::of(&selection, &here, ix)
+                            ..RowCtx::of(&selection, &here, ix, row_hover(id, ix, window, cx))
                         };
                         track_row(id, ix, &tracks[ix], cols, pal, &catalog, row)
                     })
@@ -500,7 +500,7 @@ impl Render for PageView {
                                 }),
                                 pal,
                                 catalog,
-                                RowCtx::plain(),
+                                RowCtx::plain(row_hover("top-track", ix, window, cx)),
                             )
                         }))
                 })

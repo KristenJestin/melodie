@@ -15,6 +15,7 @@ pub mod layout;
 pub mod link;
 pub mod model;
 pub mod playlists;
+pub mod reveal;
 pub mod selection;
 pub mod theme;
 pub mod thumbs;

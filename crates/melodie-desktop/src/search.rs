@@ -8,8 +8,8 @@ use crate::catalog::{Catalog, Empty};
 use crate::dialogs::{self, Dialog};
 use crate::motion;
 use crate::player::palette;
-use crate::tables::row_button;
-use crate::widgets::{IconButton, title_with_aside};
+use crate::tables::{row_button, row_hover};
+use crate::widgets::{Hover, IconButton, Revealed as _, title_with_aside};
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::Icon;
@@ -259,8 +259,7 @@ fn act(action: Action, hit: &Hit, catalog: &Entity<Catalog>, window: &mut Window
 }
 
 /// One result: its picture, its name, what it is; a click plays a track and opens the rest; on
-/// hover, its other actions. Nothing in it is animated, so that a long list keeps its scroll
-/// layer.
+/// hover, its other actions fade in.
 fn result_row(
     list: &'static str,
     ix: usize,
@@ -268,6 +267,7 @@ fn result_row(
     covers: &HashMap<String, PathBuf>,
     pal: Palette,
     catalog: &Entity<Catalog>,
+    hover: Hover,
 ) -> Stateful<Div> {
     let key = |what: &str| ElementId::Name(format!("{list}-{what}-{ix}").into());
     let round = if hit.kind == search::Kind::Artist {
@@ -276,9 +276,8 @@ fn result_row(
         6.
     };
     let (h, c) = (Arc::new(hit.clone()), catalog.clone());
-    h_flex()
-        .id(key("row"))
-        .group(list)
+    hover
+        .track(h_flex().id(key("row")))
         .h(px(ROW))
         .flex_none()
         .w_full()
@@ -322,8 +321,7 @@ fn result_row(
                     h_flex()
                         .flex_none()
                         .gap_1()
-                        .invisible()
-                        .group_hover(list, |s| s.visible())
+                        .revealed(hover.look, true)
                         .children(find::buttons(hit).into_iter().map(|a| {
                             let (h, c) = (Arc::new(hit.clone()), catalog.clone());
                             row_button(
@@ -401,10 +399,19 @@ impl Render for SearchView {
                             .pb_2(),
                         )
                         .child(
-                            uniform_list("search-all", hits.len(), move |range, _, _| {
+                            uniform_list("search-all", hits.len(), move |range, window, cx| {
                                 range
                                     .map(|ix| {
-                                        result_row("search-all", ix, &hits[ix], &covers, pal, &c)
+                                        let hover = row_hover("search-all", ix, window, cx);
+                                        result_row(
+                                            "search-all",
+                                            ix,
+                                            &hits[ix],
+                                            &covers,
+                                            pal,
+                                            &c,
+                                            hover,
+                                        )
                                     })
                                     .collect()
                             })
@@ -469,12 +476,10 @@ impl Render for SearchView {
                                     )
                                 }),
                         )
-                        .children(
-                            g.hits
-                                .iter()
-                                .enumerate()
-                                .map(|(ix, h)| result_row(list, ix, h, &covers, pal, catalog)),
-                        )
+                        .children(g.hits.iter().enumerate().map(|(ix, h)| {
+                            let hover = row_hover(list, ix, window, cx);
+                            result_row(list, ix, h, &covers, pal, catalog, hover)
+                        }))
                 }))
                 .with_animation("search-groups", motion::enter(), |el, t| el.opacity(t))
                 .into_any_element(),

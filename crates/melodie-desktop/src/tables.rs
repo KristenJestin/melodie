@@ -1,6 +1,7 @@
 //! The long lists: artists and tracks, sortable by their columns, in virtual lists of fixed-height
-//! rows; and the track row the pages reuse. Nothing is animated inside a row, so that GPUI Fast
-//! keeps a list on its scroll layer (`docs/gui-toolkit.md`, "Lists").
+//! rows; and the track row the pages reuse. The buttons of a row fade in under the pointer: that
+//! is the one animation inside a row, and it runs only while the pointer moves from a row to
+//! the next (`docs/gui-toolkit.md`, "Lists").
 
 use crate::albums::{PAD, content_width, cover_box, empty_state};
 use crate::app::Shared;
@@ -8,7 +9,7 @@ use crate::catalog::Catalog;
 use crate::dialogs::{self, Dialog};
 use crate::player::palette;
 use crate::tips::Tipped as _;
-use crate::widgets::title_with_aside;
+use crate::widgets::{Hover, Revealed as _, hover, title_with_aside};
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::Icon;
@@ -177,7 +178,7 @@ pub fn track_header(
         .child(cell(Some(actions_width(cols)), 0.))
 }
 
-/// A small button inside a row: shown on the row's hover, never animated.
+/// A small button inside a row; the row shows and hides its buttons together (`Revealed`).
 pub fn row_button(
     id: ElementId,
     icon: IconName,
@@ -235,26 +236,39 @@ pub struct RowCtx {
     pub selected: bool,
     /// The playlist the row is in, when the user may edit it: remove the row, drag it elsewhere.
     pub playlist: Option<(String, String)>,
+    /// Whether the pointer is on the row, for its buttons to fade in (see `row_hover`).
+    pub hover: Hover,
 }
 
 impl RowCtx {
     /// A row that only plays.
-    pub fn plain() -> Self {
+    pub fn plain(hover: Hover) -> Self {
         Self {
             selectable: false,
             selected: false,
             playlist: None,
+            hover,
         }
     }
 
     /// The row `ix` of the list at `here`, picked or not.
-    pub fn of(selection: &Selection, here: &Place, ix: usize) -> Self {
+    pub fn of(selection: &Selection, here: &Place, ix: usize, hover: Hover) -> Self {
         Self {
             selectable: true,
             selected: selection.has(here, ix),
             playlist: None,
+            hover,
         }
     }
+}
+
+/// The hover of the row `ix` of the list `list`: the pointer on the row, the buttons coming in.
+pub fn row_hover(list: &'static str, ix: usize, window: &mut Window, cx: &mut App) -> Hover {
+    hover(
+        ElementId::Name(format!("{list}-hover-{ix}").into()),
+        window,
+        cx,
+    )
 }
 
 /// A row of a playlist being dragged to another rank.
@@ -334,9 +348,9 @@ pub fn track_row(
     };
     let (select, selectable) = (catalog.clone(), row.selectable);
     let accent = pal.accent;
-    h_flex()
-        .id(key("row"))
-        .group(list)
+    let look = row.hover.look;
+    row.hover
+        .track(h_flex().id(key("row")))
         .h(px(TRACK_ROW))
         .flex_none()
         .w_full()
@@ -419,8 +433,7 @@ pub fn track_row(
                         .w(px(actions_width(cols)))
                         .flex_none()
                         .gap_1()
-                        .invisible()
-                        .group_hover(list, |s| s.visible())
+                        .revealed(look, true)
                         .child(row_button(
                             key("next"),
                             IconName::ListStart,
@@ -576,10 +589,11 @@ impl Render for TrackList {
             Some(list) => {
                 let list = list.clone();
                 let catalog = self.catalog.clone();
-                uniform_list("track-rows", list.len(), move |range, _, _| {
+                uniform_list("track-rows", list.len(), move |range, window, cx| {
                     range
                         .map(|ix| {
-                            let row = RowCtx::of(&selection, &Place::Tracks, ix);
+                            let hover = row_hover("track-row", ix, window, cx);
+                            let row = RowCtx::of(&selection, &Place::Tracks, ix, hover);
                             track_row("track-row", ix, &list[ix], cols, pal, &catalog, row)
                         })
                         .collect()

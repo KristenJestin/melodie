@@ -5,7 +5,7 @@ use crate::app::Shared;
 use crate::catalog::{Catalog, Empty};
 use crate::player::palette;
 use crate::sidebar;
-use crate::widgets::IconButton;
+use crate::widgets::{IconButton, Revealed as _, hover};
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::Icon;
@@ -64,93 +64,126 @@ pub fn cover_box(path: Option<&PathBuf>, side: f32, round: f32, pal: Palette) ->
         })
 }
 
-/// One album: its cover (a play button over it on hover), its name and artist. A click opens it.
+/// One album: its cover (a play button fades in over it on hover), its name and artist. A click
+/// opens it.
 pub fn album_cell(
     album: &Album,
     covers: &HashMap<String, PathBuf>,
     side: f32,
     pal: Palette,
     catalog: &Entity<Catalog>,
-) -> Stateful<Div> {
-    let (open, play) = (catalog.clone(), catalog.clone());
-    let id = album.id.clone();
-    let play_id = album.id.clone();
-    v_flex()
-        .id(ElementId::Name(format!("album-{}", album.id).into()))
-        .group("album-cell")
-        .w(px(side))
-        .h(px(side + TEXT))
-        .flex_none()
-        .gap_1()
-        .cursor_pointer()
-        .on_click(move |_, _, cx| {
-            // the end of a drag of the home's rows is not a click
-            if !cx.has_active_drag() {
-                open.update(cx, |c, cx| c.go(Place::Album(id.clone()), cx))
-            }
-        })
-        .child(
-            div()
-                .relative()
-                .child(
-                    cover_box(
-                        album.cover.as_ref().and_then(|c| covers.get(c)),
-                        side,
-                        10.0,
-                        pal,
+) -> AlbumCell {
+    AlbumCell {
+        id: album.id.clone(),
+        name: album.name.clone(),
+        artist: album.artist.clone(),
+        cover: album.cover.as_ref().and_then(|c| covers.get(c)).cloned(),
+        side,
+        pal,
+        catalog: catalog.clone(),
+    }
+}
+
+/// A component and not a function of `Stateful<Div>`: it follows the pointer, which takes the
+/// window, and its callers have none to hand over.
+#[derive(IntoElement)]
+pub struct AlbumCell {
+    id: String,
+    name: String,
+    artist: String,
+    cover: Option<PathBuf>,
+    side: f32,
+    pal: Palette,
+    catalog: Entity<Catalog>,
+}
+
+impl RenderOnce for AlbumCell {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let Self {
+            id,
+            name,
+            artist,
+            cover,
+            side,
+            pal,
+            catalog,
+        } = self;
+        let (open, play) = (catalog.clone(), catalog);
+        let (open_id, play_id) = (id.clone(), id.clone());
+        let hover = hover(
+            ElementId::Name(format!("album-hover-{id}").into()),
+            window,
+            cx,
+        );
+        let look = hover.look;
+        hover
+            .track(v_flex().id(ElementId::Name(format!("album-{id}").into())))
+            .w(px(side))
+            .h(px(side + TEXT))
+            .flex_none()
+            .gap_1()
+            .cursor_pointer()
+            .on_click(move |_, _, cx| {
+                // the end of a drag of the home's rows is not a click
+                if !cx.has_active_drag() {
+                    open.update(cx, |c, cx| c.go(Place::Album(open_id.clone()), cx))
+                }
+            })
+            .child(
+                div()
+                    .relative()
+                    // the cover dims as the button comes
+                    .child(
+                        cover_box(cover.as_ref(), side, 10.0, pal)
+                            .opacity(1.0 - 0.15 * look.opacity),
                     )
-                    .group_hover("album-cell", |s| s.opacity(0.85)),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .right_2()
-                        .bottom_2()
-                        .invisible()
-                        .group_hover("album-cell", |s| s.visible())
-                        .child(
-                            IconButton::new(
-                                ElementId::Name(format!("album-play-{}", album.id).into()),
-                                IconName::Play,
-                                pal,
-                            )
-                            .primary()
-                            .tip("Play")
-                            .on_click(move |_, _, cx| {
-                                cx.stop_propagation();
-                                if cx.has_active_drag() {
-                                    return;
-                                }
-                                play.update(cx, |c, cx| {
-                                    c.run(
-                                        Job::Play {
-                                            kind: Kind::Album,
-                                            id: play_id.clone(),
-                                            shuffle: false,
-                                        },
-                                        cx,
-                                    )
-                                })
-                            }),
+                    .child(
+                        div().absolute().right_2().bottom_2().child(
+                            div().revealed(look, false).child(
+                                IconButton::new(
+                                    ElementId::Name(format!("album-play-{id}").into()),
+                                    IconName::Play,
+                                    pal,
+                                )
+                                .primary()
+                                .tip("Play")
+                                .on_click(move |_, _, cx| {
+                                    cx.stop_propagation();
+                                    if cx.has_active_drag() {
+                                        return;
+                                    }
+                                    play.update(cx, |c, cx| {
+                                        c.run(
+                                            Job::Play {
+                                                kind: Kind::Album,
+                                                id: play_id.clone(),
+                                                shuffle: false,
+                                            },
+                                            cx,
+                                        )
+                                    })
+                                }),
+                            ),
                         ),
-                ),
-        )
-        .child(
-            div()
-                .pt_1()
-                .text_sm()
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(pal.fg)
-                .truncate()
-                .child(album.name.clone()),
-        )
-        .child(
-            div()
-                .text_xs()
-                .text_color(pal.secondary)
-                .truncate()
-                .child(album.artist.clone()),
-        )
+                    ),
+            )
+            .child(
+                div()
+                    .pt_1()
+                    .text_sm()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(pal.fg)
+                    .truncate()
+                    .child(name),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(pal.secondary)
+                    .truncate()
+                    .child(artist),
+            )
+    }
 }
 
 /// A centred line saying why a view is empty.
