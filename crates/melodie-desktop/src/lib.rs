@@ -13,6 +13,7 @@ pub mod launch;
 pub mod layout;
 pub mod link;
 pub mod model;
+pub mod quick;
 pub mod selection;
 pub mod theme;
 pub mod thumbs;

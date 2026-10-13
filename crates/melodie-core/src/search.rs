@@ -379,6 +379,61 @@ pub fn playlists(conn: &Connection) -> Result<Vec<Hit>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// A genre of the local copy and how many tracks carry it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Genre {
+    pub name: String,
+    pub tracks: i64,
+}
+
+/// Every genre of the local copy, the most carried first. The index does not hold them: read
+/// once, then matched by `matching_genres` at each keystroke.
+pub fn genres(conn: &Connection) -> Result<Vec<Genre>> {
+    let mut st = conn.prepare_cached(
+        "SELECT g.value, COUNT(*) AS n FROM tracks t, json_each(t.genres) g
+         GROUP BY g.value ORDER BY n DESC, g.value COLLATE NOCASE, g.value",
+    )?;
+    let rows = st.query_map([], |r| {
+        Ok(Genre {
+            name: r.get(0)?,
+            tracks: r.get(1)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// The genres whose name holds every word of `input` (word starts, without case or accents),
+/// the most relevant first, then the most carried; `n` of them.
+pub fn matching_genres(all: &[Genre], input: &str, n: usize) -> Vec<Genre> {
+    let query = words(input);
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let mut found: Vec<(u8, &Genre)> = all
+        .iter()
+        .filter_map(|g| {
+            let name = words(&g.name);
+            let held = query
+                .iter()
+                .all(|q| name.iter().any(|w| w.starts_with(q.as_str())));
+            let rank = if name == query {
+                0
+            } else if name
+                .first()
+                .is_some_and(|w| w.starts_with(query[0].as_str()))
+            {
+                1
+            } else {
+                2
+            };
+            held.then_some((rank, g))
+        })
+        .collect();
+    // stable: at equal rank, the order of `all`, the most carried first
+    found.sort_by_key(|(rank, _)| *rank);
+    found.into_iter().take(n).map(|(_, g)| g.clone()).collect()
+}
+
 fn plural(n: i64, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
@@ -906,5 +961,52 @@ mod tests {
         assert_eq!(plural(1, "album", "albums"), "1 album");
         assert_eq!(shell_word("al-12"), "al-12");
         assert_eq!(shell_word("a b'c"), "'a b'\\''c'");
+    }
+
+    #[test]
+    fn the_genres_of_the_copy_are_counted_by_track() {
+        let (_d, conn) = sample();
+        let tx = conn.unchecked_transaction().unwrap();
+        db::insert_track(&tx, &json!({"id":"t3","title":"Aerodynamic","genres":[{"name":"Electro"},{"name":"French House"}]})).unwrap();
+        db::insert_track(
+            &tx,
+            &json!({"id":"t4","title":"Teardrop","genre":"Trip Hop"}),
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        let all = genres(&conn).unwrap();
+        let named: Vec<(&str, i64)> = all.iter().map(|g| (g.name.as_str(), g.tracks)).collect();
+        assert_eq!(
+            named,
+            [("Electro", 2), ("French House", 1), ("Trip Hop", 1)]
+        );
+    }
+
+    #[test]
+    fn genres_are_matched_by_the_starts_of_their_words() {
+        let g = |name: &str, tracks| Genre {
+            name: name.into(),
+            tracks,
+        };
+        let all = [
+            g("Électronique", 40),
+            g("Hip Hop", 30),
+            g("Trip Hop", 10),
+            g("Hop", 2),
+            g("Rock", 50),
+        ];
+        let names = |input, n| -> Vec<String> {
+            matching_genres(&all, input, n)
+                .into_iter()
+                .map(|g| g.name)
+                .collect()
+        };
+        // the whole name first, then a name that starts so, then the most carried
+        assert_eq!(names("hop", 9), ["Hop", "Hip Hop", "Trip Hop"]);
+        assert_eq!(names("hi ho", 9), ["Hip Hop"]);
+        assert_eq!(names("ELECTRO", 9), ["Électronique"]);
+        assert_eq!(names("hop", 1), ["Hop"]);
+        assert!(names("  ", 9).is_empty());
+        assert!(names("jazz", 9).is_empty());
     }
 }

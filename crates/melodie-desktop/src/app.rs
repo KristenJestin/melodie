@@ -11,6 +11,7 @@ use melodie_desktop::covers::Use;
 use melodie_desktop::launch::{self, Job, Lanes};
 use melodie_desktop::link::{self, Msg};
 use melodie_desktop::model::{Clock, Connection, Player};
+use melodie_desktop::quick::Seen;
 use melodie_desktop::theme::{self, Active, Choice, Omarchy, Palette, Settings, Tint};
 use melodie_desktop::thumbs::{self, Thumbs};
 use melodie_desktop::tint;
@@ -106,6 +107,11 @@ pub struct Shared {
     playlist_jobs: Lanes<(Job, Done)>,
 }
 
+/// Something the user started playing from the window.
+pub struct Started(pub Seen);
+
+impl EventEmitter<Started> for Shared {}
+
 /// What a job run by `run_then` calls with its outcome.
 type Done = Box<dyn FnOnce(Result<String, String>, &mut App)>;
 
@@ -171,6 +177,9 @@ impl Shared {
 
     /// Runs `melodie` for what needs the server; its first error line is said in the window.
     pub fn run(&self, job: Job, cx: &mut Context<Self>) {
+        if let Some(seen) = Seen::of_job(&job) {
+            cx.emit(Started(seen));
+        }
         let program = launch::program(std::env::current_exe().ok().as_deref());
         let what = match &job {
             Job::PlayMix => "Could not start your mix",
