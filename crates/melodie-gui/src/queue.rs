@@ -9,8 +9,6 @@ use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::Icon;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use melodie_core::cover;
-use melodie_core::env::Env;
 use melodie_core::proto::Request;
 use melodie_core::track::clock;
 use melodie_gui::model::Row;
@@ -25,10 +23,9 @@ pub struct QueuePanel {
 }
 
 impl QueuePanel {
-    pub fn new(shared: Entity<Shared>, env: Env, cx: &mut Context<Self>) -> Self {
+    pub fn new(shared: Entity<Shared>, cx: &mut Context<Self>) -> Self {
         let list = cx.new(|_| QueueList {
             shared: shared.clone(),
-            env,
             scroll: UniformListScrollHandle::new(),
         });
         Self { shared, list }
@@ -111,7 +108,6 @@ impl Render for QueuePanel {
 /// the list on its scroll layer (`docs/gui-toolkit.md`, "Retained mode and animations").
 pub struct QueueList {
     shared: Entity<Shared>,
-    env: Env,
     scroll: UniformListScrollHandle,
 }
 
@@ -158,26 +154,23 @@ impl Render for Dragged {
 
 impl Render for QueueList {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (tracks, player) = {
-            let p = &self.shared.read(cx).player;
-            (p.tracks.clone(), p.clone())
+        let (tracks, player, thumbs) = {
+            let s = self.shared.read(cx);
+            (s.player.tracks.clone(), s.player.clone(), s.thumbs.clone())
         };
         let pal = palette(&self.shared, window, cx);
         let shared = self.shared.clone();
-        let env = self.env.clone();
         let len = tracks.len();
         uniform_list("queue-rows", len, move |range, _, _| {
             range
                 .map(|ix| {
                     let t = &tracks[ix];
                     let row = player.row(ix);
-                    let thumb: Option<PathBuf> = t
-                        .cover_id
-                        .as_deref()
-                        .and_then(|id| match cover::local(&env, id) {
-                            cover::Local::Have(p) => Some(p),
-                            _ => None,
-                        })
+                    // Found when the queue arrived (`Shared::follow_thumbs`); until then the
+                    // cover the daemon gave, which costs no file access either.
+                    let thumb: Option<PathBuf> = thumbs
+                        .get(&t.entry)
+                        .cloned()
                         .or_else(|| t.cover.clone().map(PathBuf::from));
                     let entry = t.entry;
                     let (play, remove, dropped) = (shared.clone(), shared.clone(), shared.clone());

@@ -5,11 +5,12 @@ use futures::StreamExt as _;
 use gpui_kit::component::{Theme, ThemeMode};
 use gpui_kit::*;
 use melodie_core::env::Env;
-use melodie_core::proto::Request;
+use melodie_core::proto::{QueueEntry, Request};
 use melodie_gui::launch::{self, Job};
 use melodie_gui::link::{self, Msg};
 use melodie_gui::model::{Clock, Connection, Player};
 use melodie_gui::theme::{self, Active, Choice, Omarchy, Palette, Settings, Tint};
+use melodie_gui::thumbs::{self, Thumbs};
 use melodie_gui::tint;
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -77,6 +78,10 @@ impl ThemeState {
 pub struct Shared {
     pub player: Player,
     pub art: Art,
+    /// The picture of each row of the queue, by entry; kept up to date away from the render path.
+    pub thumbs: Arc<Thumbs>,
+    /// The tracks `thumbs` is being (or was) computed for.
+    thumbs_of: Option<Arc<[QueueEntry]>>,
     pub theme: ThemeState,
     /// The desktop asks for dark colours.
     pub dark: bool,
@@ -200,6 +205,39 @@ impl Shared {
         }
         apply_component_theme(self.target_palette(), cx);
         cx.notify();
+    }
+
+    /// After the player changed: look up the pictures of the rows if the tracks are new. The
+    /// rows keep what they had meanwhile (entries are kept when they move).
+    fn follow_thumbs(&mut self, cx: &mut Context<Self>) {
+        let tracks = self.player.tracks.clone();
+        if self
+            .thumbs_of
+            .as_ref()
+            .is_some_and(|t| Arc::ptr_eq(t, &tracks))
+        {
+            return;
+        }
+        self.thumbs_of = Some(tracks.clone());
+        let env = self.env.clone();
+        let task = cx.background_spawn({
+            let tracks = tracks.clone();
+            async move { thumbs::resolve(&env, &tracks) }
+        });
+        cx.spawn(async move |this, cx| {
+            let found = task.await;
+            let _ = this.update(cx, |s, cx| {
+                // Another queue came meanwhile: its own lookup will say.
+                if s.thumbs_of
+                    .as_ref()
+                    .is_some_and(|t| Arc::ptr_eq(t, &tracks))
+                {
+                    s.thumbs = Arc::new(found);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     /// After the player changed: load the new cover if there is one.
@@ -329,6 +367,8 @@ pub fn start(
     let shared = cx.new(|_| Shared {
         player: Player::default(),
         art: Art::default(),
+        thumbs: Arc::default(),
+        thumbs_of: None,
         theme,
         dark: is_dark(window.appearance()),
         queue_open: false,
@@ -363,6 +403,7 @@ pub fn start(
                     ch
                 });
                 if changed.player {
+                    s.follow_thumbs(cx);
                     s.follow_cover(cx);
                     cx.notify();
                 }

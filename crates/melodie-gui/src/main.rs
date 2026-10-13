@@ -350,7 +350,7 @@ fn main() -> ExitCode {
         let opened = gpui_kit::open_window(options, cx, move |window, cx| {
             let (shared, clock) = app::start(env.clone(), socket.clone(), window, cx);
             let player = cx.new(|cx| PlayerView::new(shared.clone(), clock, window, cx));
-            let queue = cx.new(|cx| QueuePanel::new(shared.clone(), env.clone(), cx));
+            let queue = cx.new(|cx| QueuePanel::new(shared.clone(), cx));
             cx.new(|cx| Root::new(shared, player, queue, window, cx))
         });
         if let Err(e) = opened {
