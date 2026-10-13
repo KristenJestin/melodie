@@ -13,7 +13,7 @@ use melodie_core::cover;
 use melodie_core::env::Env;
 use melodie_core::proto::Request;
 use melodie_core::track::clock;
-use melodie_gui::model::{Row, drop_move};
+use melodie_gui::model::Row;
 use melodie_gui::theme::Palette;
 use std::path::PathBuf;
 
@@ -119,6 +119,8 @@ pub struct QueueList {
 #[derive(Clone)]
 struct Dragged {
     from: usize,
+    /// The entry at `from` when the drag began.
+    entry: u64,
     title: SharedString,
     pal: Palette,
 }
@@ -177,6 +179,7 @@ impl Render for QueueList {
                             _ => None,
                         })
                         .or_else(|| t.cover.clone().map(PathBuf::from));
+                    let entry = t.entry;
                     let (play, remove, dropped) = (shared.clone(), shared.clone(), shared.clone());
                     let accent = pal.accent;
                     h_flex()
@@ -197,11 +200,14 @@ impl Render for QueueList {
                         })
                         .hover(|d| d.bg(Hsla { a: 0.07, ..pal.fg }))
                         .on_click(move |_, _, cx| {
-                            play.update(cx, |s, cx| s.send(Request::QueuePlay { index: ix }, cx))
+                            play.update(cx, |s, cx| {
+                                s.send_for_row(ix, entry, Request::QueuePlay { index: ix }, cx)
+                            })
                         })
                         .on_drag(
                             Dragged {
                                 from: ix,
+                                entry,
                                 title: t.title.clone().into(),
                                 pal,
                             },
@@ -218,10 +224,13 @@ impl Render for QueueList {
                             }
                         })
                         .on_drop(move |d: &Dragged, _, cx| {
-                            if let Some((from, to)) = drop_move(d.from, ix, len) {
-                                dropped
-                                    .update(cx, |s, cx| s.send(Request::QueueMove { from, to }, cx))
-                            }
+                            dropped.update(cx, |s, cx| {
+                                if let Some((from, to)) =
+                                    s.player.move_for((d.from, d.entry), (ix, entry))
+                                {
+                                    s.send(Request::QueueMove { from, to }, cx)
+                                }
+                            })
                         })
                         .child(
                             div()
@@ -304,7 +313,12 @@ impl Render for QueueList {
                                 .on_click(move |_, _, cx| {
                                     cx.stop_propagation();
                                     remove.update(cx, |s, cx| {
-                                        s.send(Request::QueueRemove { index: ix }, cx)
+                                        s.send_for_row(
+                                            ix,
+                                            entry,
+                                            Request::QueueRemove { index: ix },
+                                            cx,
+                                        )
                                     })
                                 })
                                 .child(

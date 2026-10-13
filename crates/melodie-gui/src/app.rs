@@ -127,6 +127,15 @@ impl Shared {
         .detach();
     }
 
+    /// Sends an action on a row of the queue, unless that row no longer holds the entry the user
+    /// clicked: another client (or the user's own earlier click) changed the queue since, and a
+    /// position alone would act on a neighbour.
+    pub fn send_for_row(&self, ix: usize, entry: u64, req: Request, cx: &mut Context<Self>) {
+        if self.player.holds(ix, entry) {
+            self.send(req, cx);
+        }
+    }
+
     /// Runs `melodie` for what needs the server; its first error line is said in the window.
     pub fn run(&self, job: Job, cx: &mut Context<Self>) {
         let program = launch::program(std::env::current_exe().ok().as_deref());

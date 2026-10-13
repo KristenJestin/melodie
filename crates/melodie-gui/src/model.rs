@@ -195,6 +195,22 @@ impl Player {
         }
     }
 
+    /// Whether row `ix` still holds `entry`. A row's actions carry the position and the entry
+    /// seen at render time; another client may have changed the queue since, and the daemon
+    /// only knows positions.
+    pub fn holds(&self, ix: usize, entry: u64) -> bool {
+        self.tracks.get(ix).is_some_and(|t| t.entry == entry)
+    }
+
+    /// The `(from, to)` of a `queue_move` for dropping the dragged row on another, `None` when
+    /// either row is not where the window saw it.
+    pub fn move_for(&self, dragged: (usize, u64), onto: (usize, u64)) -> Option<(usize, usize)> {
+        if !self.holds(dragged.0, dragged.1) || !self.holds(onto.0, onto.1) {
+            return None;
+        }
+        drop_move(dragged.0, onto.0, self.tracks.len())
+    }
+
     /// Whether there is something after the current track (what "clear what comes next" removes).
     pub fn has_next(&self) -> bool {
         self.current.is_some_and(|c| c + 1 < self.tracks.len())
@@ -605,6 +621,48 @@ mod tests {
         );
         assert_eq!(volume_percent(2.0), VOLUME_SLIDER_MAX);
         assert_eq!(volume_percent(-1.0), 0.0);
+    }
+
+    #[test]
+    fn a_second_click_on_remove_does_not_remove_the_neighbour() {
+        let (mut p, mut c, t0) = feed(&[snapshot()]);
+        // the cross of the first row was clicked: position 0, entry 1
+        assert!(p.holds(0, 1));
+        // the queue event of that removal arrives
+        p.apply(
+            &Event::Queue {
+                queue: queue(
+                    Some(0),
+                    vec![entry(2, "t2", "Second"), entry(3, "t3", "Third")],
+                ),
+            },
+            &mut c,
+            t0,
+        );
+        // a second click with what was captured before: the row at 0 is now another track
+        assert!(!p.holds(0, 1));
+        assert!(p.holds(0, 2));
+        assert!(!p.holds(5, 1), "a position past the end holds nothing");
+    }
+
+    #[test]
+    fn a_drag_during_another_clients_change_moves_nothing() {
+        let (mut p, mut c, t0) = feed(&[snapshot()]);
+        assert_eq!(p.move_for((0, 1), (2, 3)), Some((0, 2)));
+        // another client removed the first track while the row was dragged
+        p.apply(
+            &Event::Queue {
+                queue: queue(
+                    Some(0),
+                    vec![entry(2, "t2", "Second"), entry(3, "t3", "Third")],
+                ),
+            },
+            &mut c,
+            t0,
+        );
+        assert_eq!(p.move_for((0, 1), (1, 3)), None, "the dragged row is gone");
+        assert_eq!(p.move_for((0, 2), (2, 3)), None, "the target moved");
+        assert_eq!(p.move_for((0, 2), (1, 3)), Some((0, 1)));
     }
 
     #[test]
