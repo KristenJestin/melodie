@@ -1,7 +1,7 @@
 //! The menu a right click opens on any item (a track, an album, an artist, a playlist, a mix):
 //! what it offers and what each line does are decided in `melodie_desktop::menu`. One menu at a
-//! time, at the pointer, inside the window; it fades in, takes the keys while it is open, and
-//! gives the focus back when it closes.
+//! time, at the pointer (at the row, for the menu key), inside the window; it fades in, takes the
+//! keys while it is open, and gives the focus back when it closes.
 
 use crate::app::Shared;
 use crate::catalog::{Catalog, Facet, Page};
@@ -16,9 +16,10 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use melodie_core::db::{self, StarKind};
 use melodie_core::env::Env;
+use melodie_desktop::browse::Place;
 use melodie_desktop::launch::{Adding, Kind};
 use melodie_desktop::menu::{
-    self, Action, Chosen, Effect, Focus, Item, MenuKey, Source, Spot, Target,
+    self, Action, Asks, Chosen, Effect, Focus, Item, ListView, MenuKey, Source, Spot, Target,
 };
 use melodie_desktop::theme::Palette;
 use std::sync::Arc;
@@ -29,7 +30,8 @@ struct Open {
     rows: Vec<Action>,
     /// The playlists beside "Add to playlist": their ids and names.
     subs: Vec<(String, String)>,
-    /// Where the menu's top left corner is in the window.
+    /// Where it was asked for (the pointer, or the row): it is placed in the window as drawn, so
+    /// a resize places it again.
     at: (f32, f32),
 }
 
@@ -41,9 +43,12 @@ pub struct ContextMenu {
     handle: FocusHandle,
     /// What had the focus before the menu took it.
     before: Option<FocusHandle>,
+    scroll: ScrollHandle,
     sub_scroll: ScrollHandle,
-    /// Counts the menus asked for: a slow look-up for an older one opens nothing.
-    asked: u64,
+    /// The menus asked for and not shown yet: a slow look-up opens nothing once it is stale.
+    asks: Asks,
+    /// A right click that closed the menu: played again on what is under it, once it is gone.
+    replay: Option<Point<Pixels>>,
     env: Env,
     shared: Entity<Shared>,
     catalog: Entity<Catalog>,
@@ -68,8 +73,19 @@ pub fn open(
     menu.update(cx, |m, cx| m.ask(item, spot, starred, at, window, cx));
 }
 
-/// Opens the menu of the row picked in the current list (the menu key, Shift+F10), at the
-/// pointer.
+/// The scroll of the list shown, with the height of its rows: a list says it at each draw, so
+/// the menu key finds the row it asks for.
+#[derive(Default)]
+struct Shown(Option<(Place, UniformListScrollHandle, f32)>);
+
+impl Global for Shown {}
+
+pub fn list_is(place: &Place, scroll: &UniformListScrollHandle, row: f32, cx: &mut App) {
+    cx.default_global::<Shown>().0 = Some((place.clone(), scroll.clone(), row));
+}
+
+/// Opens the menu of the row picked in the current list (the menu key, Shift+F10), at the row;
+/// at the pointer if the list has not been drawn.
 pub fn open_on_picked(catalog: &Entity<Catalog>, window: &mut Window, cx: &mut App) {
     let found = {
         let c = catalog.read(cx);
@@ -85,13 +101,41 @@ pub fn open_on_picked(catalog: &Entity<Catalog>, window: &mut Window, cx: &mut A
                 },
                 _ => Spot::Library,
             };
-            Some((Item::track(t), spot))
+            Some((Item::track(t), spot, ix))
         })
     };
-    if let Some((item, spot)) = found {
-        let at = window.mouse_position();
+    if let Some((item, spot, ix)) = found {
+        let here = catalog.read(cx).here().clone();
+        let view = cx
+            .default_global::<Shown>()
+            .0
+            .as_ref()
+            .and_then(|(place, scroll, row)| {
+                let scroll = scroll.0.borrow();
+                let (bounds, offset) = (scroll.base_handle.bounds(), scroll.base_handle.offset());
+                (*place == here && bounds.size.height > px(0.)).then(|| ListView {
+                    left: bounds.origin.x.as_f32(),
+                    top: bounds.origin.y.as_f32(),
+                    height: bounds.size.height.as_f32(),
+                    scrolled: offset.y.as_f32(),
+                    row: *row,
+                })
+            });
+        let at = match view {
+            Some(view) => {
+                let (x, y) = menu::row_anchor(&view, ix);
+                point(px(x), px(y))
+            }
+            None => window.mouse_position(),
+        };
         open(item, spot, None, at, window, cx);
     }
+}
+
+/// A key that is not the menu's goes to the window: a menu still being looked up opens nothing.
+pub fn forget_pending(cx: &mut App) {
+    let menu = cx.global::<MenuHandle>().0.clone();
+    menu.update(cx, |m, cx| m.cancel(cx));
 }
 
 /// A right click on the element opens the menu of `item`.
@@ -150,8 +194,10 @@ impl ContextMenu {
             focus: Focus::default(),
             handle: cx.focus_handle(),
             before: None,
+            scroll: ScrollHandle::new(),
             sub_scroll: ScrollHandle::new(),
-            asked: 0,
+            asks: Asks::default(),
+            replay: None,
             env,
             shared,
             catalog,
@@ -168,8 +214,7 @@ impl ContextMenu {
         cx: &mut Context<Self>,
     ) {
         tips::hide(cx);
-        self.asked += 1;
-        let asked = self.asked;
+        let ticket = self.asks.ask();
         let here = {
             let c = self.catalog.read(cx);
             if let Item::Playlist { id, own, .. } = &mut item {
@@ -191,9 +236,12 @@ impl ContextMenu {
             _ => None,
         };
         let Some((kind, id)) = lookup else {
+            self.asks.answer(ticket);
             self.show(target, at, window, cx);
             return;
         };
+        // draws the layer that cancels the ask on a click
+        cx.notify();
         // a few milliseconds on the local copy, away from the window
         let env = self.env.clone();
         let task = cx.background_spawn(async move {
@@ -203,7 +251,8 @@ impl ContextMenu {
         cx.spawn_in(window, async move |this, cx| {
             target.starred = task.await;
             let _ = this.update_in(cx, |m, window, cx| {
-                if m.asked == asked {
+                // Escape, a click or another page came first: it opens nothing
+                if m.asks.answer(ticket) && m.catalog.read(cx).here() == &target.here {
                     m.show(target, at, window, cx)
                 }
             });
@@ -227,18 +276,12 @@ impl ContextMenu {
         } else {
             Vec::new()
         };
-        let viewport = window.viewport_size();
-        let size = (menu::WIDTH, menu::height(&rows));
-        let at = menu::place(
-            at,
-            size,
-            (viewport.width.as_f32(), viewport.height.as_f32()),
-        );
         if !self.handle.is_focused(window) {
             self.before = window.focused(cx);
         }
         window.focus(&self.handle, cx);
         self.focus = Focus::default();
+        self.scroll.set_offset(point(px(0.), px(0.)));
         self.open = Some(Open {
             target,
             rows,
@@ -249,7 +292,16 @@ impl ContextMenu {
         cx.notify();
     }
 
+    /// Escape, a click or another page while the menu is being looked up: it opens nothing.
+    pub fn cancel(&mut self, cx: &mut Context<Self>) {
+        if self.asks.pending() {
+            self.asks.cancel();
+            cx.notify();
+        }
+    }
+
     pub fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.asks.cancel();
         if self.open.take().is_none() {
             return;
         }
@@ -272,6 +324,8 @@ impl ContextMenu {
         let chosen = self.focus.key(key, &rows, open.subs.len() + 1);
         if let Some(sub) = self.focus.sub.filter(|_| self.focus.sub_open) {
             self.sub_scroll.scroll_to_item(sub);
+        } else if let Some(row) = self.focus.row {
+            self.scroll.scroll_to_item(menu::child_index(&rows, row));
         }
         match chosen {
             Some(c) => self.choose(c, window, cx),
@@ -371,12 +425,21 @@ fn add(to: Option<(String, String)>, what: Adding, window: &mut Window, cx: &mut
     }
 }
 
+/// The full-window box the menu lives in. While a look-up runs it sees every mouse down first
+/// (`cancel`), and lets it go on to what it hit.
+fn watch(d: Div, cancel: Option<impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static>) -> Div {
+    d.absolute()
+        .inset_0()
+        .when_some(cancel, |d, cancel| d.capture_any_mouse_down(cancel))
+}
+
 /// A line of the menu or of the list beside it.
 fn line(
     id: ElementId,
     icon: IconName,
     label: SharedString,
     lit: bool,
+    live: bool,
     color: Hsla,
     pal: Palette,
 ) -> Stateful<Div> {
@@ -389,7 +452,7 @@ fn line(
         .gap_3()
         .items_center()
         .rounded_md()
-        .cursor_pointer()
+        .when(live, |d| d.cursor_pointer())
         .text_sm()
         .text_color(color)
         .when(lit, |d| d.bg(Hsla { a: 0.09, ..pal.fg }))
@@ -407,19 +470,46 @@ impl Render for ContextMenu {
             window,
             cx,
         );
+        // the right click that closed the menu, played on what it was covering: the layer is
+        // gone from this frame, so the next one finds the item under the pointer
+        if let Some(position) = self.replay.take() {
+            window.on_next_frame(move |window, cx| {
+                window.dispatch_event(
+                    PlatformInput::MouseDown(MouseDownEvent {
+                        button: MouseButton::Right,
+                        position,
+                        modifiers: Modifiers::default(),
+                        click_count: 1,
+                        first_mouse: false,
+                    }),
+                    cx,
+                );
+            });
+        }
+        // a click while the look-up runs cancels it, and goes on to what it hit
+        let cancel = self
+            .asks
+            .pending()
+            .then(|| cx.listener(|m, _: &MouseDownEvent, _, cx| m.cancel(cx)));
         // 0 is also where an opening starts: only a closed menu is forgotten
         if t == 0.0 && self.open.is_none() {
             self.shown = None;
-            return div().into_any_element();
+            return watch(div(), cancel).into_any_element();
         }
         let Some(open) = self.shown.clone() else {
-            return div().into_any_element();
+            return watch(div(), cancel).into_any_element();
         };
         let live = self.open.is_some();
         let pal = palette(&self.shared, window, cx);
         let viewport = window.viewport_size();
         let window_size = (viewport.width.as_f32(), viewport.height.as_f32());
-        let (x, y) = open.at;
+        // placed again at each draw: a resize moves the menu back inside, and a window shorter
+        // than the menu makes it scroll
+        let size = (
+            menu::WIDTH,
+            menu::capped(menu::height(&open.rows), window_size.1),
+        );
+        let (x, y) = menu::place(open.at, size, window_size);
         let focus = self.focus;
         let card = |id: &'static str, x: f32, y: f32, w: f32| {
             v_flex()
@@ -434,9 +524,11 @@ impl Render for ContextMenu {
                 .border_1()
                 .border_color(Hsla { a: 0.12, ..pal.fg })
                 .shadow_xl()
-                // a click inside is the menu's
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                // a click inside is the menu's, while it is open; fading out, it is nobody's
+                .when(live, |d| {
+                    d.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                })
         };
 
         let mut lines: Vec<AnyElement> = Vec::new();
@@ -461,6 +553,7 @@ impl Render for ContextMenu {
                     icon(action),
                     label.into(),
                     focus.row == Some(ix),
+                    live,
                     pal.fg,
                     pal,
                 )
@@ -488,6 +581,9 @@ impl Render for ContextMenu {
         let main = card("menu", x, y + 6. * (1. - t), menu::WIDTH)
             .track_focus(&self.handle)
             .on_key_down(cx.listener(Self::on_key))
+            .max_h(px(size.1))
+            .overflow_y_scroll()
+            .track_scroll(&self.scroll)
             .opacity(t)
             .children(lines);
 
@@ -500,9 +596,10 @@ impl Render for ContextMenu {
             .map(|ix| {
                 let n = open.subs.len() + 1;
                 let size = (menu::SUB_WIDTH, menu::sub_height(n));
+                // the menu may be scrolled: its lines are not where they were drawn at rest
                 let (sx, sy) = menu::place_sub(
                     (x, y, menu::WIDTH),
-                    menu::row_top(&open.rows, ix),
+                    menu::row_top(&open.rows, ix) + self.scroll.offset().y.as_f32(),
                     size,
                     window_size,
                 );
@@ -522,6 +619,7 @@ impl Render for ContextMenu {
                             icon,
                             name.into(),
                             focus.sub_open && focus.sub == Some(i),
+                            live,
                             if i == 0 { pal.accent } else { pal.fg },
                             pal,
                         )
@@ -539,9 +637,7 @@ impl Render for ContextMenu {
                     }))
             });
 
-        div()
-            .absolute()
-            .inset_0()
+        watch(div(), cancel)
             // open, a click anywhere else closes it, and goes no further
             .when(live, |d| {
                 let close =
@@ -556,7 +652,14 @@ impl Render for ContextMenu {
                         .inset_0()
                         .occlude()
                         .on_mouse_down(MouseButton::Left, cx.listener(close))
-                        .on_mouse_down(MouseButton::Right, cx.listener(close))
+                        // another item's right click closes this menu and opens its own
+                        .on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(|m, ev: &MouseDownEvent, window, cx| {
+                                m.close(window, cx);
+                                m.replay = Some(ev.position);
+                            }),
+                        )
                         .on_mouse_down(MouseButton::Middle, cx.listener(close)),
                 )
             })

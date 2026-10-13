@@ -5,7 +5,7 @@
 use crate::albums::{PAD, content_width, cover_box, empty_state};
 use crate::app::Shared;
 use crate::catalog::Catalog;
-use crate::context_menu::Menued as _;
+use crate::context_menu::{self, Menued as _};
 use crate::dialogs::{self, Dialog};
 use crate::player::palette;
 use crate::tips::Tipped as _;
@@ -578,6 +578,7 @@ impl Render for TrackList {
             }
             self.shown_sort = Some(sort);
         }
+        context_menu::list_is(&Place::Tracks, &self.scroll, TRACK_ROW, cx);
         let cols = Cols {
             number: false,
             artist: true,

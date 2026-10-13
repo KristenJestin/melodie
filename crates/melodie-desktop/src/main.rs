@@ -219,6 +219,7 @@ impl Root {
 
     fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let k = &ev.keystroke;
+        context_menu::forget_pending(cx);
         let key = if Key::opens_menu(k.modifiers.shift, &k.key) {
             Key::Menu
         } else {

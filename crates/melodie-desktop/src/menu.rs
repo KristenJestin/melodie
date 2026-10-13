@@ -527,6 +527,11 @@ impl Focus {
             .and_then(|i| rows.get(i))
             .is_some_and(|a| a.has_sub());
         match key {
+            // the list beside first, as Left does; then the menu
+            MenuKey::Escape if self.sub_open => {
+                self.sub_open = false;
+                self.sub = None;
+            }
             MenuKey::Escape => return Some(Chosen::Close),
             MenuKey::Up | MenuKey::Down if self.sub_open => {
                 self.sub = step(self.sub, sub_len, key == MenuKey::Down)
@@ -629,6 +634,80 @@ pub fn place_sub(
         .min(window.1 - MARGIN - size.1)
         .max(MARGIN);
     (x, y)
+}
+
+/// The list a row sits in, as drawn: where its viewport is in the window and how far it is
+/// scrolled (zero or negative, as GPUI keeps it).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ListView {
+    pub left: f32,
+    pub top: f32,
+    pub height: f32,
+    pub scrolled: f32,
+    pub row: f32,
+}
+
+/// How far from the list's left edge a menu opened by a key starts: past the number and the cover.
+pub const ROW_INSET: f32 = 48.;
+
+/// Where the menu of row `ix` opens when a key asks for it (it has no pointer): level with the
+/// middle of the row; at the top of the list when the row is scrolled out of sight.
+pub fn row_anchor(list: &ListView, ix: usize) -> (f32, f32) {
+    let top = list.top + list.scrolled + ix as f32 * list.row;
+    let whole = top >= list.top && top + list.row <= list.top + list.height;
+    let top = if whole { top } else { list.top };
+    (list.left + ROW_INSET, top + list.row / 2.)
+}
+
+/// The height the menu takes in a window of `window_h`: its own, or the window's less the
+/// margins, and then it scrolls.
+pub fn capped(height: f32, window_h: f32) -> f32 {
+    height
+        .min(window_h - 2. * MARGIN)
+        .max((ROW + 2. * PAD).min(height))
+}
+
+/// The position of line `ix` among the menu's children, which the separators are part of.
+pub fn child_index(rows: &[Action], ix: usize) -> usize {
+    ix + (0..=ix.min(rows.len().saturating_sub(1)))
+        .filter(|&i| separated(rows, i))
+        .count()
+}
+
+/// The menus asked for and not shown yet (their look-up is still running): an answer that
+/// comes after a newer ask or a cancel opens nothing.
+#[derive(Debug, Default)]
+pub struct Asks {
+    last: u64,
+    pending: bool,
+}
+
+impl Asks {
+    /// A new ask, which makes the previous ones stale. Its ticket comes back with the answer.
+    pub fn ask(&mut self) -> u64 {
+        self.last += 1;
+        self.pending = true;
+        self.last
+    }
+
+    /// Escape, a click or a page change: whatever is pending opens nothing.
+    pub fn cancel(&mut self) {
+        self.last += 1;
+        self.pending = false;
+    }
+
+    /// The answer of `ticket` is in: `true` when the menu may still open.
+    pub fn answer(&mut self, ticket: u64) -> bool {
+        let wanted = self.pending && ticket == self.last;
+        if wanted {
+            self.pending = false;
+        }
+        wanted
+    }
+
+    pub fn pending(&self) -> bool {
+        self.pending
+    }
 }
 
 #[cfg(test)]
@@ -1167,5 +1246,124 @@ mod tests {
         // near the bottom it goes up to stay inside
         let (_, y) = place_sub((100., 600., WIDTH), 70., size, window);
         assert_eq!(y, 700. - MARGIN - 200.);
+    }
+
+    #[test]
+    fn escape_closes_the_list_beside_first_and_the_menu_the_second_time() {
+        let rows = [Play, AddToPlaylist, Like];
+        let mut f = Focus {
+            row: Some(1),
+            ..Focus::default()
+        };
+        f.key(MenuKey::Right, &rows, 3);
+        assert!(f.sub_open);
+        assert_eq!(f.key(MenuKey::Escape, &rows, 3), None);
+        assert!(!f.sub_open, "the list beside is closed, as Left does");
+        assert_eq!(f.row, Some(1), "the line stays highlighted");
+        assert_eq!(f.key(MenuKey::Escape, &rows, 3), Some(Chosen::Close));
+    }
+
+    #[test]
+    fn a_menu_asked_by_a_key_opens_level_with_its_row() {
+        let list = ListView {
+            left: 200.,
+            top: 100.,
+            height: 400.,
+            scrolled: 0.,
+            row: 40.,
+        };
+        assert_eq!(
+            row_anchor(&list, 0),
+            (200. + ROW_INSET, 100. + 20.),
+            "the middle of the first row"
+        );
+        assert_eq!(
+            row_anchor(&list, 3),
+            (200. + ROW_INSET, 100. + 3. * 40. + 20.)
+        );
+        // scrolled two rows and a half down: the row moves up with the list
+        let scrolled = ListView {
+            scrolled: -100.,
+            ..list
+        };
+        assert_eq!(
+            row_anchor(&scrolled, 5),
+            (200. + ROW_INSET, 100. + 200. - 100. + 20.)
+        );
+        // the last row that fits whole is still there
+        assert_eq!(row_anchor(&list, 9), (200. + ROW_INSET, 100. + 360. + 20.));
+    }
+
+    #[test]
+    fn a_row_out_of_sight_has_its_menu_at_the_top_of_the_list() {
+        let list = ListView {
+            left: 200.,
+            top: 100.,
+            height: 400.,
+            scrolled: -400.,
+            row: 40.,
+        };
+        let top = (200. + ROW_INSET, 100. + 20.);
+        assert_eq!(row_anchor(&list, 2), top, "above the viewport");
+        assert_eq!(row_anchor(&list, 30), top, "below the viewport");
+        // cut by the edge: not whole, so not there
+        assert_eq!(row_anchor(&list, 9), top, "cut at the top");
+        assert_eq!(row_anchor(&list, 20), top, "below the last whole row");
+        assert_eq!(
+            row_anchor(&list, 11),
+            (200. + ROW_INSET, 100. + 40. + 20.),
+            "a whole row, second of the viewport"
+        );
+        assert_eq!(
+            row_anchor(&list, 19),
+            (200. + ROW_INSET, 100. + 360. + 20.),
+            "the last whole row"
+        );
+    }
+
+    #[test]
+    fn a_menu_taller_than_the_window_is_capped_and_scrolls() {
+        assert_eq!(capped(300., 700.), 300.);
+        assert_eq!(capped(300., 300. + 2. * MARGIN), 300.);
+        assert_eq!(capped(300., 200.), 200. - 2. * MARGIN);
+        assert_eq!(capped(300., 20.), ROW + 2. * PAD, "never less than a line");
+        // so it fits: opened at the pointer, it is against the margin, whole
+        let (_, y) = place((100., 100.), (WIDTH, capped(300., 200.)), (800., 200.));
+        assert_eq!(y, MARGIN);
+    }
+
+    #[test]
+    fn a_line_is_found_among_the_separators() {
+        let rows = [Play, Shuffle, Next, Last, AddToPlaylist, Like, GoToArtist];
+        // groups: [Play, Shuffle] | [Next, Last] | [AddToPlaylist, Like] | [GoToArtist]
+        assert_eq!(child_index(&rows, 0), 0);
+        assert_eq!(child_index(&rows, 1), 1);
+        assert_eq!(child_index(&rows, 2), 3, "after the first separator");
+        assert_eq!(child_index(&rows, 4), 6);
+        assert_eq!(child_index(&rows, 6), 9, "after three separators");
+    }
+
+    #[test]
+    fn a_look_up_answered_after_a_cancel_or_a_newer_ask_opens_nothing() {
+        let mut asks = Asks::default();
+        let a = asks.ask();
+        assert!(asks.pending());
+        assert!(asks.answer(a), "nothing happened meanwhile");
+        assert!(!asks.pending());
+        assert!(!asks.answer(a), "an answer counts once");
+
+        let b = asks.ask();
+        asks.cancel();
+        assert!(!asks.pending());
+        assert!(
+            !asks.answer(b),
+            "Escape, a click or a page change came first"
+        );
+
+        let c = asks.ask();
+        let d = asks.ask();
+        assert!(!asks.answer(c), "a newer menu was asked for");
+        assert!(asks.pending(), "the newer one is still being looked up");
+        assert!(asks.answer(d));
     }
 }
