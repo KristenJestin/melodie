@@ -148,7 +148,12 @@ fn refresh_playlists_and_starred(
         if held.get(pid) == Some(&changed) {
             continue;
         }
-        let r = call(client, "getPlaylist", &[("id", pid.to_string())])?;
+        let r = match call(client, "getPlaylist", &[("id", pid.to_string())]) {
+            Ok(r) => r,
+            // Deleted since `getPlaylists` answered: it is gone, the next sync forgets it.
+            Err(Failure::NotFound(_)) => continue,
+            Err(e) => return Err(e),
+        };
         let ids = db::entry_ids(&list(&r, &["playlist", "entry"]));
         db::replace_playlist_tracks(tx, pid, &ids)?;
     }
@@ -381,6 +386,22 @@ mod tests {
         run(&env, &client, false).unwrap();
         assert_eq!(fake.calls_of("getPlaylist"), 1);
         assert_eq!(playlist_tracks(&env), ["s1", "s2"]);
+    }
+
+    #[test]
+    fn a_playlist_deleted_during_the_sync_is_skipped() {
+        let (_d, env, fake, client) = setup(3);
+        fake.state.playlist_gone.store(true, Ordering::SeqCst);
+        // Listed by `getPlaylists`, gone by the time `getPlaylist` asks: the copy is made without it.
+        for force in [true, false] {
+            run(&env, &client, force).unwrap();
+            assert!(playlist_tracks(&env).is_empty());
+            let conn = db::open_existing(&env).unwrap().unwrap();
+            assert_eq!(db::counts(&conn).unwrap().tracks, 3);
+        }
+        // Any other failure still fails the copy.
+        *fake.state.fail_code.lock().unwrap() = Some(10);
+        assert!(run(&env, &client, true).is_err());
     }
 
     #[test]

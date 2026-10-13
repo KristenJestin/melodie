@@ -20,6 +20,9 @@ pub struct State {
     pub last_scan: Mutex<String>,
     /// The `changed` date `getPlaylists` gives the playlist `p1`.
     pub playlist_changed: Mutex<String>,
+    /// While true, `getPlaylist` does not know `p1` (code 70) though `getPlaylists` still
+    /// lists it: it was deleted between the two calls.
+    pub playlist_gone: AtomicBool,
     pub expected_token: Mutex<String>,
     /// Code d'erreur Subsonic à renvoyer pour tout, si présent.
     pub fail_code: Mutex<Option<i64>>,
@@ -101,6 +104,7 @@ impl Fake {
             playlists: Mutex::new(HashMap::new()),
             last_scan: Mutex::new("2026-10-01T10:00:00Z".into()),
             playlist_changed: Mutex::new("2026-10-01T10:00:00Z".into()),
+            playlist_gone: AtomicBool::new(false),
             expected_token: Mutex::new(token.to_string()),
             fail_code: Mutex::new(None),
             raw: Mutex::new(None),
@@ -267,6 +271,9 @@ impl State {
                 {"id":"al2","name":"Homework","year":1997}]}}),
             ),
             "getPlaylist" => {
+                if self.playlist_gone.load(Ordering::SeqCst) {
+                    return no_such(method);
+                }
                 let id = param(query, "id").unwrap_or_default();
                 let entry = match self.playlists.lock().unwrap().get(&id) {
                     Some(seeded) => seeded.clone(),
