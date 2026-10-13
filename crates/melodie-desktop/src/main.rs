@@ -505,6 +505,8 @@ impl Render for Root {
                         .id("queue-scrim")
                         .absolute()
                         .inset_0()
+                        // a click beside the queue only hides it
+                        .occlude()
                         .bg(hsla(0., 0., 0., 0.35 * q))
                         .on_click(move |_, _, cx| {
                             scrim.update(cx, |s, cx| s.show_queue(false, cx))
