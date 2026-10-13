@@ -250,7 +250,7 @@ impl Render for PlayBar {
                 .w(px(parts.center))
                 .flex_none()
                 .items_center()
-                .gap_1()
+                .gap(px(bar::ROWS_GAP))
                 .child(
                     h_flex()
                         .gap(px(gap))
