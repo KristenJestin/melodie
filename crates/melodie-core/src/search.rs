@@ -247,9 +247,19 @@ fn ranked(input: &str, hits: Vec<Hit>) -> Vec<(u8, Hit)> {
     out
 }
 
+/// The order of the kinds at equal relevance in the window.
+fn tie_rank(kind: Kind) -> u8 {
+    match kind {
+        Kind::Artist => 0,
+        Kind::Album => 1,
+        Kind::Track => 2,
+        Kind::Playlist => 3,
+    }
+}
+
 /// The results grouped by kind, `shown` of each, ranked as by `search`; the kind whose best
-/// result is the most relevant first, then the order of `Kind` at equal relevance. Leaves
-/// `search`, which the launcher reads, as it is.
+/// result is the most relevant first, then artists, albums, tracks, playlists at equal
+/// relevance. Leaves `search`, which the launcher reads (playlists first), as it is.
 pub fn grouped(conn: &Connection, input: &str, shown: usize) -> Result<Vec<Group>> {
     let Some(q) = fts_query(input) else {
         return Ok(Vec::new());
@@ -271,7 +281,7 @@ pub fn grouped(conn: &Connection, input: &str, shown: usize) -> Result<Vec<Group
             },
         ));
     }
-    groups.sort_by_key(|(best, g)| (*best, g.kind));
+    groups.sort_by_key(|(best, g)| (*best, tie_rank(g.kind)));
     Ok(groups.into_iter().map(|(_, g)| g).collect())
 }
 
@@ -783,8 +793,8 @@ mod tests {
         let (_d, conn) = night_library();
         let groups = grouped(&conn, "night", 5).unwrap();
         let kinds: Vec<_> = groups.iter().map(|g| g.kind).collect();
-        // Artist, album and track each have an exact name: the order of the kinds breaks the
-        // tie; the playlist only holds the word.
+        // Artist, album and track each have an exact name: the tie order of the kinds breaks
+        // it; the playlist only holds the word.
         assert_eq!(
             kinds,
             [Kind::Artist, Kind::Album, Kind::Track, Kind::Playlist]
@@ -811,6 +821,36 @@ mod tests {
         assert_eq!(kinds, [Kind::Album, Kind::Track]);
         assert!(grouped(&conn, "  ", 5).unwrap().is_empty());
         assert!(grouped(&conn, "zzz", 5).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_tie_puts_artists_before_albums_tracks_and_playlists() {
+        let d = tempfile::tempdir().unwrap();
+        let mut conn = db::create(&d.path().join("l.db")).unwrap();
+        let tx = conn.transaction().unwrap();
+        db::insert_artist(&tx, &json!({"id":"ar1","name":"Dusk","albumCount":1})).unwrap();
+        db::insert_album(
+            &tx,
+            &json!({"id":"al1","name":"Dusk","artist":"Dusk","artistId":"ar1"}),
+        )
+        .unwrap();
+        db::insert_track(
+            &tx,
+            &json!({"id":"t1","title":"Dusk","artist":"Dusk","artistId":"ar1",
+                    "album":"Dusk","albumId":"al1"}),
+        )
+        .unwrap();
+        db::replace_playlists(&tx, &[json!({"id":"p1","name":"Dusk","songCount":1})]).unwrap();
+        tx.commit().unwrap();
+        let kinds: Vec<_> = grouped(&conn, "dusk", 5)
+            .unwrap()
+            .iter()
+            .map(|g| g.kind)
+            .collect();
+        assert_eq!(
+            kinds,
+            [Kind::Artist, Kind::Album, Kind::Track, Kind::Playlist]
+        );
     }
 
     #[test]
