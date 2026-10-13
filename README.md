@@ -328,7 +328,8 @@ exposed), and keeps the queue in step with mpv's playlist. The daemon does not l
 - Log: `~/.local/state/melodie/melodie.log`, overwritten at every start, without token.
 - Variables: `MELODIE_AO` sets mpv's audio output (`null` for tests). Reserved for tests:
   `MELODIE_TEST_SECRET` (a file standing for the keyring; with it set, no notification is sent),
-  `MELODIE_MPRIS_NAME` (replaces the bus name suffix) and `MELODIE_IDLE_SECS` (the idle delay).
+  `MELODIE_MPRIS_NAME` (replaces the bus name suffix), `MELODIE_IDLE_SECS` (the idle delay) and
+  `MELODIE_OPEN_URI_HOLD_MS` (holds the MPRIS `OpenUri` answer back).
 
 ## Favourites and playlists
 

@@ -220,7 +220,16 @@ impl Player {
         let addr = Address::parse(&uri).map_err(|e| fdo::Error::InvalidArgs(e.to_string()))?;
         self.open
             .send(addr)
-            .map_err(|_| fdo::Error::Failed("the player is quitting".into()))
+            .map_err(|_| fdo::Error::Failed("the player is quitting".into()))?;
+        // Reserved for tests: holds the answer back, as a loaded machine does, so the daemon
+        // is already quitting when it is due.
+        if let Some(ms) = std::env::var("MELODIE_OPEN_URI_HOLD_MS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+        {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+        }
+        Ok(())
     }
 
     #[zbus(signal)]
