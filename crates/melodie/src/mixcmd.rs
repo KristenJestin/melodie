@@ -77,6 +77,8 @@ fn hit(d: &Detail) -> Hit {
         duration: d.info.duration as i64,
         cover: d.info.cover.clone(),
         starred: d.info.starred,
+        album_id: None,
+        artist_id: None,
     }
 }
 
