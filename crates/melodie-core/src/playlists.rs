@@ -267,7 +267,8 @@ pub fn remove_duplicates(
     pid: &str,
     at: u64,
 ) -> Result<Duplicates, Failure> {
-    let found = duplicates(client, pid)?;
+    let list = entries(client, pid)?;
+    let found = find_duplicates(&list);
     let gone = &found.exact;
     if gone.is_empty() {
         return Ok(found);
@@ -282,13 +283,9 @@ pub fn remove_duplicates(
     post(client, "updatePlaylist", &params)?;
     if let Some(c) = conn {
         let secs: i64 = gone.iter().map(|d| d.track.duration as i64).sum();
-        edit_local(c, pid, -(gone.len() as i64), -secs, at, |ids| {
-            let mut i = 0;
-            ids.retain(|_| {
-                i += 1;
-                !gone.iter().any(|d| d.index == i - 1)
-            })
-        })?;
+        let indexes: Vec<usize> = gone.iter().map(|d| d.index).collect();
+        let after = without(&list, &indexes);
+        edit_local(c, pid, -(gone.len() as i64), -secs, at, |ids| *ids = after)?;
     }
     Ok(found)
 }
@@ -329,6 +326,16 @@ fn entry_at(
     Ok(track.clone())
 }
 
+/// The ids of `list` but those at `indexes`: what the server holds after it removed them. The
+/// local copy takes it whole, as it may be stale and its ranks are not the server's.
+fn without(list: &[TrackInfo], indexes: &[usize]) -> Vec<String> {
+    list.iter()
+        .enumerate()
+        .filter(|(i, _)| !indexes.contains(i))
+        .map(|(_, t)| t.id.clone())
+        .collect()
+}
+
 /// Removes the tracks at these ranks (from 0, each with the id it should hold, when known) in
 /// one `updatePlaylist`, whose indexes all refer to the order before the call (Navidrome's
 /// reading). Every rank is checked on the server's playlist first: one wrong rank writes
@@ -354,12 +361,9 @@ pub fn remove_many(
     params.extend(indexes.iter().map(|i| ("songIndexToRemove", i.to_string())));
     post(client, "updatePlaylist", &params)?;
     if let Some(c) = conn {
+        let after = without(&list, &indexes);
         edit_local(c, pid, -(gone.len() as i64), -secs(&gone), at, |ids| {
-            let mut i = 0;
-            ids.retain(|_| {
-                i += 1;
-                !indexes.contains(&(i - 1))
-            })
+            *ids = after
         })?;
     }
     Ok(gone)
@@ -394,12 +398,7 @@ pub fn move_track(
     params.extend(ids.iter().map(|i| ("songId", i.clone())));
     post(client, "createPlaylist", &params)?;
     if let Some(c) = conn {
-        edit_local(c, pid, 0, 0, at, |local| {
-            if from < local.len() && to < local.len() {
-                let id = local.remove(from);
-                local.insert(to, id);
-            }
-        })?;
+        edit_local(c, pid, 0, 0, at, |local| *local = ids)?;
     }
     Ok(track)
 }
@@ -759,6 +758,17 @@ mod tests {
         let (_d, env, fake, client) = setup();
         let conn = db::open_existing(&env).unwrap().unwrap();
         assert_eq!(local_ids(&conn, "p1"), ["s0", "s1", "s2", "s3"]);
+        // The server keeps what it is told from here on.
+        seed(
+            &fake,
+            "p1",
+            &[
+                ("s0", "", ""),
+                ("s1", "", ""),
+                ("s2", "", ""),
+                ("s3", "", ""),
+            ],
+        );
         add(&client, Some(&conn), "p1", &[info("s1", 200)], 0).unwrap();
         assert_eq!(local_ids(&conn, "p1"), ["s0", "s1", "s2", "s3", "s1"]);
         remove(&client, Some(&conn), "p1", 0, 0).unwrap();
@@ -1154,6 +1164,55 @@ mod tests {
             fake.state.posted.lock().unwrap().as_slice(),
             ["updatePlaylist", "updatePlaylist", "createPlaylist"]
         );
+    }
+
+    /// The server's playlist is s0 s1 s2 s3; the local copy, stale, holds it in another order.
+    fn stale_copy() -> (tempfile::TempDir, Connection, Fake, Client) {
+        let (d, env, fake, client) = setup();
+        let conn = db::open_existing(&env).unwrap().unwrap();
+        let four = [
+            ("s0", "A", "X"),
+            ("s1", "B", "X"),
+            ("s2", "C", "X"),
+            ("s3", "D", "X"),
+        ];
+        seed(&fake, "p1", &four);
+        db::replace_playlist_tracks(
+            &conn,
+            "p1",
+            &["s3".into(), "s2".into(), "s1".into(), "s0".into()],
+        )
+        .unwrap();
+        (d, conn, fake, client)
+    }
+
+    #[test]
+    fn removing_from_a_stale_copy_leaves_it_as_the_server_has_it() {
+        let (_d, conn, fake, client) = stale_copy();
+        remove_many(&client, Some(&conn), "p1", &[(0, Some("s0"))], 0).unwrap();
+        assert_eq!(server_ids(&fake, "p1"), ["s1", "s2", "s3"]);
+        assert_eq!(local_ids(&conn, "p1"), ["s1", "s2", "s3"]);
+    }
+
+    #[test]
+    fn moving_in_a_stale_copy_leaves_it_as_the_server_has_it() {
+        let (_d, conn, fake, client) = stale_copy();
+        move_track(&client, Some(&conn), "p1", 0, 3, Some("s0"), 0).unwrap();
+        assert_eq!(server_ids(&fake, "p1"), ["s1", "s2", "s3", "s0"]);
+        assert_eq!(local_ids(&conn, "p1"), ["s1", "s2", "s3", "s0"]);
+    }
+
+    #[test]
+    fn removing_duplicates_from_a_stale_copy_leaves_it_as_the_server_has_it() {
+        let (_d, conn, fake, client) = stale_copy();
+        seed(
+            &fake,
+            "p1",
+            &[("s0", "A", "X"), ("s1", "B", "X"), ("s0", "A", "X")],
+        );
+        remove_duplicates(&client, Some(&conn), "p1", 0).unwrap();
+        assert_eq!(server_ids(&fake, "p1"), ["s0", "s1"]);
+        assert_eq!(local_ids(&conn, "p1"), ["s0", "s1"]);
     }
 
     #[test]
