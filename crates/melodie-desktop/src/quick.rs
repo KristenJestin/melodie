@@ -4,6 +4,7 @@
 
 use crate::browse::Place;
 use crate::find::Action;
+use crate::launch::{Job, Kind};
 use melodie_core::db;
 use melodie_core::env::Env;
 use melodie_core::library as lib;
@@ -169,18 +170,21 @@ impl Seen {
         }
     }
 
-    pub fn of_item(item: &Item) -> Self {
-        match item {
-            Item::Genre(g) => Self::Genre(g.name.clone()),
-            Item::Found(h) => {
-                let id = h.id.clone();
-                match h.kind {
-                    search::Kind::Album => Self::Album(id),
-                    search::Kind::Artist => Self::Artist(id),
-                    search::Kind::Playlist => Self::Playlist(id),
-                    search::Kind::Track => Self::Track(id),
-                }
+    /// What a job the user started makes them remember: what they played, never what the daemon
+    /// went on to play by itself nor what they only queued.
+    pub fn of_job(job: &Job) -> Option<Self> {
+        match job {
+            Job::Play { kind, id, .. } => {
+                let id = id.clone();
+                Some(match kind {
+                    Kind::Track => Self::Track(id),
+                    Kind::Album => Self::Album(id),
+                    Kind::Artist => Self::Artist(id),
+                    Kind::Playlist => Self::Playlist(id),
+                })
             }
+            Job::MixGenre { name } => Some(Self::Genre(name.clone())),
+            _ => None,
         }
     }
 }
@@ -520,11 +524,57 @@ mod tests {
         for section in [Place::Home, Place::Albums, Place::Search, Place::Player] {
             assert_eq!(Seen::of_place(&section), None);
         }
+    }
+
+    #[test]
+    fn only_what_the_user_started_is_remembered() {
+        let play = |kind, id: &str| Job::Play {
+            kind,
+            id: id.into(),
+            shuffle: false,
+        };
         assert_eq!(
-            Seen::of_item(&Item::Found(hit(search::Kind::Track, "t1"))),
-            Seen::Track("t1".into())
+            Seen::of_job(&play(Kind::Track, "t1")),
+            Some(Seen::Track("t1".into()))
         );
-        assert_eq!(Seen::of_item(&genre("Rock")), Seen::Genre("Rock".into()));
+        assert_eq!(
+            Seen::of_job(&play(Kind::Album, "al1")),
+            Some(Seen::Album("al1".into()))
+        );
+        assert_eq!(
+            Seen::of_job(&play(Kind::Artist, "ar1")),
+            Some(Seen::Artist("ar1".into()))
+        );
+        assert_eq!(
+            Seen::of_job(&play(Kind::Playlist, "p1")),
+            Some(Seen::Playlist("p1".into()))
+        );
+        assert_eq!(
+            Seen::of_job(&Job::MixGenre {
+                name: "Ambient".into()
+            }),
+            Some(Seen::Genre("Ambient".into()))
+        );
+        // adding to the queue plays nothing
+        for kind in [Kind::Track, Kind::Album] {
+            let queue = Job::Queue {
+                kind,
+                id: "x".into(),
+                next: false,
+            };
+            assert_eq!(Seen::of_job(&queue), None);
+        }
+        let mix = Job::Mix {
+            kind: Kind::Album,
+            id: "al1".into(),
+        };
+        assert_eq!(Seen::of_job(&mix), None);
+        let star = Job::Star {
+            id: "t1".into(),
+            starred: true,
+        };
+        assert_eq!(Seen::of_job(&star), None);
+        assert_eq!(Seen::of_job(&Job::PlayMix), None);
     }
 
     #[test]

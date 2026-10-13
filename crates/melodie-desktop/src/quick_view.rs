@@ -4,7 +4,7 @@
 //! page's (`find::answer`), read away from the window's thread.
 
 use crate::albums::cover_box;
-use crate::app::Shared;
+use crate::app::{Shared, Started};
 use crate::catalog::Catalog;
 use crate::motion;
 use crate::player::palette;
@@ -75,7 +75,6 @@ impl QuickSearch {
                 .placeholder("Search tracks, albums, artists, playlists, genres")
         });
         let mut step = None;
-        let mut playing: Option<String> = None;
         let subs = vec![
             cx.subscribe(&input, |this, input, ev: &InputEvent, cx| {
                 if matches!(ev, InputEvent::Change) {
@@ -94,17 +93,9 @@ impl QuickSearch {
                     this.recent.note(seen);
                 }
             }),
-            // and every track played
-            cx.observe(&shared, move |this, shared, cx| {
-                let p = &shared.read(cx).player;
-                let now = p
-                    .current
-                    .and_then(|i| p.tracks.get(i))
-                    .map(|e| e.id.clone());
-                if let Some(id) = now.filter(|id| playing.as_ref() != Some(id)) {
-                    playing = Some(id.clone());
-                    this.recent.note(Seen::Track(id));
-                }
+            // and what the user starts playing: not what the daemon goes on to play by itself
+            cx.subscribe(&shared, |this, _, Started(seen): &Started, _| {
+                this.recent.note(seen.clone())
             }),
         ];
         let field = cx.new(|_| Field {
@@ -236,7 +227,6 @@ impl QuickSearch {
             return;
         };
         self.close(window, cx);
-        self.recent.note(Seen::of_item(&item));
         match (what, item) {
             (Do::Hit(action), Item::Found(hit)) => {
                 search::act(action, &hit, &self.catalog, window, cx)
