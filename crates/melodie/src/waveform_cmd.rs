@@ -73,10 +73,12 @@ fn read_levels(pcm: &Path) -> Result<Vec<u8>> {
     waveform::levels_from(file, samples).context("reading the decoded audio")
 }
 
-/// Decodes the stream into `out`: mono, signed 16 bits at `RATE`, as fast as it comes.
-fn decode(url: &SecretUrl, out: &Path) -> Result<()> {
+/// A private libmpv that only writes decoded audio into `out`: no video, no scripts, no
+/// configuration, and a file writer alone as its audio output.
+fn build_mpv(out: &Path) -> Result<Mpv> {
     let file = out.to_str().context("a cache path that is not UTF-8")?;
-    let mpv = Mpv::with_initializer(|init| {
+    Mpv::with_initializer(|init| {
+        init.set_option("config", "no")?;
         init.set_option("vid", "no")?;
         init.set_option("audio-display", "no")?;
         init.set_option("ytdl", "no")?;
@@ -92,7 +94,12 @@ fn decode(url: &SecretUrl, out: &Path) -> Result<()> {
         init.set_option("untimed", "yes")?;
         Ok(())
     })
-    .map_err(|e| anyhow!("libmpv: {e}"))?;
+    .map_err(|e| anyhow!("libmpv: {e}"))
+}
+
+/// Decodes the stream into `out`: mono, signed 16 bits at `RATE`, as fast as it comes.
+fn decode(url: &SecretUrl, out: &Path) -> Result<()> {
+    let mpv = build_mpv(out)?;
     // the error of a command could hold its arguments: never said
     mpv.command("loadfile", &[url.expose()])
         .map_err(|_| anyhow!("the stream could not be opened"))?;
@@ -109,4 +116,20 @@ fn decode(url: &SecretUrl, out: &Path) -> Result<()> {
     // the file is complete once the audio output is closed
     drop(mpv);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_waveform_decoder_makes_no_sound_and_loads_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mpv = build_mpv(&dir.path().join("out.pcm")).expect("libmpv");
+        assert_eq!(mpv.get_property::<String>("ao").unwrap(), "pcm");
+        assert_eq!(mpv.get_property::<String>("vid").unwrap(), "no");
+        for flag in ["load-scripts", "ytdl", "config"] {
+            assert!(!mpv.get_property::<bool>(flag).expect(flag), "{flag}");
+        }
+    }
 }
