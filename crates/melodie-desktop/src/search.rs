@@ -391,7 +391,7 @@ impl Render for SearchView {
             (Place::Found(kind), Some(a)) => match a.all.as_ref().filter(|(k, _)| k == kind) {
                 None => div().into_any_element(),
                 Some((kind, hits)) => {
-                    let hits: Arc<[Hit]> = hits.clone().into();
+                    let hits = Arc::clone(hits);
                     let (v, c) = (view.clone(), catalog.clone());
                     v_flex()
                         .size_full()

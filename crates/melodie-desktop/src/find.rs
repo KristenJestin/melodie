@@ -6,6 +6,7 @@ use crate::launch::{Job, Kind};
 use melodie_core::db;
 use melodie_core::env::Env;
 use melodie_core::search::{self, Group, Hit};
+use std::sync::Arc;
 
 /// Results shown in each group; the rest is one click away.
 pub const SHOWN: usize = 5;
@@ -37,7 +38,7 @@ pub struct Answer {
     pub text: String,
     pub groups: Vec<Group>,
     /// Every result of one kind, when the user asked to see them all.
-    pub all: Option<(Kind, Vec<Hit>)>,
+    pub all: Option<(Kind, Arc<[Hit]>)>,
 }
 
 /// Reads the local copy for `text`: its groups, and every result of `all`. `None` without a local
@@ -47,7 +48,7 @@ pub fn answer(env: &Env, text: &str, all: Option<Kind>) -> anyhow::Result<Option
         return Ok(None);
     };
     let all = match all {
-        Some(k) => Some((k, search::of_kind(&conn, text, k.into())?)),
+        Some(k) => Some((k, search::of_kind(&conn, text, k.into())?.into())),
         None => None,
     };
     Ok(Some(Answer {
@@ -306,6 +307,9 @@ mod tests {
         let (kind, all) = a.all.unwrap();
         assert_eq!(kind, Kind::Track);
         assert_eq!(all.len(), 12);
+        // drawn on every frame: a clone is a pointer, not the thousands of results
+        let drawn = Arc::clone(&all);
+        assert!(std::ptr::eq(drawn.as_ptr(), all.as_ptr()));
         let a = answer(&env, " ", Some(Kind::Track)).unwrap().unwrap();
         assert!(a.groups.is_empty());
         assert!(a.all.unwrap().1.is_empty());
