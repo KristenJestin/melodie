@@ -38,25 +38,41 @@ pub struct HomeView {
     shared: Entity<Shared>,
     catalog: Entity<Catalog>,
     scroll: ScrollHandle,
-    /// Each row keeps where it was scrolled to.
-    rows: HashMap<Kind, ScrollHandle>,
-    /// The highlight shown, and how many times it changed (its content fades in at each).
-    pick: usize,
-    turns: u64,
+    /// Each row a view of its own: a drag rebuilds its row alone, and scrolling the page replays
+    /// the rows without building them again. Each keeps where it was scrolled to.
+    rows: HashMap<Kind, Entity<RowView>>,
+    /// A view of its own: its animation rebuilds it alone, not the rows.
+    highlight: Entity<HighlightView>,
 }
 
 impl HomeView {
-    pub fn new(shared: Entity<Shared>, catalog: Entity<Catalog>) -> Self {
+    pub fn new(shared: Entity<Shared>, catalog: Entity<Catalog>, cx: &mut Context<Self>) -> Self {
+        let highlight = cx.new(|_| HighlightView {
+            shared: shared.clone(),
+            catalog: catalog.clone(),
+            pick: 0,
+            turns: 0,
+        });
         Self {
             shared,
             catalog,
             scroll: ScrollHandle::new(),
             rows: HashMap::new(),
-            pick: 0,
-            turns: 0,
+            highlight,
         }
     }
+}
 
+/// The highlight card, browsed with its arrows and dots.
+pub struct HighlightView {
+    shared: Entity<Shared>,
+    catalog: Entity<Catalog>,
+    /// The highlight shown, and how many times it changed (its content fades in at each).
+    pick: usize,
+    turns: u64,
+}
+
+impl HighlightView {
     fn turn(&mut self, to: usize, cx: &mut Context<Self>) {
         if to != self.pick {
             self.pick = to;
@@ -370,21 +386,165 @@ fn section_header(kind: Kind, pal: Palette, catalog: &Entity<Catalog>) -> Div {
 impl Render for HomeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let pal = palette(&self.shared, window, cx);
-        let (view, covers, tints, empty) = {
+        let (view, empty) = {
             let c = self.catalog.read(cx);
-            (
-                c.home_view.clone(),
-                c.covers.clone(),
-                c.tints.clone(),
-                c.empty,
-            )
+            (c.home_view.clone(), c.empty)
         };
-        let width = content_width(window, &self.shared, cx);
         let Some(view) = view else {
             return div().size_full().child(empty_state(empty, "", pal));
         };
+        let rows: Vec<Entity<RowView>> = view
+            .sections
+            .iter()
+            .map(|sec| {
+                self.rows
+                    .entry(sec.kind)
+                    .or_insert_with(|| {
+                        cx.new(|_| RowView {
+                            shared: self.shared.clone(),
+                            catalog: self.catalog.clone(),
+                            kind: sec.kind,
+                            handle: ScrollHandle::new(),
+                        })
+                    })
+                    .clone()
+            })
+            .collect();
+
+        let empty_library = view.sections.is_empty();
+        div().size_full().child(
+            v_flex()
+                .id("home")
+                .size_full()
+                .overflow_y_scroll()
+                .restrict_scroll_to_axis()
+                .track_scroll(&self.scroll)
+                .pb_6()
+                .child(
+                    div()
+                        .px(px(PAD))
+                        .pt_6()
+                        .pb_4()
+                        .text_2xl()
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(pal.fg)
+                        .child(home::greeting(local_hour())),
+                )
+                .when(!view.highlights.is_empty(), |d| {
+                    d.child(div().px(px(PAD)).child(self.highlight.clone()))
+                })
+                .when(empty_library, |d| {
+                    d.child(
+                        div()
+                            .px(px(PAD))
+                            .text_color(pal.secondary)
+                            .child("Nothing in the library yet"),
+                    )
+                })
+                .children(rows),
+        )
+    }
+}
+
+/// One section of the home: its title and its row.
+pub struct RowView {
+    shared: Entity<Shared>,
+    catalog: Entity<Catalog>,
+    kind: Kind,
+    handle: ScrollHandle,
+}
+
+impl Render for RowView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let pal = palette(&self.shared, window, cx);
+        let (view, covers) = {
+            let c = self.catalog.read(cx);
+            (c.home_view.clone(), c.covers.clone())
+        };
+        let width = content_width(window, &self.shared, cx);
+        let Some(view) = view else {
+            return div();
+        };
         let catalog = &self.catalog;
         let me = cx.entity_id();
+
+        let Some(s) = view.sections.iter().find(|s| s.kind == self.kind) else {
+            return div();
+        };
+        let handle = self.handle.clone();
+        let drag = RowDrag {
+            row: s.kind,
+            handle: handle.clone(),
+            last: Rc::default(),
+        };
+        let kind = s.kind;
+        let items: Vec<AnyElement> = match &s.row {
+            Row::Albums(v) => v
+                .iter()
+                .map(|a| album_cell(a, &covers, SQUARE, pal, catalog).into_any_element())
+                .collect(),
+            Row::Artists(v) => v
+                .iter()
+                .map(|a| artist_cell(a, &covers, pal, catalog).into_any_element())
+                .collect(),
+            Row::Mixes(v) => v
+                .iter()
+                .map(|m| mix_cell(m, pal, catalog).into_any_element())
+                .collect(),
+            Row::Playlists(v) => v
+                .iter()
+                .map(|p| playlist_cell(p, &covers, pal, catalog).into_any_element())
+                .collect(),
+        };
+        v_flex().child(section_header(kind, pal, catalog)).child(
+            // the settled width, as the pages: nothing moves inside while the queue slides
+            h_flex()
+                .id(ElementId::Name(format!("home-row-{kind:?}").into()))
+                .w(px(width + 2.0 * PAD))
+                .flex_none()
+                .px(px(PAD))
+                .gap(px(GAP))
+                .items_start()
+                .overflow_x_scroll()
+                // the wheel scrolls the page; shift and the touchpad's sideways
+                // scroll move the row
+                .restrict_scroll_to_axis()
+                .track_scroll(&handle)
+                .on_drag(drag, |d: &RowDrag, _, _, cx| {
+                    d.last.set(None);
+                    cx.new(|_| Nothing)
+                })
+                .on_drag_move::<RowDrag>(move |ev, _, cx| {
+                    let d = ev.drag(cx);
+                    if d.row != kind {
+                        return;
+                    }
+                    let x = ev.event.position.x;
+                    if let Some(last) = d.last.replace(Some(x)) {
+                        let o = d.handle.offset();
+                        let max = d.handle.max_offset().x;
+                        let to = (o.x + (x - last)).clamp(-max, px(0.));
+                        d.handle.set_offset(point(to, o.y));
+                        cx.notify(me);
+                    }
+                })
+                .children(items),
+        )
+    }
+}
+
+impl Render for HighlightView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let pal = palette(&self.shared, window, cx);
+        let (view, covers, tints) = {
+            let c = self.catalog.read(cx);
+            (c.home_view.clone(), c.covers.clone(), c.tints.clone())
+        };
+        let width = content_width(window, &self.shared, cx);
+        let Some(view) = view else {
+            return div();
+        };
+        let catalog = &self.catalog;
 
         // the highlight: its colours move to the next one's as it turns
         let pick = self.pick.min(view.highlights.len().saturating_sub(1));
@@ -448,108 +608,13 @@ impl Render for HomeView {
                 })
         });
 
-        let rows: Vec<_> = view
-            .sections
-            .iter()
-            .map(|s| {
-                let handle = self.rows.entry(s.kind).or_default().clone();
-                let drag = RowDrag {
-                    row: s.kind,
-                    handle: handle.clone(),
-                    last: Rc::default(),
-                };
-                let kind = s.kind;
-                let items: Vec<AnyElement> = match &s.row {
-                    Row::Albums(v) => v
-                        .iter()
-                        .map(|a| album_cell(a, &covers, SQUARE, pal, catalog).into_any_element())
-                        .collect(),
-                    Row::Artists(v) => v
-                        .iter()
-                        .map(|a| artist_cell(a, &covers, pal, catalog).into_any_element())
-                        .collect(),
-                    Row::Mixes(v) => v
-                        .iter()
-                        .map(|m| mix_cell(m, pal, catalog).into_any_element())
-                        .collect(),
-                    Row::Playlists(v) => v
-                        .iter()
-                        .map(|p| playlist_cell(p, &covers, pal, catalog).into_any_element())
-                        .collect(),
-                };
-                v_flex().child(section_header(kind, pal, catalog)).child(
-                    // the settled width, as the pages: nothing moves inside while the queue slides
-                    h_flex()
-                        .id(ElementId::Name(format!("home-row-{kind:?}").into()))
-                        .w(px(width + 2.0 * PAD))
-                        .flex_none()
-                        .px(px(PAD))
-                        .gap(px(GAP))
-                        .items_start()
-                        .overflow_x_scroll()
-                        // the wheel scrolls the page; shift and the touchpad's sideways
-                        // scroll move the row
-                        .restrict_scroll_to_axis()
-                        .track_scroll(&handle)
-                        .on_drag(drag, |d: &RowDrag, _, _, cx| {
-                            d.last.set(None);
-                            cx.new(|_| Nothing)
-                        })
-                        .on_drag_move::<RowDrag>(move |ev, _, cx| {
-                            let d = ev.drag(cx);
-                            if d.row != kind {
-                                return;
-                            }
-                            let x = ev.event.position.x;
-                            if let Some(last) = d.last.replace(Some(x)) {
-                                let o = d.handle.offset();
-                                let max = d.handle.max_offset().x;
-                                let to = (o.x + (x - last)).clamp(-max, px(0.));
-                                d.handle.set_offset(point(to, o.y));
-                                cx.notify(me);
-                            }
-                        })
-                        .children(items),
-                )
-            })
-            .collect();
-
-        let empty_library = view.sections.is_empty();
-        div().size_full().child(
-            v_flex()
-                .id("home")
-                .size_full()
-                .overflow_y_scroll()
-                .restrict_scroll_to_axis()
-                .track_scroll(&self.scroll)
-                .pb_6()
-                .child(
-                    div()
-                        .px(px(PAD))
-                        .pt_6()
-                        .pb_4()
-                        .text_2xl()
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(pal.fg)
-                        .child(home::greeting(local_hour())),
-                )
-                .when_some(card, |d, card| {
-                    d.child(div().px(px(PAD)).child(card.with_animation(
-                        ("home-card-enter", self.turns),
-                        motion::enter(),
-                        |el, t| el.opacity(0.4 + 0.6 * t),
-                    )))
-                })
-                .when(empty_library, |d| {
-                    d.child(
-                        div()
-                            .px(px(PAD))
-                            .text_color(pal.secondary)
-                            .child("Nothing in the library yet"),
-                    )
-                })
-                .children(rows),
-        )
+        div().when_some(card, |d, card| {
+            d.child(card.with_animation(
+                ("home-card-enter", self.turns),
+                motion::enter(),
+                |el, t| el.opacity(0.4 + 0.6 * t),
+            ))
+        })
     }
 }
 

@@ -650,7 +650,7 @@ fn main() -> ExitCode {
                 player: cx.new(|cx| PlayerView::new(s.clone(), clock, window, cx)),
                 queue: cx.new(|cx| QueuePanel::new(s.clone(), cx)),
                 sidebar: cx.new(|_| Sidebar::new(s.clone(), c.clone())),
-                home: cx.new(|_| HomeView::new(s.clone(), c.clone())),
+                home: cx.new(|cx| HomeView::new(s.clone(), c.clone(), cx)),
                 albums: cx.new(|_| AlbumGrid::new(s.clone(), c.clone())),
                 artists: cx.new(|_| ArtistList::new(s.clone(), c.clone())),
                 tracks: cx.new(|_| TrackList::new(s.clone(), c.clone())),
