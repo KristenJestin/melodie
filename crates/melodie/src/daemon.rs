@@ -1328,8 +1328,17 @@ pub fn run(env: &Env) -> Result<()> {
     let _ = mpv.command("stop", &[]);
     let _ = std::fs::remove_file(&sock);
     engine.farewell();
-    let conn = engine.conn.take();
-    drop(conn);
+    // A call still being served holds the connection, such as the `OpenUri` whose refused token
+    // made the daemon quit: wait for its answer to be written, or the caller is disconnected
+    // from the bus without one. Bounded, so nothing can keep the daemon from quitting.
+    if let Some(conn) = engine.conn.take() {
+        let (closed, wait) = channel::<()>();
+        std::thread::spawn(move || {
+            conn.graceful_shutdown();
+            let _ = closed.send(());
+        });
+        let _ = wait.recv_timeout(FAREWELL);
+    }
     let _ = std::fs::remove_file(proto::lock_path()?);
     dlog!("arrêt du démon");
     let _ = std::io::stderr().flush();
