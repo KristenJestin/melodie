@@ -91,14 +91,14 @@ pub fn open_on_picked(catalog: &Entity<Catalog>, window: &mut Window, cx: &mut A
     let found = {
         let c = catalog.read(cx);
         let here = c.here().clone();
-        let tracks = c.shown_tracks();
         c.selection.focused(&here).and_then(|ix| {
-            let t = tracks.as_ref()?.get(ix)?;
+            // the rank in the playlist's own order, whatever the sort shows
+            let (rank, t) = c.shown()?.row(ix)?;
             let spot = match c.pages.get(&here).map(Arc::as_ref) {
                 Some(Page::Playlist { playlist, .. }) if c.is_own(playlist) => Spot::Playlist {
                     id: playlist.id.clone(),
                     name: playlist.name.clone(),
-                    rank: ix,
+                    rank,
                 },
                 _ => Spot::Library,
             };

@@ -21,6 +21,7 @@ pub mod reveal;
 #[cfg(test)]
 mod scan;
 pub mod selection;
+pub mod table;
 pub mod theme;
 pub mod thumbs;
 pub mod tint;
