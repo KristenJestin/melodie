@@ -214,13 +214,26 @@ pub fn library_sort(sort: Option<ColSort>) -> Sort<TrackBy> {
 pub fn order(tracks: &[Track], sort: Option<ColSort>) -> Vec<usize> {
     let mut ranks: Vec<usize> = (0..tracks.len()).collect();
     let Some(sort) = sort else { return ranks };
-    let lower = |f: fn(&Track) -> &str| -> Vec<String> {
-        tracks.iter().map(|t| f(t).to_lowercase()).collect()
+    // Text compares lowercased, once per track and only for the columns this sort reads (its
+    // own, and the one that breaks its ties). The local copy's `NOCASE` lowers ASCII only: here
+    // every letter is lowered, so "É" and "é" sort together, which the library's Tracks do not.
+    let lower = |used: bool, f: fn(&Track) -> &str| -> Vec<String> {
+        if used {
+            tracks.iter().map(|t| f(t).to_lowercase()).collect()
+        } else {
+            Vec::new()
+        }
     };
     let (title, artist, album) = (
-        lower(|t| &t.title),
-        lower(|t| &t.artist),
-        lower(|t| &t.album),
+        lower(
+            matches!(sort.col, Col::Title | Col::Plays | Col::Time),
+            |t| &t.title,
+        ),
+        lower(sort.col == Col::Artist, |t| &t.artist),
+        lower(
+            matches!(sort.col, Col::Artist | Col::Album | Col::Year),
+            |t| &t.album,
+        ),
     );
     let first = |a: usize, b: usize| {
         let (x, y) = (&tracks[a], &tracks[b]);
