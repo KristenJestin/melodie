@@ -6,7 +6,7 @@ use gpui_kit::component::{Theme, ThemeMode};
 use gpui_kit::*;
 use melodie_core::env::Env;
 use melodie_core::proto::{QueueEntry, Request};
-use melodie_desktop::launch::{self, Job};
+use melodie_desktop::launch::{self, Job, Lanes};
 use melodie_desktop::link::{self, Msg};
 use melodie_desktop::model::{Clock, Connection, Player};
 use melodie_desktop::theme::{self, Active, Choice, Omarchy, Palette, Settings, Tint};
@@ -93,7 +93,12 @@ pub struct Shared {
     socket: PathBuf,
     env: Env,
     _watch: Option<notify::RecommendedWatcher>,
+    /// The playlist jobs running, and those waiting behind them.
+    playlist_jobs: Lanes<(Job, Done)>,
 }
+
+/// What a job run by `run_then` calls with its outcome.
+type Done = Box<dyn FnOnce(Result<String, String>, &mut App)>;
 
 impl Shared {
     /// The colours the window is heading to.
@@ -166,6 +171,15 @@ impl Shared {
             Job::Queue { .. } => "Could not add it to the queue",
             Job::Mix { .. } => "Could not make the mix",
             Job::AddToPlaylist { .. } => "Could not add to the playlist",
+            Job::MixGenre { .. } => "Could not make the mix",
+            // run by `run_then`, which says what they did
+            Job::CheckAdd { .. }
+            | Job::CreatePlaylist { .. }
+            | Job::RenamePlaylist { .. }
+            | Job::DeletePlaylist { .. }
+            | Job::RemoveFromPlaylist { .. }
+            | Job::MoveInPlaylist { .. }
+            | Job::Duplicates { .. } => "Could not change the playlist",
         };
         let adds = matches!(job, Job::AddToPlaylist { .. });
         let task = cx.background_spawn(async move {
@@ -197,6 +211,62 @@ impl Shared {
             let _ = this.update(cx, |s, cx| s.fail(msg, cx));
         })
         .detach();
+    }
+
+    /// Runs `melodie`, then `done` with what it printed, or the first line of its error. The jobs
+    /// of a playlist run one after the other, in the order asked.
+    pub fn run_then(
+        &mut self,
+        job: Job,
+        cx: &mut Context<Self>,
+        done: impl FnOnce(Result<String, String>, &mut App) + 'static,
+    ) {
+        let done: Done = Box::new(done);
+        match job.playlist().map(str::to_string) {
+            Some(playlist) => {
+                if let Some((job, done)) = self.playlist_jobs.start(&playlist, (job, done)) {
+                    self.spawn_job(job, Some(playlist), done, cx);
+                }
+            }
+            None => self.spawn_job(job, None, done, cx),
+        }
+    }
+
+    /// Runs `job`; when it is done, the next job waiting on `playlist`, if any.
+    fn spawn_job(&self, job: Job, playlist: Option<String>, done: Done, cx: &mut Context<Self>) {
+        let program = launch::program(std::env::current_exe().ok().as_deref());
+        let task = cx.background_spawn(async move {
+            let out = std::process::Command::new(&program)
+                .args(job.args())
+                .stdin(std::process::Stdio::null())
+                .output();
+            match out {
+                Ok(o) if o.status.success() => Ok(String::from_utf8_lossy(&o.stdout).into_owned()),
+                Ok(o) => Err(String::from_utf8_lossy(&o.stderr)
+                    .lines()
+                    .next()
+                    .unwrap_or("it failed")
+                    .to_string()),
+                Err(e) => Err(format!("{}: {}", program.display(), e.kind())),
+            }
+        });
+        cx.spawn(async move |this, cx| {
+            let r = task.await;
+            cx.update(|cx| done(r, cx));
+            if let Some(playlist) = playlist {
+                let _ = this.update(cx, |s, cx| {
+                    if let Some((job, done)) = s.playlist_jobs.done(&playlist) {
+                        s.spawn_job(job, Some(playlist), done, cx);
+                    }
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// Says something at the bottom of the window for a few seconds.
+    pub fn say(&mut self, msg: impl Into<String>, cx: &mut Context<Self>) {
+        self.fail(msg.into(), cx);
     }
 
     /// Says something at the bottom of the window for a few seconds (a failure, or what an
@@ -401,6 +471,7 @@ pub fn start(
         socket: socket.clone(),
         env,
         _watch: None,
+        playlist_jobs: Lanes::default(),
     });
     apply_component_theme(shared.read(cx).target_palette(), cx);
     shared.update(cx, |s, cx| s.follow_cover(cx));

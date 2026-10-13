@@ -762,6 +762,99 @@ fn playlist_duplicates_text_counts_ranks_from_one() {
 }
 
 #[test]
+fn playlist_add_dry_run_says_what_would_go_and_writes_nothing() {
+    let sb = Sandbox::new(true);
+    sb.ok(&["sync", "--full"]);
+    seed_playlist(&sb, &["t1"]);
+    let out = sb.ok(&[
+        "playlist",
+        "add",
+        "--dry-run",
+        "--json",
+        "--",
+        "p1",
+        "track",
+        "t1",
+        "t2",
+    ]);
+    let v: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["added"][0]["id"], "t2");
+    assert_eq!(v["already"][0]["id"], "t1");
+    assert_eq!(v["dryRun"], true);
+    assert_eq!(v["playlist"]["name"], "Daft Mix");
+    assert_eq!(sb.fake.calls_of("updatePlaylist"), 0);
+    assert_eq!(server_playlist(&sb), ["t1"]);
+}
+
+#[test]
+fn playlist_add_takes_several_tracks() {
+    let sb = Sandbox::new(true);
+    sb.ok(&["sync", "--full"]);
+    seed_playlist(&sb, &["t1"]);
+    let out = sb.ok(&[
+        "playlist", "add", "--json", "--", "p1", "track", "t1", "t2", "t3",
+    ]);
+    let v: Value = serde_json::from_str(&out).unwrap();
+    assert!(
+        v.get("dryRun").is_none(),
+        "the output of a real add is unchanged"
+    );
+    assert_eq!(server_playlist(&sb), ["t1", "t2", "t3"]);
+    sb.ok(&[
+        "playlist",
+        "add",
+        "--allow-duplicates",
+        "--",
+        "p1",
+        "track",
+        "t1",
+        "t2",
+    ]);
+    assert_eq!(server_playlist(&sb), ["t1", "t2", "t3", "t1", "t2"]);
+}
+
+#[test]
+fn playlist_remove_takes_several_ranks_in_one_call() {
+    let sb = Sandbox::new(true);
+    sb.ok(&["sync", "--full"]);
+    seed_playlist(&sb, &["t1", "t2", "t3"]);
+    sb.ok(&[
+        "playlist", "remove", "--expect", "t1", "--expect", "t3", "--", "p1", "1", "3",
+    ]);
+    assert_eq!(sb.fake.calls_of("updatePlaylist"), 1);
+    assert_eq!(server_playlist(&sb), ["t2"]);
+}
+
+#[test]
+fn playlist_remove_refuses_a_rank_holding_another_track() {
+    let sb = Sandbox::new(true);
+    sb.ok(&["sync", "--full"]);
+    seed_playlist(&sb, &["t1", "t2", "t3"]);
+    let o = sb.run(&["playlist", "remove", "--expect", "t3", "--", "p1", "2"]);
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("rank 2"));
+    // one id per rank, or none
+    let o = sb.run(&["playlist", "remove", "--expect", "t1", "--", "p1", "1", "2"]);
+    assert!(!o.status.success());
+    assert_eq!(sb.fake.calls_of("updatePlaylist"), 0);
+    assert_eq!(server_playlist(&sb), ["t1", "t2", "t3"]);
+}
+
+#[test]
+fn playlist_move_puts_a_track_at_another_rank() {
+    let sb = Sandbox::new(true);
+    sb.ok(&["sync", "--full"]);
+    seed_playlist(&sb, &["t1", "t2", "t3"]);
+    sb.ok(&["playlist", "move", "--expect", "t3", "--", "p1", "3", "1"]);
+    assert_eq!(server_playlist(&sb), ["t3", "t1", "t2"]);
+    let o = sb.run(&["playlist", "move", "--expect", "t1", "--", "p1", "3", "1"]);
+    assert!(!o.status.success(), "rank 3 holds t2 now");
+    let o = sb.run(&["playlist", "move", "--", "p1", "0", "1"]);
+    assert!(!o.status.success(), "ranks are counted from 1");
+    assert_eq!(server_playlist(&sb), ["t3", "t1", "t2"]);
+}
+
+#[test]
 fn playlist_json_failure_is_one_launcher_entry() {
     let sb = Sandbox::new(false);
     for args in [

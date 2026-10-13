@@ -23,12 +23,20 @@ pub struct State {
     /// While true, `getPlaylist` does not know `p1` (code 70) though `getPlaylists` still
     /// lists it: it was deleted between the two calls.
     pub playlist_gone: AtomicBool,
+    /// Entries `getPlaylist` counts in `songCount` but leaves out, as Navidrome does with the
+    /// tracks whose file is missing.
+    pub hidden_entries: AtomicUsize,
+    /// Taken after the next `getPlaylist` of a seeded playlist, and becomes its content: another
+    /// client changed it just after it was read.
+    pub change_after_read: Mutex<Option<Vec<Value>>>,
     pub expected_token: Mutex<String>,
     /// Code d'erreur Subsonic à renvoyer pour tout, si présent.
     pub fail_code: Mutex<Option<i64>>,
     /// Réponse HTTP brute à renvoyer pour tout (état, corps), si présente.
     pub raw: Mutex<Option<(u16, String)>>,
     pub calls: Mutex<Vec<String>>,
+    /// The methods that came as a posted form, in order.
+    pub posted: Mutex<Vec<String>>,
     pub tokens_seen: Mutex<Vec<String>>,
     pub stop: AtomicBool,
     /// Durée en secondes des flux servis.
@@ -60,6 +68,39 @@ fn decode(v: &str) -> String {
         i += 1;
     }
     String::from_utf8_lossy(&out).to_string()
+}
+
+/// The request line and the body of a request (`Content-Length` bytes).
+fn read_request(s: &mut impl Read) -> (String, String) {
+    let mut raw = Vec::new();
+    let mut buf = [0u8; 8192];
+    let head_end = loop {
+        if let Some(i) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+            break i + 4;
+        }
+        match s.read(&mut buf) {
+            Ok(0) | Err(_) => break raw.len(),
+            Ok(n) => raw.extend_from_slice(&buf[..n]),
+        }
+    };
+    let head = String::from_utf8_lossy(&raw[..head_end]).to_string();
+    let length: usize = head
+        .lines()
+        .find_map(|l| {
+            let (k, v) = l.split_once(':')?;
+            k.eq_ignore_ascii_case("content-length")
+                .then(|| v.trim().parse().ok())?
+        })
+        .unwrap_or(0);
+    while raw.len() < head_end + length {
+        match s.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => raw.extend_from_slice(&buf[..n]),
+        }
+    }
+    let end = raw.len().min(head_end + length);
+    let body = String::from_utf8_lossy(&raw[head_end..end]).to_string();
+    (head.lines().next().unwrap_or("").to_string(), body)
 }
 
 fn param(query: &str, key: &str) -> Option<String> {
@@ -105,10 +146,13 @@ impl Fake {
             last_scan: Mutex::new("2026-10-01T10:00:00Z".into()),
             playlist_changed: Mutex::new("2026-10-01T10:00:00Z".into()),
             playlist_gone: AtomicBool::new(false),
+            hidden_entries: AtomicUsize::new(0),
+            change_after_read: Mutex::new(None),
             expected_token: Mutex::new(token.to_string()),
             fail_code: Mutex::new(None),
             raw: Mutex::new(None),
             calls: Mutex::new(Vec::new()),
+            posted: Mutex::new(Vec::new()),
             tokens_seen: Mutex::new(Vec::new()),
             stop: AtomicBool::new(false),
             stream_secs: AtomicUsize::new(3),
@@ -128,12 +172,29 @@ impl Fake {
                 let Ok(mut s) = stream else { continue };
                 let st = st.clone();
                 std::thread::spawn(move || {
-                    let mut buf = [0u8; 8192];
-                    let n = s.read(&mut buf).unwrap_or(0);
-                    let req = String::from_utf8_lossy(&buf[..n]).to_string();
-                    let line = req.lines().next().unwrap_or("").to_string();
+                    let (line, body) = read_request(&mut s);
                     let target = line.split(' ').nth(1).unwrap_or("");
+                    // Like nginx's default (`large_client_header_buffers 4 8k`).
+                    if target.len() > 8192 {
+                        let _ = s.write_all(
+                            b"HTTP/1.1 414 X\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        );
+                        return;
+                    }
                     let (path, query) = target.split_once('?').unwrap_or((target, ""));
+                    // A form posted reads like a query, as Navidrome merges them.
+                    let posted = line.starts_with("POST ");
+                    let merged;
+                    let query = if posted {
+                        merged = [query, body.as_str()]
+                            .into_iter()
+                            .filter(|q| !q.is_empty())
+                            .collect::<Vec<_>>()
+                            .join("&");
+                        merged.as_str()
+                    } else {
+                        query
+                    };
                     let method = path
                         .rsplit('/')
                         .next()
@@ -142,6 +203,9 @@ impl Fake {
                         .to_string();
                     st.n_requests.fetch_add(1, Ordering::SeqCst);
                     st.calls.lock().unwrap().push(format!("{method}?{query}"));
+                    if posted {
+                        st.posted.lock().unwrap().push(method.clone());
+                    }
                     if let Some(t) = param(query, "t") {
                         st.tokens_seen.lock().unwrap().push(t);
                     }
@@ -275,11 +339,20 @@ impl State {
                     return no_such(method);
                 }
                 let id = param(query, "id").unwrap_or_default();
-                let entry = match self.playlists.lock().unwrap().get(&id) {
-                    Some(seeded) => seeded.clone(),
+                let entry = match self.playlists.lock().unwrap().get_mut(&id) {
+                    Some(seeded) => {
+                        let read = seeded.clone();
+                        if let Some(changed) = self.change_after_read.lock().unwrap().take() {
+                            *seeded = changed;
+                        }
+                        read
+                    }
                     None => songs,
                 };
-                ok(json!({"playlist": {"id": "p1", "name": "Daft Mix", "entry": entry}}))
+                let count = entry.len() + self.hidden_entries.load(Ordering::SeqCst);
+                ok(
+                    json!({"playlist": {"id": "p1", "name": "Daft Mix", "songCount": count, "entry": entry}}),
+                )
             }
             "updatePlaylist" => {
                 let id = param(query, "playlistId").unwrap_or_default();
@@ -304,6 +377,25 @@ impl State {
             }
             "scrobble" | "star" | "unstar" | "deletePlaylist" => ok(json!({})),
             "createPlaylist" => {
+                // With a `playlistId`, Navidrome replaces the tracks of that playlist.
+                if let Some(id) = param(query, "playlistId") {
+                    let ids = params(query, "songId");
+                    if let Some(entries) = self.playlists.lock().unwrap().get_mut(&id) {
+                        let before = entries.clone();
+                        *entries = ids
+                            .iter()
+                            .map(|sid| {
+                                before
+                                    .iter()
+                                    .chain(songs.iter())
+                                    .find(|s| s["id"] == sid.as_str())
+                                    .cloned()
+                                    .unwrap_or_else(|| json!({"id": sid}))
+                            })
+                            .collect();
+                    }
+                    return ok(json!({"playlist": {"id": id, "songCount": ids.len()}}));
+                }
                 let n = params(query, "songId").len();
                 ok(
                     json!({"playlist": {"id": "p9", "name": param(query, "name").unwrap_or_default(),

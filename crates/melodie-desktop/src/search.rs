@@ -5,8 +5,8 @@
 use crate::albums::{PAD, cover_box, empty_state};
 use crate::app::Shared;
 use crate::catalog::{Catalog, Empty};
+use crate::dialogs::{self, Dialog};
 use crate::motion;
-use crate::pages::picker;
 use crate::player::palette;
 use crate::tables::row_button;
 use crate::widgets::IconButton;
@@ -20,7 +20,7 @@ use melodie_core::env::Env;
 use melodie_core::search::{self, Hit};
 use melodie_desktop::browse::Place;
 use melodie_desktop::find::{self, Action, Answer, Latest};
-use melodie_desktop::launch::Kind;
+use melodie_desktop::launch::{Adding, Kind};
 use melodie_desktop::theme::Palette;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -42,8 +42,6 @@ pub struct SearchView {
     asked_all: Option<Kind>,
     answer: Option<Arc<Answer>>,
     empty: Empty,
-    /// The result whose playlist picker is open.
-    pick: Option<(Kind, String)>,
     scroll: ScrollHandle,
     all: UniformListScrollHandle,
     /// The step of the place last seen, to focus the field when the search is opened.
@@ -105,7 +103,6 @@ impl SearchView {
             asked_all: None,
             answer: None,
             empty: Empty::Loading,
-            pick: None,
             scroll: ScrollHandle::new(),
             all: UniformListScrollHandle::new(),
             step: 0,
@@ -231,14 +228,8 @@ fn icon(action: Action) -> IconName {
     }
 }
 
-/// Does what a result's action says: a job of `melodie`, its page, or the playlist picker.
-fn act(
-    action: Action,
-    hit: &Hit,
-    view: &Entity<SearchView>,
-    catalog: &Entity<Catalog>,
-    cx: &mut App,
-) {
+/// Does what a result's action says: a job of `melodie`, its page, or the playlist to add to.
+fn act(action: Action, hit: &Hit, catalog: &Entity<Catalog>, window: &mut Window, cx: &mut App) {
     if let Some(job) = find::job(action, hit) {
         catalog.update(cx, |c, cx| c.run(job, cx));
     } else if action == Action::Open {
@@ -246,15 +237,12 @@ fn act(
             catalog.update(cx, |c, cx| c.go(place, cx));
         }
     } else {
-        let pick = (Kind::from(hit.kind), hit.id.clone());
-        view.update(cx, |v, cx| {
-            v.pick = Some(pick);
-            cx.notify()
-        });
-        catalog.update(cx, |c, cx| {
-            c.picker_open = true;
-            cx.notify()
-        });
+        let what = match Kind::from(hit.kind) {
+            Kind::Album => Adding::Album(hit.id.clone()),
+            _ => Adding::Tracks(vec![hit.id.clone()]),
+        };
+        let about = hit.name.clone();
+        dialogs::open(Dialog::Pick { what, about }, window, cx);
     }
 }
 
@@ -267,7 +255,6 @@ fn result_row(
     hit: &Hit,
     covers: &HashMap<String, PathBuf>,
     pal: Palette,
-    view: &Entity<SearchView>,
     catalog: &Entity<Catalog>,
 ) -> Stateful<Div> {
     let key = |what: &str| ElementId::Name(format!("{list}-{what}-{ix}").into());
@@ -276,7 +263,7 @@ fn result_row(
     } else {
         6.
     };
-    let (h, v, c) = (Arc::new(hit.clone()), view.clone(), catalog.clone());
+    let (h, c) = (Arc::new(hit.clone()), catalog.clone());
     h_flex()
         .id(key("row"))
         .group(list)
@@ -284,7 +271,7 @@ fn result_row(
         .flex_none()
         .w_full()
         .px(px(PAD))
-        .on_click(move |_, _, cx| act(find::click(&h), &h, &v, &c, cx))
+        .on_click(move |_, window, cx| act(find::click(&h), &h, &c, window, cx))
         .child(
             h_flex()
                 .size_full()
@@ -326,9 +313,9 @@ fn result_row(
                         .invisible()
                         .group_hover(list, |s| s.visible())
                         .children(find::buttons(hit).into_iter().map(|a| {
-                            let (h, v, c) = (Arc::new(hit.clone()), view.clone(), catalog.clone());
-                            row_button(key(&format!("{a:?}")), icon(a), pal, move |cx| {
-                                act(a, &h, &v, &c, cx)
+                            let (h, c) = (Arc::new(hit.clone()), catalog.clone());
+                            row_button(key(&format!("{a:?}")), icon(a), pal, move |window, cx| {
+                                act(a, &h, &c, window, cx)
                             })
                         })),
                 ),
@@ -351,25 +338,12 @@ fn hint(id: &'static str, text: String, pal: Palette) -> AnyElement {
 impl Render for SearchView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let pal = palette(&self.shared, window, cx);
-        let (here, covers, can_back, picker_open) = {
+        let (here, covers, can_back) = {
             let c = self.catalog.read(cx);
-            (
-                c.here().clone(),
-                c.covers.clone(),
-                c.nav.can_go_back(),
-                c.picker_open,
-            )
+            (c.here().clone(), c.covers.clone(), c.nav.can_go_back())
         };
         let text = self.text.clone();
-        let view = cx.entity();
         let catalog = &self.catalog;
-        let pk = motion::flag(
-            "search-picker",
-            picker_open && self.pick.is_some(),
-            motion::PANEL,
-            window,
-            cx,
-        );
         let field = h_flex()
             .px(px(PAD))
             .pt_4()
@@ -396,7 +370,7 @@ impl Render for SearchView {
                 None => div().into_any_element(),
                 Some((kind, hits)) => {
                     let hits = Arc::clone(hits);
-                    let (v, c) = (view.clone(), catalog.clone());
+                    let c = catalog.clone();
                     v_flex()
                         .size_full()
                         .child(
@@ -422,15 +396,7 @@ impl Render for SearchView {
                             uniform_list("search-all", hits.len(), move |range, _, _| {
                                 range
                                     .map(|ix| {
-                                        result_row(
-                                            "search-all",
-                                            ix,
-                                            &hits[ix],
-                                            &covers,
-                                            pal,
-                                            &v,
-                                            &c,
-                                        )
+                                        result_row("search-all", ix, &hits[ix], &covers, pal, &c)
                                     })
                                     .collect()
                             })
@@ -496,9 +462,10 @@ impl Render for SearchView {
                                 }),
                         )
                         .children(
-                            g.hits.iter().enumerate().map(|(ix, h)| {
-                                result_row(list, ix, h, &covers, pal, &view, catalog)
-                            }),
+                            g.hits
+                                .iter()
+                                .enumerate()
+                                .map(|(ix, h)| result_row(list, ix, h, &covers, pal, catalog)),
                         )
                 }))
                 .with_animation("search-groups", motion::enter(), |el, t| el.opacity(t))
@@ -509,28 +476,5 @@ impl Render for SearchView {
             .relative()
             .child(field)
             .child(div().flex_1().min_h_0().child(body))
-            .when(pk > 0.0, |d| {
-                let close = catalog.clone();
-                let (kind, id) = self.pick.clone().unwrap_or((Kind::Track, String::new()));
-                d.child(
-                    div()
-                        .id("search-picker-scrim")
-                        .absolute()
-                        .inset_0()
-                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                            close.update(cx, |c, cx| {
-                                c.picker_open = false;
-                                cx.notify()
-                            })
-                        })
-                        .child(
-                            div()
-                                .absolute()
-                                .top(px(72.))
-                                .left_0()
-                                .child(picker(kind, &id, pk, pal, catalog, cx)),
-                        ),
-                )
-            })
     }
 }

@@ -111,17 +111,33 @@ Screenshots and a recording of the animations, made with invented data, are in
   removes it; the button at the top removes what comes after the current track.
 - **The library**, in the sidebar: Home, Albums, Artists, Tracks, and the playlists. Everything is
   read from the local copy, away from the window's thread: browsing never touches the network.
-  - Home: the albums added last, the mixes (the personal mix, the rediscoveries), the albums played
-    most.
+  - Home: the albums added last, the mixes (the personal mix, the rediscoveries, and a mix for
+    each of the six genres `melodie mixes` offers, found by the same code), the albums played most.
   - Albums: a grid of covers, sorted by date added, name, artist or year (a second click on the
     sort turns it round). Artists and Tracks: long lists sorted by a click on a column.
-  - A page for an album (its tracks; play, shuffle, play next, add to the queue, add to one of the
-    user's playlists), an artist (its top tracks by plays, its albums; play, shuffle, instant mix)
-    and a playlist (its tracks, as the last synchronisation saw them; the same actions but adding to
-    a playlist). A click on a track plays it; on a row's hover, play it next or add it to the
-    queue. The back arrow (or Escape) goes back to where the page was opened from.
-  - Actions run `melodie` (`play`, `queue`, `mix`, `playlist add --json`): what needs the server
-    still goes through it. Covers come from `~/.cache/melodie/covers/` (the 128 px thumbnails
+  - A page for an album (its tracks; play, shuffle, play next, add to the queue, instant mix, add
+    to a playlist), an artist (its top tracks by plays, its albums; play, shuffle, instant mix)
+    and a playlist (its tracks, as the local copy holds them; play, shuffle, play next, add to the
+    queue). A click on a track plays it; on a row's hover, play it next, add it to the queue, add
+    it to a playlist, or start an instant mix from it. The back arrow (or Escape) goes back to where
+    the page was opened from.
+  - **Playlists**: the + beside "Playlists" in the sidebar creates one. The page of one of the
+    user's playlists (other people's are only read) also renames it, deletes it (after a
+    confirmation that says what goes), and finds its duplicates: they are listed (the exact ones,
+    which go, and the likely ones, which stay) before "Remove" removes the exact ones shown, by
+    rank, each checked to still hold the track shown (`playlist remove --expect`). On its rows,
+    a button removes the track; a row dragged onto another moves it there.
+  - **Picking rows**: Ctrl+click picks a track, Shift+click the tracks between the last one
+    picked and this one (in Tracks, an album, a playlist). A bar then adds them to a playlist, or
+    removes them from the user's playlist shown (after a confirmation naming them).
+  - **Adding to a playlist** (a track, the rows picked, an album, the current track from the
+    player): a dialog lists the user's playlists and "New playlist…". The playlist is read first
+    (`playlist add --dry-run`): when nothing is there yet, it is added at once; otherwise the window
+    asks, naming the tracks already there: skip them (add the others, or nothing when all are
+    there) or add them anyway.
+  - Actions run `melodie` (`play`, `queue`, `mix`, `playlist add|create|rename|delete|remove|move|
+    duplicates`): what needs the server still goes through it, and the window reads the local copy
+    again when it is done. The jobs of one playlist run one after the other, in the order asked. Covers come from `~/.cache/melodie/covers/` (the 128 px thumbnails
     first); the missing ones are fetched by `melodie cover-fetch`, in the background.
   - At the bottom, what plays: play or pause, next; a click opens the player.
 - **The search**, first in the sidebar: one field, and as you type the artists, albums, tracks and
@@ -133,8 +149,9 @@ Screenshots and a recording of the animations, made with invented data, are in
   or an album). The local copy is read away from the window's thread, and the answer to an older
   keystroke is never shown over a newer one; the search never touches the network.
 - **Keys**: Ctrl+F, or / when not typing, opens the search and puts the cursor in its field;
-  Space plays or pauses (in the field, it is a space); Escape closes the queue, the settings or the
-  playlist choice, else empties the search field, else goes back.
+  Space plays or pauses (in the field, it is a space); Escape closes a dialog, else the queue or the
+  settings, else unpicks the rows picked, else empties the search field, else goes back. In a
+  dialog, Enter does what its main button does (Escape cancels).
 - **Colours**: the button at the top right chooses the theme. "Mélodie", the base theme, takes its
   colours from the cover and follows the desktop's dark or light setting. "Omarchy" is offered
   only on Omarchy (`ID=omarchy` in `/etc/os-release` and a readable
@@ -272,13 +289,16 @@ connection states (see below), with a notification.
   the server). `like --toggle` flips the state. Notification "♥ Ajouté aux favoris : <title>" or
   "Retiré des favoris". The daemon updates `starred` (`now --json`, MPRIS `melodie:starred`) of the
   current track; on a track change it reads the state again from the copy.
-- `melodie playlist add [--allow-duplicates] [--json] <playlistId> [track <id> | album <id> | current]`:
+- `melodie playlist add [--allow-duplicates | --dry-run] [--json] <playlistId> [track <id>… | album <id> | current]`:
   `updatePlaylist` with `songIdToAdd` repeated (`current`, the current track, is the default).
   The playlist is first read from the server (`getPlaylist`, not the local copy, which may be
   stale): a track already in it, by id, is skipped, and the output says how
   many ("Ajouté à « X » : 8 morceaux (2 déjà présents, ignorés)", or "Déjà dans « X »" when
   nothing is left to add, code 0, nothing written). `--allow-duplicates` adds them anyway, without
-  reading the playlist. A track repeated in the request itself is added once.
+  reading the playlist. A track repeated in the request itself is added once. `track` takes one
+  id or several (a selection), added in that order. `--dry-run` reads the playlist and says what
+  would be added and what is already there, without writing anything (the window asks its
+  question from it).
 - `melodie playlist duplicates [--remove] [--json] <playlistId>`: lists the repeats of a playlist,
   by rank and the rank of the occurrence they repeat. The text output counts ranks from 1; the
   `--json` `index` and `first` count from 0, like Subsonic's `songIndexToRemove` (unlike `remove`,
@@ -288,9 +308,19 @@ connection states (see below), with a notification.
   ones only, keeping the first occurrence and the order of the rest, in one `updatePlaylist`
   whose `songIndexToRemove` are all ranks of the order before the call (Navidrome's reading,
   checked in its source and tested on the fake server). The likely ones are listed and left.
-- `melodie playlist remove <playlistId> <rank>`: removes the track at that rank, counted from 1
-  like what `duplicates` prints (rank 0 is refused). It is converted once to Subsonic's 0-based
-  `songIndexToRemove` and checked against the server's playlist before writing.
+- `melodie playlist remove [--expect <id>]… <playlistId> <rank>…`: removes the tracks at these
+  ranks, counted from 1 like what `duplicates` prints (rank 0 is refused). They are converted once
+  to Subsonic's 0-based `songIndexToRemove`, checked against the server's playlist and sent in one
+  `updatePlaylist` (every index refers to the order before the call). With `--expect`, given once
+  per rank, each rank must still hold that track id, or nothing is removed: a window shows the
+  playlist as it last read it.
+- `melodie playlist move [--expect <id>] <playlistId> <from> <to>`: moves the track at rank
+  `from` to rank `to` (from 1). Subsonic has no move: the whole order is written again by
+  `createPlaylist` with the `playlistId` (Navidrome replaces the tracks and keeps the playlist,
+  its name and its owner). `--expect` as for `remove`. Nothing is written when the playlist changed
+  between the read the new order comes from and the write (it is read again just before), or when
+  the server lists fewer tracks than its `songCount` (Navidrome leaves out the tracks whose file is
+  missing, and rewriting the playlist would drop them).
 - `melodie playlist create <name> [current | track <id> | album <id>]`,
   `playlist rename <id> <name…>`, `playlist delete <id>` (no confirmation).
   `create --prompt [target]` asks for the name on the keyboard (for `xdg-terminal-exec`).
@@ -359,7 +389,13 @@ result), `--size N` (50 by default).
 | --- | --- | --- | --- |
 | `no-login` | no secret or no configuration | "Pas connecté : lance `melodie login`", code 1 | entry "Se connecter à Navidrome" (`xdg-terminal-exec melodie login`), code 0 |
 | `auth-refused` | `status="failed"`, Subsonic code 40 to 44 | same (handled like `no-login`), code 1 | same |
-| `unreachable` | network, 8 s timeout, HTTP not 200, invalid JSON, other Subsonic error | "Serveur injoignable", code 2, never asks to log in again | entry "Navidrome injoignable" (subtitle: the address), code 0 |
+| `unreachable` | network, 8 s timeout, HTTP 502 to 504 (a proxy without its server), invalid JSON, other Subsonic error | "Serveur injoignable", code 2, never asks to log in again | entry "Navidrome injoignable" (subtitle: the address), code 0 |
+
+**An HTTP refusal is not a connection state either.** Any other HTTP answer than 200 (a 414
+from a proxy, a 500 from the server) means the server answered: it is reported as an error (code
+3, entry `error`), never as `unreachable`. The playlist writes that carry a list of tracks
+(`playlist add`, `remove`, `move`, `create`, `duplicates --remove`) post their parameters as a
+form (OpenSubsonic `formPost`), so a long playlist does not make a URL too long for a proxy.
 
 **Not found is not a connection state.** When the server answers Subsonic code 70 ("data not
 found", e.g. an album id it does not have), it is reachable and accepted the token: the item is
@@ -454,7 +490,8 @@ Unlike the launcher lists above, these two answer one object, with camel-case ke
 ```
 
 `added` is what was sent to the server, `already` what was found in the playlist and left out
-(always empty with `--allow-duplicates`, which does not read the playlist). The launcher or the
+(always empty with `--allow-duplicates`, which does not read the playlist). With `--dry-run`,
+nothing is sent: `added` is what would be, and the object has one more key, `"dryRun": true`. The launcher or the
 window can offer to add `already` again with `--allow-duplicates`.
 
 ```json
