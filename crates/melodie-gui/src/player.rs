@@ -137,7 +137,8 @@ impl Render for PlayerView {
         };
 
         let viewport = window.viewport_size();
-        let side = (viewport.width.as_f32() - 64.0)
+        let width = viewport.width.as_f32() - crate::sidebar::width(viewport.width.as_f32());
+        let side = (width - 64.0)
             .min(viewport.height.as_f32() - 340.0)
             .clamp(160.0, 440.0);
         let size = px(side);
@@ -175,13 +176,7 @@ impl Render for PlayerView {
         let play = {
             let shared = shared.clone();
             move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                shared.update(cx, |s, cx| {
-                    match (s.player.following, s.player.current, s.player.tracks.len()) {
-                        (true, Some(_), _) => s.send(Request::Toggle, cx),
-                        (true, None, n) if n > 0 => s.send(Request::QueuePlay { index: 0 }, cx),
-                        _ => s.run(Job::PlayMix, cx),
-                    }
-                })
+                shared.update(cx, |s, cx| s.play_or_pause(cx))
             }
         };
         let has_track = track.is_some();

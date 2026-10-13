@@ -132,6 +132,20 @@ impl Shared {
         .detach();
     }
 
+    /// Play or pause; with nothing current, the queue from its start, or with no daemon the
+    /// personal mix.
+    pub fn play_or_pause(&self, cx: &mut Context<Self>) {
+        match (
+            self.player.following,
+            self.player.current,
+            self.player.tracks.len(),
+        ) {
+            (true, Some(_), _) => self.send(Request::Toggle, cx),
+            (true, None, n) if n > 0 => self.send(Request::QueuePlay { index: 0 }, cx),
+            _ => self.run(Job::PlayMix, cx),
+        }
+    }
+
     /// Sends an action on a row of the queue, unless that row no longer holds the entry the user
     /// clicked: another client (or the user's own earlier click) changed the queue since, and a
     /// position alone would act on a neighbour.
@@ -146,38 +160,47 @@ impl Shared {
         let program = launch::program(std::env::current_exe().ok().as_deref());
         let what = match &job {
             Job::PlayMix => "Could not start your mix",
+            Job::Rediscover => "Could not start the rediscoveries",
             Job::Star { .. } => "Could not change the favourite",
+            Job::Play { .. } => "Could not play it",
+            Job::Queue { .. } => "Could not add it to the queue",
+            Job::Mix { .. } => "Could not make the mix",
+            Job::AddToPlaylist { .. } => "Could not add to the playlist",
         };
+        let adds = matches!(job, Job::AddToPlaylist { .. });
         let task = cx.background_spawn(async move {
             let out = std::process::Command::new(&program)
                 .args(job.args())
                 .stdin(std::process::Stdio::null())
                 .output();
             match out {
-                Ok(o) if o.status.success() => None,
-                Ok(o) => Some(
-                    String::from_utf8_lossy(&o.stderr)
-                        .lines()
-                        .next()
-                        .unwrap_or("")
-                        .to_string(),
-                ),
-                Err(e) => Some(format!("{}: {}", program.display(), e.kind())),
+                // `--json` says how it went on its output, even when it failed
+                Ok(o) if o.status.success() && adds => {
+                    let said = launch::added_message(&String::from_utf8_lossy(&o.stdout));
+                    Ok(Some(said.unwrap_or_else(|why| why)))
+                }
+                Ok(o) if o.status.success() => Ok(None),
+                Ok(o) => Err(String::from_utf8_lossy(&o.stderr)
+                    .lines()
+                    .next()
+                    .map(str::to_string)),
+                Err(e) => Err(Some(format!("{}: {}", program.display(), e.kind()))),
             }
         });
         cx.spawn(async move |this, cx| {
-            if let Some(why) = task.await {
-                let msg = if why.is_empty() {
-                    what.to_string()
-                } else {
-                    format!("{what}: {why}")
-                };
-                let _ = this.update(cx, |s, cx| s.fail(msg, cx));
-            }
+            let msg = match task.await {
+                Ok(None) => return,
+                Ok(Some(said)) => said,
+                Err(Some(why)) if !why.is_empty() => format!("{what}: {why}"),
+                Err(_) => what.to_string(),
+            };
+            let _ = this.update(cx, |s, cx| s.fail(msg, cx));
         })
         .detach();
     }
 
+    /// Says something at the bottom of the window for a few seconds (a failure, or what an
+    /// action did).
     fn fail(&mut self, msg: String, cx: &mut Context<Self>) {
         self.failures += 1;
         let n = self.failures;

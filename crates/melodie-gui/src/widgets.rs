@@ -1,4 +1,5 @@
-//! A round icon button whose hover and press are animated (gpui-kit's buttons change at once).
+//! A round icon button, or a pill with a label, whose hover and press are animated (gpui-kit's
+//! buttons change at once).
 
 use crate::motion;
 use gpui_kit::assets::IconName;
@@ -21,6 +22,7 @@ type OnClick = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 pub struct IconButton {
     id: ElementId,
     icon: IconName,
+    label: Option<SharedString>,
     diameter: f32,
     pal: Palette,
     look: Look,
@@ -29,11 +31,68 @@ pub struct IconButton {
     on_click: Option<OnClick>,
 }
 
-/// Where the pointer is, kept per button by its id.
+/// Where the pointer is, kept per element by its id.
 #[derive(Default, Clone, Copy)]
-struct Pointer {
-    hovered: bool,
-    pressed: bool,
+pub struct Pointer {
+    pub hovered: bool,
+    pub pressed: bool,
+}
+
+/// The pointer state of the element `id`, and its hover and press animated from 0 to 1 (both
+/// stay 0 while it is not `live`).
+pub fn pointer(
+    id: &ElementId,
+    live: bool,
+    window: &mut Window,
+    cx: &mut App,
+) -> (Entity<Pointer>, f32, f32) {
+    let pointer = window.use_keyed_state(id.clone(), cx, |_, _| Pointer::default());
+    let p = *pointer.read(cx);
+    let h = motion::flag(
+        (id.clone(), "hover"),
+        p.hovered && live,
+        motion::HOVER,
+        window,
+        cx,
+    );
+    let d = motion::flag(
+        (id.clone(), "press"),
+        p.pressed && live,
+        motion::PRESS,
+        window,
+        cx,
+    );
+    (pointer, h, d)
+}
+
+/// Keeps `pointer` up to date from the element's own events.
+pub fn follow_pointer(el: Stateful<Div>, pointer: Entity<Pointer>) -> Stateful<Div> {
+    let (hover, press, release, out) = (pointer.clone(), pointer.clone(), pointer.clone(), pointer);
+    el.on_hover(move |on, _, cx| {
+        hover.update(cx, |p, cx| {
+            p.hovered = *on;
+            p.pressed &= *on;
+            cx.notify()
+        })
+    })
+    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+        press.update(cx, |p, cx| {
+            p.pressed = true;
+            cx.notify()
+        })
+    })
+    .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+        release.update(cx, |p, cx| {
+            p.pressed = false;
+            cx.notify()
+        })
+    })
+    .on_mouse_up_out(MouseButton::Left, move |_, _, cx| {
+        out.update(cx, |p, cx| {
+            p.pressed = false;
+            cx.notify()
+        })
+    })
 }
 
 impl IconButton {
@@ -41,6 +100,7 @@ impl IconButton {
         Self {
             id: id.into(),
             icon,
+            label: None,
             diameter: 40.0,
             pal,
             look: Look::Ghost,
@@ -52,6 +112,12 @@ impl IconButton {
 
     pub fn diameter(mut self, d: f32) -> Self {
         self.diameter = d;
+        self
+    }
+
+    /// A pill: the icon, then this text.
+    pub fn label(mut self, text: impl Into<SharedString>) -> Self {
+        self.label = Some(text.into());
         self
     }
 
@@ -78,23 +144,8 @@ impl IconButton {
 
 impl RenderOnce for IconButton {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let pointer = window.use_keyed_state(self.id.clone(), cx, |_, _| Pointer::default());
-        let p = *pointer.read(cx);
         let live = !self.disabled;
-        let h = motion::flag(
-            (self.id.clone(), "hover"),
-            p.hovered && live,
-            motion::HOVER,
-            window,
-            cx,
-        );
-        let d = motion::flag(
-            (self.id.clone(), "press"),
-            p.pressed && live,
-            motion::PRESS,
-            window,
-            cx,
-        );
+        let (pointer, h, d) = pointer(&self.id, live, window, cx);
         let s = motion::flag(
             (self.id.clone(), "selected"),
             self.selected,
@@ -117,11 +168,11 @@ impl RenderOnce for IconButton {
             ),
         };
         let icon_size = (self.diameter * 0.45).round();
-        let (hover, press, release, out) =
-            (pointer.clone(), pointer.clone(), pointer.clone(), pointer);
-        div()
-            .id(self.id)
-            .size(px(self.diameter))
+        let label = self.label;
+        follow_pointer(div().id(self.id), pointer)
+            .h(px(self.diameter))
+            .when(label.is_none(), |d| d.w(px(self.diameter)))
+            .when(label.is_some(), |d| d.pl_3().pr_4().gap_2())
             .flex_none()
             .flex()
             .items_center()
@@ -130,31 +181,6 @@ impl RenderOnce for IconButton {
             .bg(bg)
             .when(self.disabled, |d| d.opacity(0.4))
             .when(live, |d| d.cursor_pointer())
-            .on_hover(move |on, _, cx| {
-                hover.update(cx, |p, cx| {
-                    p.hovered = *on;
-                    p.pressed &= *on;
-                    cx.notify()
-                })
-            })
-            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                press.update(cx, |p, cx| {
-                    p.pressed = true;
-                    cx.notify()
-                })
-            })
-            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                release.update(cx, |p, cx| {
-                    p.pressed = false;
-                    cx.notify()
-                })
-            })
-            .on_mouse_up_out(MouseButton::Left, move |_, _, cx| {
-                out.update(cx, |p, cx| {
-                    p.pressed = false;
-                    cx.notify()
-                })
-            })
             .when_some(self.on_click.filter(|_| live), |d, f| d.on_click(f))
             .child(
                 Icon::new(self.icon)
@@ -163,5 +189,15 @@ impl RenderOnce for IconButton {
                     // the press sinks the icon a little: felt, not seen
                     .mt(px(d)),
             )
+            .when_some(label, |b, text| {
+                b.child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(fg)
+                        .mt(px(d))
+                        .child(text),
+                )
+            })
     }
 }

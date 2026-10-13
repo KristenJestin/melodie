@@ -73,6 +73,11 @@ impl Nav {
         true
     }
 
+    /// The places on the way back, the first one first.
+    pub fn places(&self) -> &[Place] {
+        &self.stack
+    }
+
     pub fn can_go_back(&self) -> bool {
         self.stack.len() > 1
     }
@@ -164,6 +169,36 @@ mod tests {
         assert_eq!(nav.section(), &Place::Playlist("p1".into()));
     }
 
+    /// The views are drawn on every frame of a scroll or a fade: reading the local copy and
+    /// looking for cover files belong to the catalog's background tasks. A guard on the source,
+    /// as drawing cannot be observed without a window.
+    #[test]
+    fn the_library_views_do_not_touch_the_disk_while_drawing() {
+        let views = [
+            ("albums.rs", include_str!("albums.rs")),
+            ("tables.rs", include_str!("tables.rs")),
+            ("pages.rs", include_str!("pages.rs")),
+            ("sidebar.rs", include_str!("sidebar.rs")),
+            ("mini.rs", include_str!("mini.rs")),
+        ];
+        for (file, src) in views {
+            for call in [
+                "cover::local",
+                "resolve_covers",
+                "is_file",
+                "std::fs",
+                "exists()",
+                "db::",
+                "lib::",
+            ] {
+                assert!(
+                    !src.contains(call),
+                    "{file} calls {call} on the render path"
+                );
+            }
+        }
+    }
+
     #[test]
     fn covers_fit_the_width() {
         assert_eq!(columns(1000.0, 160.0, 20.0), 5);
@@ -178,10 +213,18 @@ mod tests {
         let thumb = cover::thumb_path(&env, "c1");
         std::fs::create_dir_all(thumb.parent().unwrap()).unwrap();
         std::fs::write(&thumb, "").unwrap();
-        std::fs::write(format!("{}.none", cover::thumb_path(&env, "c3").display()), "").unwrap();
+        std::fs::write(
+            format!("{}.none", cover::thumb_path(&env, "c3").display()),
+            "",
+        )
+        .unwrap();
         let (found, missing) = resolve_covers(&env, ["c1", "c2", "c3", "c2", "c1"]);
         assert_eq!(found.get("c1"), Some(&thumb));
         assert_eq!(found.len(), 1);
-        assert_eq!(missing, ["c2"], "the server's default image is not fetched again");
+        assert_eq!(
+            missing,
+            ["c2"],
+            "the server's default image is not fetched again"
+        );
     }
 }
