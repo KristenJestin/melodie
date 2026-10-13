@@ -186,12 +186,15 @@ fn a_stream_that_cannot_be_read_keeps_nothing_and_says_no_secret() {
     for secret in [TOKEN, SALT, "stream.view", "t="] {
         assert!(!run.output.contains(secret), "{secret} in {}", run.output);
     }
-    // no decoded file left behind
-    let left: Vec<_> = std::fs::read_dir(waveform::dir(&l.env()))
-        .unwrap()
-        .filter_map(|e| e.ok())
-        .map(|e| e.file_name())
-        .filter(|n| n != ".fetch.lock")
-        .collect();
-    assert!(left.is_empty(), "{left:?}");
+}
+
+#[test]
+fn the_decoded_files_of_a_killed_run_are_removed() {
+    let l = Logged::new();
+    let dir = waveform::dir(&l.env());
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(".decode-4194301.pcm"), [0; 64]).unwrap();
+    waveform::write(&l.env(), "s9", &[1; LEVELS]).unwrap();
+    assert_eq!(l.fetch("").code, 0);
+    assert_eq!(left_in(&l), vec![std::ffi::OsString::from("s9.wave")]);
 }

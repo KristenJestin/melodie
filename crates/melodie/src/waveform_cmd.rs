@@ -59,6 +59,7 @@ pub fn fetch_cmd(env: &Env) -> Result<ExitCode> {
     if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
         return Ok(ExitCode::from(LOCKED_EXIT));
     }
+    remove_decoded(&dir);
     let mut input = String::new();
     std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)?;
     let asks: Vec<Ask> = waveform::parse_asks(&input)
@@ -78,6 +79,20 @@ pub fn fetch_cmd(env: &Env) -> Result<ExitCode> {
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Removes the decoded files a killed run left behind: with the lock held, none is in use.
+fn remove_decoded(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with(".decode-") && name.ends_with(".pcm") {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// The levels of the track asked, decoded into a file of `dir` that is removed after.
