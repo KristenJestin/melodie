@@ -1267,6 +1267,26 @@ fn login_with_a_wrong_password_on_stdin_is_refused_and_keeps_nothing() {
 }
 
 #[test]
+fn a_secret_that_cannot_be_saved_is_not_a_refused_password() {
+    let sb = Sandbox::new(false);
+    *sb.fake.state.password.lock().unwrap() = Some(PASSWORD.into());
+    // the server accepts the password; the place for the secret is unusable
+    std::fs::create_dir(sb.secret_file()).unwrap();
+    let o = login_stdin(&sb, &sb.fake.url, PASSWORD);
+    // 1 is "no login or refused", which would make the window ask for the password again
+    assert_eq!(o.status.code(), Some(3));
+    assert!(!sb.home().join(".config/melodie/config.toml").exists());
+    let stderr = String::from_utf8_lossy(&o.stderr);
+    assert!(!stderr.is_empty() && !stderr.contains(PASSWORD), "{stderr}");
+    // a configuration that cannot be read is local too
+    let sb = Sandbox::new(false);
+    std::fs::create_dir_all(sb.home().join(".config/melodie")).unwrap();
+    std::fs::write(sb.home().join(".config/melodie/config.toml"), "url = [").unwrap();
+    let o = login_stdin(&sb, &sb.fake.url, PASSWORD);
+    assert_eq!(o.status.code(), Some(3));
+}
+
+#[test]
 fn login_on_stdin_to_an_unreachable_server_says_so_and_keeps_nothing() {
     let sb = Sandbox::new(false);
     *sb.fake.state.raw.lock().unwrap() = Some((503, "x".into()));

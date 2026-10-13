@@ -700,8 +700,14 @@ fn password_from_stdin() -> Result<String> {
 }
 
 /// `given`: the server and the user of `--password-stdin`, the password then read from the
-/// standard input; otherwise all three are asked.
+/// standard input; otherwise all three are asked. Exit 1 means "no login or refused" and only
+/// the server's refusal says it: a local failure (keyring, configuration, input) is an internal
+/// error, or the window would ask again for a password that was right.
 fn login(env: &Env, given: Option<(String, String)>) -> Result<ExitCode> {
+    Ok(login_attempt(env, given).unwrap_or_else(|e| fail(&Failure::Internal(e))))
+}
+
+fn login_attempt(env: &Env, given: Option<(String, String)>) -> Result<ExitCode> {
     let settings = store::Settings::load(env)?;
     let typed = match &given {
         Some((server, _)) => server.clone(),

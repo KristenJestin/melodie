@@ -141,18 +141,14 @@ pub fn sign_in(program: &Path, server: &str, user: &str, password: &str) -> Outc
         Ok(o) => o,
         Err(e) => return Outcome::Failed(format!("{}: {}", program.display(), e.kind())),
     };
+    let said = String::from_utf8_lossy(&out.stderr);
+    let said = said.lines().next().filter(|l| !l.is_empty());
     match out.status.code() {
         Some(0) => Outcome::SignedIn,
         Some(1) => Outcome::Refused,
-        Some(2) => Outcome::Unreachable,
-        _ => Outcome::Failed(
-            String::from_utf8_lossy(&out.stderr)
-                .lines()
-                .next()
-                .filter(|l| !l.is_empty())
-                .unwrap_or("Could not sign in")
-                .to_string(),
-        ),
+        // clap's usage error (an old `melodie` on the PATH) is also 2, and always says "error:"
+        Some(2) if !said.is_some_and(|l| l.starts_with("error:")) => Outcome::Unreachable,
+        _ => Outcome::Failed(said.unwrap_or("Could not sign in").to_string()),
     }
 }
 
@@ -367,6 +363,36 @@ mod tests {
             PASSWORD,
         );
         assert!(matches!(missing, Outcome::Failed(_)), "{missing:?}");
+    }
+
+    #[test]
+    fn only_the_exit_codes_of_melodie_are_read_as_a_refusal_or_an_unreachable_server() {
+        let d = tempfile::tempdir().unwrap();
+        let run = |code, said| {
+            let program = stand_in(d.path(), code, said);
+            sign_in(&program, "https://music.example.org", "alice", PASSWORD)
+        };
+        // a local failure of `melodie login` (keyring, configuration, input) says itself
+        assert_eq!(
+            run(3, "keyring locked\nmore"),
+            Outcome::Failed("keyring locked".into())
+        );
+        // codes `login` never gives: failed, with what it said, or a plain sentence
+        for code in [4, 5, 101, 127] {
+            assert_eq!(run(code, "boom"), Outcome::Failed("boom".into()), "{code}");
+        }
+        assert_eq!(run(4, ""), Outcome::Failed("Could not sign in".into()));
+        // an old `melodie` without --password-stdin: clap's usage error also exits 2
+        let usage = "error: unexpected argument '--password-stdin' found";
+        assert_eq!(run(2, usage), Outcome::Failed(usage.into()));
+        // and the real unreachable server (exit 2) is still told
+        assert_eq!(
+            run(
+                2,
+                "Serveur injoignable (https://music.example.org) : timeout"
+            ),
+            Outcome::Unreachable
+        );
     }
 
     #[test]
