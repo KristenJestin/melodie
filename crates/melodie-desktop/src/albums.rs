@@ -69,7 +69,7 @@ pub fn cover_box(cover: Option<Cover>, side: f32, round: f32, pal: Palette) -> D
                             .top_0()
                             .left_0()
                             .child(picture_file(path, round))
-                            .with_animation(id, motion::enter(), |el, t| el.opacity(t)),
+                            .with_animation(id, motion::crossfade(), |el, t| el.opacity(t)),
                     )
             }
             None => d.child(

@@ -6,7 +6,7 @@ use gpui_kit::*;
 use melodie_core::cover::LOCKED_EXIT;
 use melodie_core::cover::{Disk, Want};
 use melodie_core::env::Env;
-use melodie_desktop::covers::{self, Fetch, Files, LOCK_WAIT, Queue, Use, resolve};
+use melodie_desktop::covers::{self, FADE_KEEP, Fetch, Files, LOCK_WAIT, Queue, Use, resolve};
 use melodie_desktop::launch;
 use std::collections::HashMap;
 use std::io::Write as _;
@@ -116,9 +116,18 @@ impl CoverCache {
             return;
         }
         let mut files = (*self.files).clone();
-        files.merge(found, Instant::now());
+        let faded = files.merge(found, Instant::now());
         self.files = Arc::new(files);
         cx.notify();
+        if faded {
+            // nothing else repaints when the smaller file leaves the tree: it would stay drawn
+            // under a transparent picture until the next change
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(FADE_KEEP).await;
+                let _ = this.update(cx, |_, cx| cx.notify());
+            })
+            .detach();
+        }
     }
 }
 

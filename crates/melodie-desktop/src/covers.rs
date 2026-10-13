@@ -80,8 +80,9 @@ pub struct Cover {
 
 impl Files {
     /// Takes what a lookup found in. A larger file that lands where a smaller one was already
-    /// shown is remembered, so that the view can fade from one to the other.
-    pub fn merge(&mut self, found: HashMap<String, Disk>, now: Instant) {
+    /// shown is remembered, so that the view can fade from one to the other; true when one was.
+    pub fn merge(&mut self, found: HashMap<String, Disk>, now: Instant) -> bool {
+        let mut faded = false;
         self.upgraded
             .retain(|_, at| now.saturating_duration_since(*at) < FADE_KEEP);
         for (id, disk) in found {
@@ -92,11 +93,13 @@ impl Files {
                         .any(|t| old.at(*t).is_some());
                     if disk.at(tier).is_some() && old.at(tier).is_none() && smaller_shown {
                         self.upgraded.insert((id.clone(), tier), now);
+                        faded = true;
                     }
                 }
             }
             self.by_id.insert(id, disk);
         }
+        faded
     }
 
     pub fn is_empty(&self) -> bool {
@@ -606,13 +609,16 @@ mod tests {
         let (_d, env) = env();
         let (t0, mut files) = (Instant::now(), Files::default());
         put_tier(&env, "a", Tier::Thumb);
-        files.merge(resolve(&env, &at(&["a"], Tier::Thumb)).0, t0);
+        assert!(!files.merge(resolve(&env, &at(&["a"], Tier::Thumb)).0, t0));
         let before = files.get("a", Tier::Row, t0).unwrap();
         assert_eq!(before.path, cover::thumb_path(&env, "a"));
 
         put_tier(&env, "a", Tier::Row);
         let t1 = t0 + Duration::from_secs(5);
-        files.merge(resolve(&env, &at(&["a"], Tier::Row)).0, t1);
+        assert!(
+            files.merge(resolve(&env, &at(&["a"], Tier::Row)).0, t1),
+            "told that a fade starts, so that a repaint can end it"
+        );
         let landed = files.get("a", Tier::Row, t1).unwrap();
         assert_eq!(landed.path, cover::tier_path(&env, "a", Tier::Row));
         assert_eq!(

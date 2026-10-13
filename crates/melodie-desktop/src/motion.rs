@@ -41,3 +41,9 @@ pub fn flag(
 pub fn enter() -> Animation {
     Animation::new(ENTER).with_easing(ease_out_cubic)
 }
+
+/// Two images blending, one over the other (for `with_animation`). Linear: with ease-out most of
+/// the blend is over in the first frames and the swap reads as a jump.
+pub fn crossfade() -> Animation {
+    Animation::new(ENTER)
+}
