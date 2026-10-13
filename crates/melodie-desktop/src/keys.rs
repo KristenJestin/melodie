@@ -173,8 +173,6 @@ pub fn pointer_act(button: Thumb, s: Situation) -> Act {
         return Act::Pass;
     }
     match button {
-        Thumb::Back if s.palette_open => Act::TogglePalette,
-        Thumb::Forward if s.palette_open => Act::Pass,
         Thumb::Back if s.overlay_open => Act::CloseOverlays,
         Thumb::Back => Act::Back,
         Thumb::Forward if s.overlay_open => Act::Pass,
@@ -498,16 +496,6 @@ mod tests {
             assert_eq!(act(Key::Up, closed), Act::Pass);
             assert_eq!(act(Key::Down, closed), Act::Pass);
         }
-    }
-
-    #[test]
-    fn the_mouse_back_button_closes_the_palette() {
-        let open = Situation {
-            palette_open: true,
-            ..at(&Place::Albums, false)
-        };
-        assert_eq!(pointer_act(Thumb::Back, open), Act::TogglePalette);
-        assert_eq!(pointer_act(Thumb::Forward, open), Act::Pass);
     }
 
     #[test]

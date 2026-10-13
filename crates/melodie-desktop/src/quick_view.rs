@@ -508,7 +508,7 @@ impl Render for QuickSearch {
             Shown::Failed => hint("The library could not be read", pal).into_any_element(),
         };
         let keys = quick::hints(quick::nth(&groups, self.chosen));
-        let close = this.clone();
+        let (close, back) = (this.clone(), this.clone());
         let width = WIDTH.min(window.viewport_size().width.as_f32() - 32.);
         div()
             .id("quick-scrim")
@@ -519,8 +519,14 @@ impl Render for QuickSearch {
             .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                 close.update(cx, |q, cx| q.close(window, cx))
             })
+            // the layer keeps the pointer from the root, whose listener would close it
+            .on_mouse_down(
+                MouseButton::Navigate(NavigationDirection::Back),
+                move |_, window, cx| back.update(cx, |q, cx| q.close(window, cx)),
+            )
             .flex()
             .justify_center()
+            .items_start()
             .child(
                 v_flex()
                     .id("quick-card")
