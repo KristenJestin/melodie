@@ -216,7 +216,6 @@ fn light(client: &Client, conn: &mut Connection) -> Result<Report, Failure> {
         )?;
         lists.extend(list(&r, &["albumList2", "album"]));
     }
-    db::upgrade(conn)?;
     let tx = conn.transaction()?;
     refresh_playlists_and_starred(client, &tx, false)?;
     let mut seen = HashSet::new();

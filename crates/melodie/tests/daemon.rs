@@ -615,6 +615,29 @@ fn server_playlist(sb: &Sandbox) -> Vec<String> {
 }
 
 #[test]
+fn playlist_edits_work_on_a_copy_made_before_the_library_browsing() {
+    let sb = Sandbox::new(true);
+    sb.ok(&["sync", "--full"]);
+    seed_playlist(&sb, &["t1"]);
+    // The copy of an older version: no `playlist_tracks`, no `albums.created`.
+    let c = rusqlite::Connection::open(sb.db()).unwrap();
+    c.execute_batch("DROP TABLE playlist_tracks; ALTER TABLE albums DROP COLUMN created;")
+        .unwrap();
+    drop(c);
+
+    // The server applies the edit; the command must not fail afterwards on the local copy.
+    sb.ok(&["playlist", "add", "p1", "track", "t2"]);
+    assert_eq!(server_playlist(&sb), ["t1", "t2"]);
+    sb.ok(&["playlist", "create", "Ma liste", "track", "t1"]);
+    sb.ok(&["playlist", "rename", "p9", "Autre", "nom"]);
+    sb.ok(&["playlist", "delete", "p9"]);
+    assert_eq!(
+        db_value::<i64>(&sb, "SELECT count(*) FROM playlists WHERE id = 'p9'"),
+        0
+    );
+}
+
+#[test]
 fn playlist_duplicates_from_the_command_line() {
     let sb = Sandbox::new(true);
     sb.ok(&["sync", "--full"]);

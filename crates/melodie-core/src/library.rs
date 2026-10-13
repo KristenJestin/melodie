@@ -444,6 +444,34 @@ mod tests {
     }
 
     #[test]
+    fn the_queries_of_the_window_work_on_an_older_copy() {
+        let d = tempfile::tempdir().unwrap();
+        let env = crate::env::Env::with_home(d.path());
+        let old = db::create_before_browsing(&db::db_path(&env)).unwrap();
+        old.execute_batch(
+            "INSERT INTO artists(id, name) VALUES ('ar1', 'Ada Marlow');
+             INSERT INTO albums(id, name, artist, artistId, playCount) VALUES ('al1', 'Lanterns', 'Ada Marlow', 'ar1', 3);
+             INSERT INTO tracks(id, title, artist, artistId, album, albumId)
+               VALUES ('t1', 'Harbour Lights', 'Ada Marlow', 'ar1', 'Lanterns', 'al1');
+             INSERT INTO playlists(id, name) VALUES ('p1', 'road');",
+        )
+        .unwrap();
+        drop(old);
+
+        let conn = db::open_existing(&env).unwrap().unwrap();
+        assert_eq!(album_ids(&recently_added(&conn, 10).unwrap()), ["al1"]);
+        assert_eq!(album_ids(&most_played(&conn, 10).unwrap()), ["al1"]);
+        assert_eq!(
+            album_ids(&albums(&conn, Sort::desc(AlbumBy::Added)).unwrap()),
+            ["al1"]
+        );
+        assert_eq!(artists(&conn, Sort::asc(ArtistBy::Name)).unwrap().len(), 1);
+        assert_eq!(tracks(&conn, Sort::asc(TrackBy::Title)).unwrap().len(), 1);
+        assert_eq!(playlists(&conn).unwrap().len(), 1);
+        assert!(playlist_tracks(&conn, "p1").unwrap().is_empty());
+    }
+
+    #[test]
     fn recently_added_albums_come_newest_first_and_undated_ones_last() {
         let (_d, conn) = library();
         assert_eq!(

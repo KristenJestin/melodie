@@ -2,7 +2,7 @@
 
 use crate::env::Env;
 use anyhow::{Context, Result};
-use rusqlite::{Connection, Transaction, params};
+use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 use serde_json::Value;
 use std::path::PathBuf;
 
@@ -66,6 +66,16 @@ pub fn create(path: &std::path::Path) -> Result<Connection> {
     Ok(conn)
 }
 
+/// A copy as the versions before the library browsing made it: no `albums.created`, no
+/// `playlist_tracks`. For tests of the upgrade, which must start from a schema that truly lacks
+/// them.
+#[cfg(any(test, feature = "fake"))]
+pub fn create_before_browsing(path: &std::path::Path) -> Result<Connection> {
+    let conn = create(path)?;
+    conn.execute_batch("DROP TABLE playlist_tracks; ALTER TABLE albums DROP COLUMN created;")?;
+    Ok(conn)
+}
+
 /// Note qu'un morceau a été passé (`next` trop tôt). La table est créée si
 /// la copie date d'avant son apparition. Ne crée pas la base : sans copie
 /// locale, rien n'est noté (`false`).
@@ -108,30 +118,55 @@ pub fn carry_skips(old: &std::path::Path, new: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+/// What `upgrade` has to add: `(the created column, the playlist_tracks table)`. A copy without
+/// an `albums` table is no older copy: there is nothing to add a column to.
+fn upgrade_pending(conn: &Connection) -> Result<(bool, bool)> {
+    let (columns, has_created): (i64, i64) = conn.query_row(
+        "SELECT count(*), coalesce(sum(name = 'created'), 0) FROM pragma_table_info('albums')",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let has_playlist_tracks = conn
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'playlist_tracks'")?
+        .exists([])?;
+    Ok((columns > 0 && has_created == 0, !has_playlist_tracks))
+}
+
 /// Brings a copy made by an older version up to the schema: what was added since is created
 /// empty, and filled by the next synchronisation (the date an album was added, by the next full
 /// one).
+///
+/// Every process that opens the copy runs it (the daemon, the command line, the window), so it
+/// is idempotent and safe in parallel: the work is checked again under the write lock, and a
+/// process that waited for the lock finds it done.
 pub fn upgrade(conn: &Connection) -> Result<()> {
-    let has_created = conn
-        .prepare("SELECT 1 FROM pragma_table_info('albums') WHERE name = 'created'")?
-        .exists([])?;
-    if !has_created {
-        conn.execute_batch("ALTER TABLE albums ADD COLUMN created TEXT")?;
+    if upgrade_pending(conn)? == (false, false) {
+        return Ok(());
     }
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS playlist_tracks (playlist TEXT NOT NULL, pos INTEGER NOT NULL, track TEXT NOT NULL);
-         CREATE INDEX IF NOT EXISTS playlist_tracks_playlist ON playlist_tracks(playlist);",
-    )?;
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let (created, playlist_tracks) = upgrade_pending(&tx)?;
+    if created {
+        tx.execute_batch("ALTER TABLE albums ADD COLUMN created TEXT")?;
+    }
+    if playlist_tracks {
+        tx.execute_batch(
+            "CREATE TABLE playlist_tracks (playlist TEXT NOT NULL, pos INTEGER NOT NULL, track TEXT NOT NULL);
+             CREATE INDEX playlist_tracks_playlist ON playlist_tracks(playlist);",
+        )?;
+    }
+    tx.commit()?;
     Ok(())
 }
 
-/// Ouvre la copie existante ; `None` si elle n'existe pas.
+/// Ouvre la copie existante, mise à niveau si elle date d'avant ; `None` si elle n'existe pas.
 pub fn open_existing(env: &Env) -> Result<Option<Connection>> {
     let p = db_path(env);
     if !p.is_file() {
         return Ok(None);
     }
     let conn = Connection::open(&p).with_context(|| format!("ouverture de {}", p.display()))?;
+    conn.busy_timeout(std::time::Duration::from_secs(2))?;
+    upgrade(&conn)?;
     Ok(Some(conn))
 }
 
@@ -651,6 +686,49 @@ mod tests {
             .query_row("SELECT count(*) FROM playlist_tracks", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn an_older_copy_is_upgraded_when_opened() {
+        let d = tempfile::tempdir().unwrap();
+        let env = Env::with_home(d.path());
+        let old = create_before_browsing(&db_path(&env)).unwrap();
+        old.execute_batch("INSERT INTO albums(id, name) VALUES ('al1', 'A');")
+            .unwrap();
+        drop(old);
+
+        let conn = open_existing(&env).unwrap().unwrap();
+        let created: Option<String> = conn
+            .query_row("SELECT created FROM albums", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(created, None);
+        replace_playlist_tracks(&conn, "p1", &["t1".into()]).unwrap();
+        assert_eq!(playlist_track_ids(&conn, "p1").unwrap(), ["t1"]);
+        drop(conn);
+        // A copy already up to date opens as before, and keeps what it holds.
+        let conn = open_existing(&env).unwrap().unwrap();
+        assert_eq!(playlist_track_ids(&conn, "p1").unwrap(), ["t1"]);
+    }
+
+    #[test]
+    fn an_older_copy_opened_by_several_processes_at_once_is_upgraded_once() {
+        let d = tempfile::tempdir().unwrap();
+        let env = Env::with_home(d.path());
+        create_before_browsing(&db_path(&env)).unwrap();
+        let start = std::sync::Barrier::new(4);
+        std::thread::scope(|s| {
+            let runs: Vec<_> = (0..4)
+                .map(|_| {
+                    s.spawn(|| {
+                        start.wait();
+                        open_existing(&env).map(|c| c.is_some())
+                    })
+                })
+                .collect();
+            for r in runs {
+                assert!(r.join().unwrap().unwrap(), "a lost race must not fail");
+            }
+        });
     }
 
     #[test]
