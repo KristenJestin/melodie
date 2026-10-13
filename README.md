@@ -124,8 +124,17 @@ Screenshots and a recording of the animations, made with invented data, are in
     still goes through it. Covers come from `~/.cache/melodie/covers/` (the 128 px thumbnails
     first); the missing ones are fetched by `melodie cover-fetch`, in the background.
   - At the bottom, what plays: play or pause, next; a click opens the player.
-- **Keys**: Space plays or pauses; Escape closes the queue, the settings or the playlist choice,
-  else goes back.
+- **The search**, first in the sidebar: one field, and as you type the artists, albums, tracks and
+  playlists of the local copy, grouped by kind. The kind whose best result is the most relevant
+  comes first (at equal relevance: artists, albums, tracks, playlists), each with its five best
+  results, ranked as `melodie search` ranks them; "See all" lists every result of that kind. A
+  click on a track plays it, on the rest opens its page; on a row's hover: play, shuffle (not for a
+  single track), play next, add to the queue, open the album (a track), add to a playlist (a track
+  or an album). The local copy is read away from the window's thread, and the answer to an older
+  keystroke is never shown over a newer one; the search never touches the network.
+- **Keys**: Ctrl+F, or / when not typing, opens the search and puts the cursor in its field;
+  Space plays or pauses (in the field, it is a space); Escape closes the queue, the settings or the
+  playlist choice, else empties the search field, else goes back.
 - **Colours**: the button at the top right chooses the theme. "Mélodie", the base theme, takes its
   colours from the cover and follows the desktop's dark or light setting. "Omarchy" is offered
   only on Omarchy (`ID=omarchy` in `/etc/os-release` and a readable
