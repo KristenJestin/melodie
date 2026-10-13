@@ -272,15 +272,16 @@ connection states (see below), with a notification.
   reading the playlist. A track repeated in the request itself is added once.
 - `melodie playlist duplicates [--remove] [--json] <playlistId>`: lists the repeats of a playlist,
   by rank and the rank of the occurrence they repeat. The text output counts ranks from 1; the
-  `--json` `index` and `first` count from 0, like `remove`, and match Subsonic's
-  `songIndexToRemove`. Two kinds, told apart: *exact* (same track id) and *likely* (another id,
+  `--json` `index` and `first` count from 0, like Subsonic's `songIndexToRemove` (unlike `remove`,
+  which takes the rank printed in the text output). Two kinds, told apart: *exact* (same track id) and *likely* (another id,
   same title and artist, ignoring case
   and surrounding spaces; entries without a title are not compared). `--remove` drops the exact
   ones only, keeping the first occurrence and the order of the rest, in one `updatePlaylist`
   whose `songIndexToRemove` are all ranks of the order before the call (Navidrome's reading,
   checked in its source and tested on the fake server). The likely ones are listed and left.
-- `melodie playlist remove <playlistId> <index>`: `songIndexToRemove`. The index starts at 0 (like
-  the API) and is checked against the server's playlist before writing.
+- `melodie playlist remove <playlistId> <rank>`: removes the track at that rank, counted from 1
+  like what `duplicates` prints (rank 0 is refused). It is converted once to Subsonic's 0-based
+  `songIndexToRemove` and checked against the server's playlist before writing.
 - `melodie playlist create <name> [current | track <id> | album <id>]`,
   `playlist rename <id> <name…>`, `playlist delete <id>` (no confirmation).
   `create --prompt [target]` asks for the name on the keyboard (for `xdg-terminal-exec`).

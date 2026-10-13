@@ -640,6 +640,65 @@ fn playlist_edits_work_on_a_copy_made_before_the_library_browsing() {
 }
 
 #[test]
+fn playlist_remove_rank_1_removes_the_first_track() {
+    let sb = Sandbox::new(true);
+    sb.ok(&["sync", "--full"]);
+    seed_playlist(&sb, &["t1", "t2", "t3"]);
+
+    sb.ok(&["playlist", "remove", "p1", "1"]);
+    assert_eq!(query_count(&sb, "updatePlaylist", "songIndexToRemove=0"), 1);
+    assert_eq!(server_playlist(&sb), ["t2", "t3"]);
+}
+
+#[test]
+fn playlist_remove_rank_0_is_refused() {
+    let sb = Sandbox::new(true);
+    sb.ok(&["sync", "--full"]);
+    seed_playlist(&sb, &["t1", "t2", "t3"]);
+
+    let o = sb.run(&["playlist", "remove", "p1", "0"]);
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("counted from 1"), "{err}");
+    assert_eq!(sb.fake.calls_of("updatePlaylist"), 0);
+    assert_eq!(server_playlist(&sb), ["t1", "t2", "t3"]);
+}
+
+#[test]
+fn playlist_remove_rank_past_the_end_is_refused() {
+    let sb = Sandbox::new(true);
+    sb.ok(&["sync", "--full"]);
+    seed_playlist(&sb, &["t1", "t2", "t3"]);
+
+    let o = sb.run(&["playlist", "remove", "p1", "4"]);
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("rank 4") && err.contains("3 tracks"), "{err}");
+    assert_eq!(sb.fake.calls_of("updatePlaylist"), 0);
+    assert_eq!(server_playlist(&sb), ["t1", "t2", "t3"]);
+}
+
+#[test]
+fn playlist_remove_takes_the_rank_printed_by_duplicates() {
+    let sb = Sandbox::new(true);
+    sb.ok(&["sync", "--full"]);
+    seed_playlist(&sb, &["t1", "t2", "t3", "t2"]);
+
+    let out = sb.ok(&["playlist", "duplicates", "p1"]);
+    let rank: String = out
+        .split("rang ")
+        .nth(1)
+        .unwrap()
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    assert_eq!(rank, "4", "{out}");
+
+    sb.ok(&["playlist", "remove", "p1", &rank]);
+    assert_eq!(server_playlist(&sb), ["t1", "t2", "t3"]);
+}
+
+#[test]
 fn playlist_duplicates_from_the_command_line() {
     let sb = Sandbox::new(true);
     sb.ok(&["sync", "--full"]);
@@ -790,7 +849,7 @@ fn favoris_playlists_et_mixes_de_bout_en_bout() {
         );
     }
     assert_eq!(count(), 46);
-    sb.ok(&["playlist", "remove", "p1", "0"]);
+    sb.ok(&["playlist", "remove", "p1", "1"]);
     assert_eq!(query_count(&sb, "updatePlaylist", "songIndexToRemove=0"), 1);
     assert_eq!(count(), 45);
     let o = sb.run(&["playlist", "remove", "p1", "99"]);

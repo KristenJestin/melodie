@@ -282,7 +282,8 @@ pub fn remove(
         .unwrap_or_default();
     let Some(track) = entries.get(index).and_then(TrackInfo::from_api) else {
         return Err(Failure::Internal(anyhow!(
-            "la playlist n'a pas de morceau au rang {index} (elle en compte {}, rangs à partir de 0)",
+            "the playlist has no track at rank {} (it has {} tracks, ranks counted from 1)",
+            index + 1,
             entries.len()
         )));
     };

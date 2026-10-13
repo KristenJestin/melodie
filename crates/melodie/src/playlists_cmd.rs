@@ -241,8 +241,15 @@ pub fn duplicates_cmd(env: &Env, pid: &str, remove: bool, json: bool) -> ExitCod
     }
 }
 
-pub fn remove_cmd(env: &Env, pid: &str, index: usize) -> ExitCode {
+/// `rank` is what a person reads (from 1, like `duplicates`); the 0-based index of Subsonic's
+/// `songIndexToRemove` is computed here, once.
+pub fn remove_cmd(env: &Env, pid: &str, rank: usize) -> ExitCode {
     plain((|| {
+        let Some(index) = rank.checked_sub(1) else {
+            return Err(Failure::Internal(anyhow!(
+                "rank 0 does not exist: ranks are counted from 1"
+            )));
+        };
         let s = session(env)?;
         let r = remove(&s.client, s.conn.as_ref(), pid, index, now_secs());
         state::record(env, &r);
