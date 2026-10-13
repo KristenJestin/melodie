@@ -182,6 +182,12 @@ impl Catalog {
             .collect()
     }
 
+    /// Reads the local copy again after a new one came: the playlists and the current place.
+    pub fn reload(&mut self, cx: &mut Context<Self>) {
+        self.load_playlists(cx);
+        self.refresh(cx);
+    }
+
     /// The user may edit it (other people's playlists are only read).
     pub fn is_own(&self, p: &Playlist) -> bool {
         match (&p.owner, &self.user) {
