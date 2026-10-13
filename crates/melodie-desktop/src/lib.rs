@@ -3,6 +3,7 @@
 
 pub mod account;
 pub mod browse;
+pub mod covers;
 pub mod edit;
 pub mod find;
 pub mod keys;

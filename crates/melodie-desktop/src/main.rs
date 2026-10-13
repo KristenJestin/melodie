@@ -4,6 +4,7 @@
 mod albums;
 mod app;
 mod catalog;
+mod cover_cache;
 mod dialogs;
 mod mini;
 mod motion;

@@ -473,10 +473,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         }
         Cmd::Mixes { json } => Ok(emit_values(&env, mixcmd::mixes(&env), json)),
         Cmd::Home { json } => Ok(emit_values(&env, mixcmd::home(&env), json)),
-        Cmd::CoverFetch => {
-            cover_cmd::fetch_cmd(&env)?;
-            Ok(ExitCode::SUCCESS)
-        }
+        Cmd::CoverFetch => cover_cmd::fetch_cmd(&env),
         Cmd::Daemon => {
             daemon::run(&env)?;
             Ok(ExitCode::SUCCESS)
