@@ -521,17 +521,25 @@ impl Render for Root {
                     .child(v.picked.clone()),
             )
             .when(st > 0.0, |d| {
+                // any button closes it, and none reaches what is behind (a menu, a row)
+                let hide = |shared: &Entity<Shared>| {
+                    let shared = shared.clone();
+                    move |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
+                        shared.update(cx, |s, cx| {
+                            s.settings_open = false;
+                            cx.notify()
+                        })
+                    }
+                };
                 d.child(
                     div()
                         .id("settings-scrim")
                         .absolute()
                         .inset_0()
-                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                            card_scrim.update(cx, |s, cx| {
-                                s.settings_open = false;
-                                cx.notify()
-                            })
-                        })
+                        .occlude()
+                        .on_mouse_down(MouseButton::Left, hide(&card_scrim))
+                        .on_mouse_down(MouseButton::Right, hide(&card_scrim))
+                        .on_mouse_down(MouseButton::Middle, hide(&card_scrim))
                         .child(
                             div()
                                 .absolute()
