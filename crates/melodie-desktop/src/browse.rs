@@ -264,7 +264,7 @@ mod tests {
             ("tables.rs", include_str!("tables.rs")),
             ("pages.rs", include_str!("pages.rs")),
             ("sidebar.rs", include_str!("sidebar.rs")),
-            ("mini.rs", include_str!("mini.rs")),
+            ("playbar.rs", include_str!("playbar.rs")),
             ("search.rs", include_str!("search.rs")),
             ("dialogs.rs", include_str!("dialogs.rs")),
         ];
