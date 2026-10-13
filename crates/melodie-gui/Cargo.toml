@@ -1,6 +1,6 @@
 [package]
 name = "melodie-gui"
-description = "The window of Mélodie: the player and the queue, one more client of the daemon"
+description = "The window of Mélodie: the library, the player and the queue, one more client of the daemon"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
