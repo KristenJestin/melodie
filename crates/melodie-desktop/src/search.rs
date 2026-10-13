@@ -9,7 +9,7 @@ use crate::dialogs::{self, Dialog};
 use crate::motion;
 use crate::player::palette;
 use crate::tables::row_button;
-use crate::widgets::IconButton;
+use crate::widgets::{IconButton, title_with_aside};
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::Icon;
@@ -391,23 +391,14 @@ impl Render for SearchView {
                     v_flex()
                         .size_full()
                         .child(
-                            h_flex()
-                                .px(px(PAD))
-                                .pb_2()
-                                .gap_3()
-                                .items_baseline()
-                                .child(
-                                    div()
-                                        .text_2xl()
-                                        .font_weight(FontWeight::BOLD)
-                                        .text_color(pal.fg)
-                                        .child(kind_title((*kind).into())),
-                                )
-                                .child(div().text_sm().text_color(pal.secondary).child(format!(
-                                    "{} for “{}”",
-                                    hits.len(),
-                                    a.text
-                                ))),
+                            title_with_aside(
+                                kind_title((*kind).into()),
+                                Some(format!("{} for “{}”", hits.len(), a.text).into()),
+                                pal,
+                                window,
+                            )
+                            .px(px(PAD))
+                            .pb_2(),
                         )
                         .child(
                             uniform_list("search-all", hits.len(), move |range, _, _| {

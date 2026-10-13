@@ -11,7 +11,7 @@ use gpui_kit::component::Icon;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use melodie_core::proto::Request;
-use melodie_core::track::clock;
+use melodie_desktop::figures::clock_text;
 use melodie_desktop::model::Row;
 use melodie_desktop::theme::Palette;
 use std::path::PathBuf;
@@ -290,7 +290,7 @@ impl Render for QueueList {
                             div()
                                 .text_xs()
                                 .text_color(pal.secondary)
-                                .child(clock(t.duration)),
+                                .child(clock_text(t.duration)),
                         )
                         .child(
                             div()

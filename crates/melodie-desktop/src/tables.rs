@@ -8,14 +8,15 @@ use crate::catalog::Catalog;
 use crate::dialogs::{self, Dialog};
 use crate::player::palette;
 use crate::tips::Tipped as _;
+use crate::widgets::title_with_aside;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::Icon;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use melodie_core::library::{Artist, ArtistBy, Sort, Track, TrackBy};
-use melodie_core::track::clock;
 use melodie_desktop::browse::Place;
+use melodie_desktop::figures::{Figures as _, clock_text};
 use melodie_desktop::launch::{Adding, Job, Kind};
 use melodie_desktop::selection::{How, Selection};
 use melodie_desktop::theme::Palette;
@@ -359,6 +360,7 @@ pub fn track_row(
                 .when(cols.number, |d| {
                     d.child(
                         cell(Some(28.), 0.)
+                            .tabular()
                             .text_xs()
                             .text_color(pal.secondary)
                             .child((ix + 1).to_string()),
@@ -402,6 +404,7 @@ pub fn track_row(
                 .when(cols.plays, |d| {
                     d.child(
                         cell(Some(48.), 0.)
+                            .tabular()
                             .text_color(pal.secondary)
                             .child(t.plays.to_string()),
                     )
@@ -409,7 +412,7 @@ pub fn track_row(
                 .child(
                     cell(Some(48.), 0.)
                         .text_color(pal.secondary)
-                        .child(clock(t.duration as f64)),
+                        .child(clock_text(t.duration as f64)),
                 )
                 .child(
                     h_flex()
@@ -534,28 +537,11 @@ impl TrackList {
     }
 }
 
-fn title(text: &'static str, count: Option<usize>, pal: Palette) -> Div {
-    h_flex()
+fn title(text: &'static str, count: Option<usize>, pal: Palette, window: &Window) -> Div {
+    title_with_aside(text, count.map(|n| n.to_string().into()), pal, window)
         .px(px(PAD))
         .pt_5()
         .pb_3()
-        .gap_3()
-        .items_baseline()
-        .child(
-            div()
-                .text_2xl()
-                .font_weight(FontWeight::BOLD)
-                .text_color(pal.fg)
-                .child(text),
-        )
-        .when_some(count, |d, n| {
-            d.child(
-                div()
-                    .text_sm()
-                    .text_color(pal.secondary)
-                    .child(n.to_string()),
-            )
-        })
 }
 
 impl Render for TrackList {
@@ -605,7 +591,12 @@ impl Render for TrackList {
         };
         v_flex()
             .size_full()
-            .child(title("Tracks", tracks.as_ref().map(|t| t.len()), pal))
+            .child(title(
+                "Tracks",
+                tracks.as_ref().map(|t| t.len()),
+                pal,
+                window,
+            ))
             .child(header)
             .child(body)
     }
@@ -758,7 +749,12 @@ impl Render for ArtistList {
         };
         v_flex()
             .size_full()
-            .child(title("Artists", artists.as_ref().map(|a| a.len()), pal))
+            .child(title(
+                "Artists",
+                artists.as_ref().map(|a| a.len()),
+                pal,
+                window,
+            ))
             .child(artist_header(sort, pal, self.catalog.clone()))
             .child(body)
     }

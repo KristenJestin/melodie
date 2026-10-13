@@ -393,7 +393,10 @@ shipped, public themes.)
    `with_animation` keyed by a generation counter. Nothing calls `request_animation_frame` unless
    something is moving. Check how reduced motion
    is honoured before writing any hand-made frame request.
-5. **Position bar and clocks tick**, they are not animated: four updates a second.
+5. **Position bar and clocks tick**, they are not animated: four updates a second. Every time and
+   count that changes in place is drawn in tabular digits (`figures::clock_text`, `count_text`,
+   `.tabular()`: the `tnum` feature, which GPUI exposes as `font_features` and the window's font,
+   Adwaita Sans, has), so a digit changing moves nothing.
 6. **Lists.** Long lists are `uniform_list` or the `DataTable` (fixed row height), each in a view of
    its own, with no animation requested inside a row. Covers are requested at the displayed size.
 7. **Theme.** A `Palette` value (background, surface, text, secondary text, accent, dark/light) is

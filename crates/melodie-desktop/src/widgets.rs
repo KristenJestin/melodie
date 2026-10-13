@@ -4,9 +4,11 @@
 use crate::motion;
 use crate::tips::{self, Tip};
 use gpui_kit::assets::IconName;
+use gpui_kit::base::h_flex;
 use gpui_kit::component::Icon;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use melodie_desktop::figures::{self, Line};
 use melodie_desktop::theme::{Palette, mix};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -115,6 +117,62 @@ pub fn follow_pointer_tip(
             cx.notify()
         })
     })
+}
+
+/// A page's title (2xl, bold) and, beside it, a count or a few words (sm) on the title's
+/// baseline. GPUI does not tell the flex layout where a text's baseline is, so `items_baseline`
+/// would bottom-align the two: the smaller text is raised by the difference instead, worked out
+/// from the font actually drawn.
+pub fn title_with_aside(
+    title: &'static str,
+    aside: Option<SharedString>,
+    pal: Palette,
+    window: &Window,
+) -> Div {
+    let style = window.text_style();
+    let rem = window.rem_size();
+    // the line box follows the font size (GPUI's default is the golden ratio, rounded)
+    let line = |em: f32| {
+        let size = em * rem.as_f32();
+        Line {
+            size,
+            height: style
+                .line_height
+                .to_pixels(px(size).into(), rem)
+                .round()
+                .as_f32(),
+        }
+    };
+    let text = window.text_system();
+    let font = text.resolve_font(&style.font());
+    // GPUI gives the descent below the baseline as a negative number
+    let em = |f: fn(&WindowTextSystem, FontId, Pixels) -> Pixels| {
+        f(text, font, px(1000.0)).as_f32().abs() / 1000.0
+    };
+    let lift = figures::baseline_lift(
+        line(1.5),
+        line(0.875),
+        em(|t, f, s| t.ascent(f, s)),
+        em(|t, f, s| t.descent(f, s)),
+    );
+    h_flex()
+        .gap_3()
+        .items_end()
+        .child(
+            div()
+                .text_2xl()
+                .font_weight(FontWeight::BOLD)
+                .text_color(pal.fg)
+                .child(title),
+        )
+        .when_some(aside, |d, text| {
+            d.child(
+                figures::count_text(text)
+                    .text_sm()
+                    .text_color(pal.secondary)
+                    .mb(px(lift)),
+            )
+        })
 }
 
 impl IconButton {
