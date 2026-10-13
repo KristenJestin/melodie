@@ -202,6 +202,16 @@ pub fn normalize_url(url: &str) -> String {
     url.trim().trim_end_matches('/').to_string()
 }
 
+/// A server address as typed, ready to keep: trimmed, without its final slashes, and only when it
+/// starts with `http://` or `https://` and names a host.
+pub fn server_address(typed: &str) -> Option<String> {
+    let url = normalize_url(typed);
+    let host = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))?;
+    (!host.is_empty()).then_some(url)
+}
+
 impl Client {
     pub fn new(url: &str, creds: Creds) -> Self {
         let agent = ureq::AgentBuilder::new()
@@ -360,6 +370,27 @@ pub fn classify_failure(method: &str, code: i64, msg: &str) -> ApiError {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_server_address_needs_http_or_https_and_a_host() {
+        assert_eq!(
+            server_address("  https://music.example.org/ ").as_deref(),
+            Some("https://music.example.org")
+        );
+        assert_eq!(
+            server_address("http://10.0.0.2:4533").as_deref(),
+            Some("http://10.0.0.2:4533")
+        );
+        for bad in [
+            "",
+            "music.example.org",
+            "ftp://music.example.org",
+            "https://",
+            "http:///",
+        ] {
+            assert_eq!(server_address(bad), None, "{bad}");
+        }
+    }
 
     #[test]
     fn jeton_connu() {
