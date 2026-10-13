@@ -170,6 +170,12 @@ impl Catalog {
             .collect()
     }
 
+    /// Reads the local copy again after a new one came: the playlists and the current place.
+    pub fn reload(&mut self, cx: &mut Context<Self>) {
+        self.load_playlists(cx);
+        self.refresh(cx);
+    }
+
     /// Reads again what the current place shows; until it comes, the place shows what it had.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         match self.here().clone() {

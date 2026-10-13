@@ -111,7 +111,7 @@ impl Shared {
         }
         match self.player.connection {
             Connection::AuthRefused => {
-                return Some("Navidrome refused the login: run melodie login".into());
+                return Some("Navidrome refused the login: sign in again".into());
             }
             Connection::Unreachable => return Some("Navidrome is unreachable".into()),
             Connection::Ok => {}
@@ -201,7 +201,7 @@ impl Shared {
 
     /// Says something at the bottom of the window for a few seconds (a failure, or what an
     /// action did).
-    fn fail(&mut self, msg: String, cx: &mut Context<Self>) {
+    pub fn fail(&mut self, msg: String, cx: &mut Context<Self>) {
         self.failures += 1;
         let n = self.failures;
         self.failure = Some((n, msg.into()));

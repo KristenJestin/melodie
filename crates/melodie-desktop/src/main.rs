@@ -11,6 +11,7 @@ mod player;
 mod queue;
 mod search;
 mod sidebar;
+mod signin;
 #[cfg(feature = "frame-stats")]
 mod stats;
 mod tables;
@@ -25,6 +26,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use melodie_core::env::Env;
 use melodie_core::proto::{self, Request};
+use melodie_desktop::account::{self, Screen};
 use melodie_desktop::browse::Place;
 use melodie_desktop::keys::{self, Act, Key, Situation};
 use melodie_desktop::theme::{self, Active, Choice, Palette};
@@ -34,6 +36,7 @@ use player::{PlayerView, palette};
 use queue::QueuePanel;
 use search::SearchView;
 use sidebar::Sidebar;
+use signin::{Account, SignInView};
 use std::process::ExitCode;
 use tables::{ArtistList, TrackList};
 
@@ -44,22 +47,28 @@ gpui_kit::assets::icon_assets!(
         ArrowUp,
         AudioLines,
         ChevronLeft,
+        CircleUser,
         Disc3,
         GripVertical,
         Heart,
         House,
+        KeyRound,
         ListEnd,
         ListMusic,
         ListPlus,
         ListStart,
         ListX,
+        LogIn,
+        LogOut,
         MicVocal,
         Music,
         Palette,
         Pause,
         Play,
+        RefreshCw,
         RotateCcw,
         Search,
+        Server,
         Shuffle,
         SkipBack,
         SkipForward,
@@ -84,11 +93,13 @@ struct Views {
     page: Entity<PageView>,
     search: Entity<SearchView>,
     mini: Entity<MiniPlayer>,
+    sign_in: Entity<SignInView>,
 }
 
 struct Root {
     shared: Entity<Shared>,
     catalog: Entity<Catalog>,
+    account: Entity<Account>,
     views: Views,
     focus: FocusHandle,
     /// The last notice, kept while it fades out.
@@ -100,6 +111,7 @@ impl Root {
     fn new(
         shared: Entity<Shared>,
         catalog: Entity<Catalog>,
+        account: Entity<Account>,
         views: Views,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -124,6 +136,7 @@ impl Root {
                     window.focus(&this.focus, cx);
                 }
             }),
+            sign_in_follow(&account, &catalog, window, cx),
             cx.observe(&shared, move |this, shared, cx| {
                 let open = shared.read(cx).queue_open;
                 if open && !was_open {
@@ -135,6 +148,7 @@ impl Root {
         Self {
             shared,
             catalog,
+            account,
             views,
             focus,
             notice: SharedString::default(),
@@ -143,6 +157,10 @@ impl Root {
     }
 
     fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // the sign-in screen covers everything: its fields take every key
+        if self.account.read(cx).screen(cx) == Screen::SignIn {
+            return;
+        }
         let k = &ev.keystroke;
         let key = Key::read(k.modifiers.control, &k.key, k.key_char.as_deref());
         let situation = {
@@ -191,7 +209,12 @@ impl Root {
 }
 
 /// The theme choice: the base theme always, Omarchy only when Omarchy is there.
-fn settings_card(shared: &Entity<Shared>, pal: Palette, cx: &App) -> impl IntoElement {
+fn settings_card(
+    shared: &Entity<Shared>,
+    account: &Entity<Account>,
+    pal: Palette,
+    cx: &App,
+) -> impl IntoElement {
     let s = shared.read(cx);
     let offered = s.theme.detected && s.theme.palette.is_some();
     let gone = s.theme.active() == Active::BaseOmarchyGone;
@@ -269,6 +292,38 @@ fn settings_card(shared: &Entity<Shared>, pal: Palette, cx: &App) -> impl IntoEl
                         .child(div().text_xs().text_color(pal.secondary).child(about)),
                 )
         }))
+        .child(signin::settings_section(account, pal, cx))
+}
+
+/// The library follows the account: its user, and each new copy. The focus comes back to the
+/// root when the sign-in screen goes, or Space and / would stay with a field no longer drawn.
+fn sign_in_follow(
+    account: &Entity<Account>,
+    catalog: &Entity<Catalog>,
+    window: &mut Window,
+    cx: &mut Context<Root>,
+) -> Subscription {
+    let mut seen = (0, false);
+    let catalog = catalog.clone();
+    cx.observe_in(account, window, move |this, account, window, cx| {
+        let (step, user, signing) = {
+            let a = account.read(cx);
+            (a.copy_step, a.user.clone(), a.screen(cx) == Screen::SignIn)
+        };
+        catalog.update(cx, |c, cx| {
+            if c.user != user {
+                c.user = user;
+                cx.notify();
+            }
+            if step != seen.0 {
+                c.reload(cx);
+            }
+        });
+        if seen.1 && !signing && this.views.sign_in.read(cx).has_focus(window, cx) {
+            window.focus(&this.focus, cx);
+        }
+        seen = (step, signing);
+    })
 }
 
 impl Render for Root {
@@ -277,6 +332,11 @@ impl Render for Root {
             let s = self.shared.read(cx);
             (s.queue_open, s.settings_open, s.notice())
         };
+        let (signing, notice) = {
+            let a = self.account.read(cx);
+            let own = account::notice(a.standing).map(SharedString::from);
+            (a.screen(cx) == Screen::SignIn, notice.or(own))
+        };
         if let Some(n) = &notice {
             self.notice = n.clone();
         }
@@ -284,6 +344,7 @@ impl Render for Root {
         let q = motion::flag("queue-open", open, motion::PANEL, window, cx);
         let st = motion::flag("settings-open", settings, motion::PANEL, window, cx);
         let nt = motion::flag("notice", notice.is_some(), motion::ENTER, window, cx);
+        let si = motion::flag("sign-in", signing, motion::ENTER, window, cx);
         let width = window.viewport_size().width.as_f32();
         let panel = QUEUE_WIDTH.min(width);
         let (here, step) = {
@@ -354,7 +415,7 @@ impl Render for Root {
                                 .bottom(px(60. - 8. * (1. - st)))
                                 .left_2()
                                 .opacity(st)
-                                .child(settings_card(&self.shared, pal, cx)),
+                                .child(settings_card(&self.shared, &self.account, pal, cx)),
                         ),
                 )
             })
@@ -411,6 +472,24 @@ impl Render for Root {
                         ),
                 )
             })
+            // over everything, the notices included; clicks stay on it
+            .when(si > 0.0, |d| {
+                d.child(
+                    div()
+                        .id("sign-in-screen")
+                        .absolute()
+                        .inset_0()
+                        .occlude()
+                        .bg(Hsla { a: si, ..pal.bg })
+                        .child(
+                            div()
+                                .size_full()
+                                .opacity(si)
+                                .mt(px((1.0 - si) * 14.0))
+                                .child(self.views.sign_in.clone()),
+                        ),
+                )
+            })
     }
 }
 
@@ -454,6 +533,7 @@ fn main() -> ExitCode {
         let opened = gpui_kit::open_window(options, cx, move |window, cx| {
             let (shared, clock) = app::start(env.clone(), socket.clone(), window, cx);
             let catalog = cx.new(|cx| Catalog::new(env.clone(), shared.clone(), cx));
+            let account = cx.new(|cx| Account::new(env.clone(), shared.clone(), cx));
             let (s, c) = (&shared, &catalog);
             let views = Views {
                 player: cx.new(|cx| PlayerView::new(s.clone(), clock, window, cx)),
@@ -466,8 +546,9 @@ fn main() -> ExitCode {
                 page: cx.new(|_| PageView::new(s.clone(), c.clone())),
                 search: cx.new(|cx| SearchView::new(s.clone(), c.clone(), env.clone(), window, cx)),
                 mini: cx.new(|_| MiniPlayer::new(s.clone(), c.clone())),
+                sign_in: cx.new(|cx| SignInView::new(s.clone(), account.clone(), window, cx)),
             };
-            cx.new(|cx| Root::new(shared, catalog, views, window, cx))
+            cx.new(|cx| Root::new(shared, catalog, account, views, window, cx))
         });
         if let Err(e) = opened {
             eprintln!("melodie-desktop: no window: {e:#}");
