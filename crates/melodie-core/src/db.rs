@@ -2,7 +2,7 @@
 
 use crate::env::Env;
 use anyhow::{Context, Result};
-use rusqlite::{Connection, Transaction, params};
+use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 use serde_json::Value;
 use std::path::PathBuf;
 
@@ -27,7 +27,7 @@ CREATE TABLE albums (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, artist TEXT NOT NULL DEFAULT '', artistId TEXT,
   year INTEGER NOT NULL DEFAULT 0, genre TEXT, songCount INTEGER NOT NULL DEFAULT 0,
   duration INTEGER NOT NULL DEFAULT 0, playCount INTEGER NOT NULL DEFAULT 0, played TEXT,
-  starred TEXT, userRating INTEGER NOT NULL DEFAULT 0, coverArt TEXT
+  starred TEXT, userRating INTEGER NOT NULL DEFAULT 0, coverArt TEXT, created TEXT
 );
 CREATE TABLE tracks (
   id TEXT PRIMARY KEY, title TEXT NOT NULL, artist TEXT NOT NULL DEFAULT '', artistId TEXT,
@@ -46,6 +46,9 @@ CREATE TABLE playlists (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, songCount INTEGER NOT NULL DEFAULT 0,
   duration INTEGER NOT NULL DEFAULT 0, changed TEXT, coverArt TEXT, owner TEXT
 );
+CREATE TABLE playlist_tracks (playlist TEXT NOT NULL, pos INTEGER NOT NULL, track TEXT NOT NULL);
+CREATE INDEX playlist_tracks_playlist ON playlist_tracks(playlist);
+CREATE TABLE playlist_synced (playlist TEXT PRIMARY KEY, changed TEXT);
 CREATE VIRTUAL TABLE fts_playlists USING fts5(id UNINDEXED, name, tokenize='unicode61 remove_diacritics 2');
 CREATE VIRTUAL TABLE fts_artists USING fts5(id UNINDEXED, name, tokenize='unicode61 remove_diacritics 2');
 CREATE VIRTUAL TABLE fts_albums USING fts5(id UNINDEXED, name, artist, tokenize='unicode61 remove_diacritics 2');
@@ -61,6 +64,16 @@ pub fn create(path: &std::path::Path) -> Result<Connection> {
     let conn = Connection::open(path).with_context(|| format!("création de {}", path.display()))?;
     conn.execute_batch("PRAGMA journal_mode = OFF; PRAGMA synchronous = OFF;")?;
     conn.execute_batch(SCHEMA)?;
+    Ok(conn)
+}
+
+/// A copy as the versions before the library browsing made it: no `albums.created`, no
+/// `playlist_tracks`. For tests of the upgrade, which must start from a schema that truly lacks
+/// them.
+#[cfg(any(test, feature = "fake"))]
+pub fn create_before_browsing(path: &std::path::Path) -> Result<Connection> {
+    let conn = create(path)?;
+    conn.execute_batch("DROP TABLE playlist_tracks; DROP TABLE playlist_synced; ALTER TABLE albums DROP COLUMN created;")?;
     Ok(conn)
 }
 
@@ -106,13 +119,67 @@ pub fn carry_skips(old: &std::path::Path, new: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-/// Ouvre la copie existante ; `None` si elle n'existe pas.
+/// What `upgrade` has to add: `(the created column, the playlist_tracks table, the
+/// playlist_synced table)`. A copy without an `albums` table is no older copy: there is nothing
+/// to add a column to.
+fn upgrade_pending(conn: &Connection) -> Result<(bool, bool, bool)> {
+    let (columns, has_created): (i64, i64) = conn.query_row(
+        "SELECT count(*), coalesce(sum(name = 'created'), 0) FROM pragma_table_info('albums')",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let has_table = |name: &str| -> Result<bool> {
+        Ok(conn
+            .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1")?
+            .exists([name])?)
+    };
+    Ok((
+        columns > 0 && has_created == 0,
+        !has_table("playlist_tracks")?,
+        !has_table("playlist_synced")?,
+    ))
+}
+
+/// Brings a copy made by an older version up to the schema: what was added since is created
+/// empty, and filled by the next synchronisation (the date an album was added, by the next full
+/// one).
+///
+/// Every process that opens the copy runs it (the daemon, the command line, the window), so it
+/// is idempotent and safe in parallel: the work is checked again under the write lock, and a
+/// process that waited for the lock finds it done.
+pub fn upgrade(conn: &Connection) -> Result<()> {
+    if upgrade_pending(conn)? == (false, false, false) {
+        return Ok(());
+    }
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let (created, playlist_tracks, playlist_synced) = upgrade_pending(&tx)?;
+    if created {
+        tx.execute_batch("ALTER TABLE albums ADD COLUMN created TEXT")?;
+    }
+    if playlist_tracks {
+        tx.execute_batch(
+            "CREATE TABLE playlist_tracks (playlist TEXT NOT NULL, pos INTEGER NOT NULL, track TEXT NOT NULL);
+             CREATE INDEX playlist_tracks_playlist ON playlist_tracks(playlist);",
+        )?;
+    }
+    if playlist_synced {
+        tx.execute_batch(
+            "CREATE TABLE playlist_synced (playlist TEXT PRIMARY KEY, changed TEXT);",
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// Ouvre la copie existante, mise à niveau si elle date d'avant ; `None` si elle n'existe pas.
 pub fn open_existing(env: &Env) -> Result<Option<Connection>> {
     let p = db_path(env);
     if !p.is_file() {
         return Ok(None);
     }
     let conn = Connection::open(&p).with_context(|| format!("ouverture de {}", p.display()))?;
+    conn.busy_timeout(std::time::Duration::from_secs(2))?;
+    upgrade(&conn)?;
     Ok(Some(conn))
 }
 
@@ -201,8 +268,8 @@ pub fn insert_album(tx: &Transaction, v: &Value) -> Result<bool> {
     let artist = text(v, "artist").unwrap_or_default();
     let n = tx.execute(
         "INSERT OR IGNORE INTO albums(id, name, artist, artistId, year, genre, songCount, duration,
-           playCount, played, starred, userRating, coverArt)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+           playCount, played, starred, userRating, coverArt, created)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         params![
             id,
             name,
@@ -216,7 +283,8 @@ pub fn insert_album(tx: &Transaction, v: &Value) -> Result<bool> {
             text(v, "played"),
             text(v, "starred"),
             num(v, "userRating"),
-            cover(v)
+            cover(v),
+            text(v, "created")
         ],
     )?;
     if n == 1 {
@@ -465,45 +533,114 @@ pub fn playlist_insert(conn: &Connection, v: &Value) -> Result<bool> {
     let (Some(pid), Some(name)) = (id(v), text(v, "name")) else {
         return Ok(false);
     };
-    conn.execute("DELETE FROM playlists WHERE id = ?1", [&pid])?;
-    conn.execute("DELETE FROM fts_playlists WHERE id = ?1", [&pid])?;
-    conn.execute(
-        "INSERT INTO playlists(id, name, songCount, duration, changed, coverArt, owner)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![
-            pid,
-            name,
-            num(v, "songCount"),
-            num(v, "duration"),
-            text(v, "changed"),
-            cover(v),
-            text(v, "owner")
-        ],
-    )?;
-    conn.execute(
-        "INSERT INTO fts_playlists(id, name) VALUES (?1, ?2)",
-        params![pid, name],
-    )?;
-    Ok(true)
+    atomically(conn, || {
+        conn.execute("DELETE FROM playlists WHERE id = ?1", [&pid])?;
+        conn.execute("DELETE FROM fts_playlists WHERE id = ?1", [&pid])?;
+        conn.execute(
+            "INSERT INTO playlists(id, name, songCount, duration, changed, coverArt, owner)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                pid,
+                name,
+                num(v, "songCount"),
+                num(v, "duration"),
+                text(v, "changed"),
+                cover(v),
+                text(v, "owner")
+            ],
+        )?;
+        conn.execute(
+            "INSERT INTO fts_playlists(id, name) VALUES (?1, ?2)",
+            params![pid, name],
+        )?;
+        Ok(true)
+    })
 }
 
 pub fn playlist_rename(conn: &Connection, id: &str, name: &str, at: &str) -> Result<()> {
+    atomically(conn, || {
+        conn.execute(
+            "UPDATE playlists SET name = ?2, changed = ?3 WHERE id = ?1",
+            params![id, name, at],
+        )?;
+        conn.execute("DELETE FROM fts_playlists WHERE id = ?1", [id])?;
+        conn.execute(
+            "INSERT INTO fts_playlists(id, name) VALUES (?1, ?2)",
+            params![id, name],
+        )?;
+        Ok(())
+    })
+}
+
+/// The ids of the tracks of a playlist (`entry` objects of `getPlaylist`), in order.
+pub fn entry_ids(entries: &[Value]) -> Vec<String> {
+    entries.iter().filter_map(id).collect()
+}
+
+/// Runs `f` as one unit: its writes all land or none does, so a reader never sees half of them.
+/// A savepoint, so it also works inside a transaction.
+pub fn atomically<T>(conn: &Connection, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    conn.execute_batch("SAVEPOINT atomically")?;
+    match f() {
+        Ok(v) => {
+            conn.execute_batch("RELEASE atomically")?;
+            Ok(v)
+        }
+        Err(e) => {
+            // Rolled back, then released: a savepoint left open would hold the write lock.
+            let _ = conn.execute_batch("ROLLBACK TO atomically; RELEASE atomically");
+            Err(e)
+        }
+    }
+}
+
+/// The tracks of a playlist, in its order.
+pub fn replace_playlist_tracks(conn: &Connection, pid: &str, tracks: &[String]) -> Result<()> {
+    atomically(conn, || {
+        conn.execute("DELETE FROM playlist_tracks WHERE playlist = ?1", [pid])?;
+        let mut ins =
+            conn.prepare("INSERT INTO playlist_tracks(playlist, pos, track) VALUES (?1, ?2, ?3)")?;
+        for (pos, tid) in tracks.iter().enumerate() {
+            ins.execute(params![pid, pos as i64, tid])?;
+        }
+        Ok(())
+    })
+}
+
+/// Notes that the copy holds the tracks of a playlist as the server had them at `changed`: an
+/// empty playlist has no row in `playlist_tracks`, and would be read again at every sync.
+pub fn mark_playlist_synced(conn: &Connection, pid: &str, changed: Option<&str>) -> Result<()> {
     conn.execute(
-        "UPDATE playlists SET name = ?2, changed = ?3 WHERE id = ?1",
-        params![id, name, at],
-    )?;
-    conn.execute("DELETE FROM fts_playlists WHERE id = ?1", [id])?;
-    conn.execute(
-        "INSERT INTO fts_playlists(id, name) VALUES (?1, ?2)",
-        params![id, name],
+        "INSERT INTO playlist_synced(playlist, changed) VALUES (?1, ?2)
+         ON CONFLICT(playlist) DO UPDATE SET changed = ?2",
+        params![pid, changed],
     )?;
     Ok(())
 }
 
+/// Whether the copy holds the tracks of the playlist (see `mark_playlist_synced`).
+pub fn playlist_is_synced(conn: &Connection, pid: &str) -> Result<bool> {
+    Ok(conn
+        .prepare("SELECT 1 FROM playlist_synced WHERE playlist = ?1")?
+        .exists([pid])?)
+}
+
+/// The track ids of a playlist the copy holds, in order (empty when it holds none).
+pub fn playlist_track_ids(conn: &Connection, pid: &str) -> Result<Vec<String>> {
+    let mut st =
+        conn.prepare("SELECT track FROM playlist_tracks WHERE playlist = ?1 ORDER BY pos")?;
+    let rows = st.query_map([pid], |r| r.get(0))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 pub fn playlist_delete(conn: &Connection, id: &str) -> Result<()> {
-    conn.execute("DELETE FROM playlists WHERE id = ?1", [id])?;
-    conn.execute("DELETE FROM fts_playlists WHERE id = ?1", [id])?;
-    Ok(())
+    atomically(conn, || {
+        conn.execute("DELETE FROM playlist_tracks WHERE playlist = ?1", [id])?;
+        conn.execute("DELETE FROM playlist_synced WHERE playlist = ?1", [id])?;
+        conn.execute("DELETE FROM playlists WHERE id = ?1", [id])?;
+        conn.execute("DELETE FROM fts_playlists WHERE id = ?1", [id])?;
+        Ok(())
+    })
 }
 
 /// Effectifs de la copie.
@@ -566,5 +703,132 @@ mod tests {
         // Ancienne copie sans table : rien à reporter, sans erreur.
         carry_skips(&old, &fresh).unwrap();
         carry_skips(&d.path().join("absente.db"), &fresh).unwrap();
+    }
+
+    #[test]
+    fn an_album_keeps_the_date_it_was_added() {
+        let d = tempfile::tempdir().unwrap();
+        let mut conn = create(&d.path().join("l.db")).unwrap();
+        let tx = conn.transaction().unwrap();
+        insert_album(
+            &tx,
+            &serde_json::json!({"id":"al1","name":"A","created":"2026-09-01T10:00:00Z"}),
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        let created: Option<String> = conn
+            .query_row("SELECT created FROM albums WHERE id = 'al1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(created.as_deref(), Some("2026-09-01T10:00:00Z"));
+    }
+
+    #[test]
+    fn an_older_copy_gets_the_added_date_and_the_playlist_tracks() {
+        let d = tempfile::tempdir().unwrap();
+        let conn = Connection::open(d.path().join("old.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE albums (id TEXT PRIMARY KEY, name TEXT NOT NULL);
+             INSERT INTO albums(id, name) VALUES ('al1', 'A');",
+        )
+        .unwrap();
+        upgrade(&conn).unwrap();
+        upgrade(&conn).unwrap(); // twice is harmless
+        let created: Option<String> = conn
+            .query_row("SELECT created FROM albums", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(created, None);
+        let n: i64 = conn
+            .query_row("SELECT count(*) FROM playlist_tracks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn an_older_copy_is_upgraded_when_opened() {
+        let d = tempfile::tempdir().unwrap();
+        let env = Env::with_home(d.path());
+        let old = create_before_browsing(&db_path(&env)).unwrap();
+        old.execute_batch("INSERT INTO albums(id, name) VALUES ('al1', 'A');")
+            .unwrap();
+        drop(old);
+
+        let conn = open_existing(&env).unwrap().unwrap();
+        let created: Option<String> = conn
+            .query_row("SELECT created FROM albums", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(created, None);
+        replace_playlist_tracks(&conn, "p1", &["t1".into()]).unwrap();
+        assert_eq!(playlist_track_ids(&conn, "p1").unwrap(), ["t1"]);
+        drop(conn);
+        // A copy already up to date opens as before, and keeps what it holds.
+        let conn = open_existing(&env).unwrap().unwrap();
+        assert_eq!(playlist_track_ids(&conn, "p1").unwrap(), ["t1"]);
+    }
+
+    #[test]
+    fn an_older_copy_opened_by_several_processes_at_once_is_upgraded_once() {
+        let d = tempfile::tempdir().unwrap();
+        let env = Env::with_home(d.path());
+        create_before_browsing(&db_path(&env)).unwrap();
+        let start = std::sync::Barrier::new(4);
+        std::thread::scope(|s| {
+            let runs: Vec<_> = (0..4)
+                .map(|_| {
+                    s.spawn(|| {
+                        start.wait();
+                        open_existing(&env).map(|c| c.is_some())
+                    })
+                })
+                .collect();
+            for r in runs {
+                assert!(r.join().unwrap().unwrap(), "a lost race must not fail");
+            }
+        });
+    }
+
+    #[test]
+    fn a_failed_replacement_leaves_the_playlist_as_it_was() {
+        let d = tempfile::tempdir().unwrap();
+        // Not `create`: it switches the journal off to build a copy fast, and nothing rolls back.
+        let conn = Connection::open(d.path().join("l.db")).unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        replace_playlist_tracks(&conn, "p1", &["t1".into(), "t2".into()]).unwrap();
+        // The third track cannot be written: nobody may see the list half replaced.
+        conn.execute_batch(
+            "CREATE TRIGGER refuse BEFORE INSERT ON playlist_tracks WHEN NEW.track = 'boom'
+             BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+        )
+        .unwrap();
+        let tracks = ["t3".into(), "boom".into(), "t4".into()];
+        assert!(replace_playlist_tracks(&conn, "p1", &tracks).is_err());
+        assert_eq!(playlist_track_ids(&conn, "p1").unwrap(), ["t1", "t2"]);
+    }
+
+    #[test]
+    fn the_tracks_of_a_playlist_are_replaced_in_order() {
+        let d = tempfile::tempdir().unwrap();
+        let conn = create(&d.path().join("l.db")).unwrap();
+        let e = |id: &str| serde_json::json!({"id": id});
+        let ids = |v: &[Value]| entry_ids(v);
+        replace_playlist_tracks(&conn, "p1", &ids(&[e("t2"), e("t1"), e("t2")])).unwrap();
+        replace_playlist_tracks(&conn, "p2", &ids(&[e("t9")])).unwrap();
+        replace_playlist_tracks(
+            &conn,
+            "p1",
+            &ids(&[e("t3"), e("t1"), serde_json::json!({})]),
+        )
+        .unwrap();
+        let rows: Vec<(String, i64, String)> = conn
+            .prepare("SELECT playlist, pos, track FROM playlist_tracks ORDER BY playlist, pos")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        let want = [("p1", 0, "t3"), ("p1", 1, "t1"), ("p2", 0, "t9")]
+            .map(|(p, i, t)| (p.to_string(), i, t.to_string()));
+        assert_eq!(rows, want);
     }
 }

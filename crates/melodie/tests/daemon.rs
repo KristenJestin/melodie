@@ -615,6 +615,31 @@ fn server_playlist(sb: &Sandbox) -> Vec<String> {
 }
 
 #[test]
+fn playlist_edits_work_on_a_copy_made_before_the_library_browsing() {
+    let sb = Sandbox::new(true);
+    sb.ok(&["sync", "--full"]);
+    seed_playlist(&sb, &["t1"]);
+    // The copy of an older version: no `playlist_tracks`, no `albums.created`.
+    let c = rusqlite::Connection::open(sb.db()).unwrap();
+    c.execute_batch(
+        "DROP TABLE playlist_tracks; DROP TABLE playlist_synced; ALTER TABLE albums DROP COLUMN created;",
+    )
+    .unwrap();
+    drop(c);
+
+    // The server applies the edit; the command must not fail afterwards on the local copy.
+    sb.ok(&["playlist", "add", "p1", "track", "t2"]);
+    assert_eq!(server_playlist(&sb), ["t1", "t2"]);
+    sb.ok(&["playlist", "create", "Ma liste", "track", "t1"]);
+    sb.ok(&["playlist", "rename", "p9", "Autre", "nom"]);
+    sb.ok(&["playlist", "delete", "p9"]);
+    assert_eq!(
+        db_value::<i64>(&sb, "SELECT count(*) FROM playlists WHERE id = 'p9'"),
+        0
+    );
+}
+
+#[test]
 fn playlist_remove_rank_1_removes_the_first_track() {
     let sb = Sandbox::new(true);
     sb.ok(&["sync", "--full"]);
@@ -1925,6 +1950,17 @@ const MALFORMED: [&str; 9] = [
     "https://example.org/album/al1",
 ];
 
+/// Waits for the copy the daemon's first background synchronisation makes: it reads the
+/// playlists (`getPlaylist`), which `lookups` would otherwise count against `open`.
+fn wait_for_the_first_copy(sb: &Sandbox) {
+    let db = sb.home().join(".cache/melodie/library.db");
+    let end = Instant::now() + Duration::from_secs(20);
+    while !db.exists() {
+        assert!(Instant::now() < end, "no local copy was made");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// Requests that look something up or check the connection; the player's own reports to the
 /// server (now playing, scrobble, cover) come on their own time and are not counted.
 fn lookups(sb: &Sandbox) -> usize {
@@ -2022,6 +2058,7 @@ fn open_refuses_a_malformed_address_and_changes_nothing() {
     assert!(sb.calls().is_empty(), "{:?}", sb.calls());
     // With a daemon: the queue and the playing track stay as they are.
     sb.ok(&["open", "melodie:album/al1"]);
+    wait_for_the_first_copy(&sb);
     let calls = lookups(&sb);
     for uri in MALFORMED {
         assert_eq!(sb.run(&["open", uri]).status.code(), Some(1), "{uri}");
@@ -2230,6 +2267,7 @@ fn open_uri_on_mpris_refuses_a_malformed_address_and_changes_nothing() {
     let Some((_conn, p)) = bus_player(&sb) else {
         return;
     };
+    wait_for_the_first_copy(&sb);
     let calls = lookups(&sb);
     for uri in MALFORMED {
         let err = open_uri(&p, uri).expect_err(uri);

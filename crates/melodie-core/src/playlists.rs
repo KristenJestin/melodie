@@ -51,6 +51,30 @@ fn call(client: &Client, method: &str, extra: &[(&str, String)]) -> Result<Value
         .map_err(|e| state::from_api(e, client.url()))
 }
 
+/// Applies an edit to a playlist in the local copy, as the server just did it: its counts and
+/// its tracks, together, so a reader never sees one without the other.
+fn edit_local(
+    conn: &Connection,
+    pid: &str,
+    d_count: i64,
+    d_secs: i64,
+    at: u64,
+    f: impl FnOnce(&mut Vec<String>),
+) -> Result<(), Failure> {
+    db::atomically(conn, || {
+        db::playlist_adjust(conn, pid, d_count, d_secs, &rfc3339(at))?;
+        // A copy that does not hold the tracks yet (made by an older version) would keep only
+        // this edit: the next sync reads the playlist whole.
+        if !db::playlist_is_synced(conn, pid)? {
+            return Ok(());
+        }
+        let mut ids = db::playlist_track_ids(conn, pid)?;
+        f(&mut ids);
+        db::replace_playlist_tracks(conn, pid, &ids)
+    })?;
+    Ok(())
+}
+
 fn secs(tracks: &[TrackInfo]) -> i64 {
     tracks.iter().map(|t| t.duration as i64).sum()
 }
@@ -67,7 +91,9 @@ pub fn add(
     params.extend(tracks.iter().map(|t| ("songIdToAdd", t.id.clone())));
     call(client, "updatePlaylist", &params)?;
     if let Some(c) = conn {
-        db::playlist_adjust(c, pid, tracks.len() as i64, secs(tracks), &rfc3339(at))?;
+        edit_local(c, pid, tracks.len() as i64, secs(tracks), at, |ids| {
+            ids.extend(tracks.iter().map(|t| t.id.clone()))
+        })?;
     }
     Ok(())
 }
@@ -229,7 +255,13 @@ pub fn remove_duplicates(
     call(client, "updatePlaylist", &params)?;
     if let Some(c) = conn {
         let secs: i64 = gone.iter().map(|d| d.track.duration as i64).sum();
-        db::playlist_adjust(c, pid, -(gone.len() as i64), -secs, &rfc3339(at))?;
+        edit_local(c, pid, -(gone.len() as i64), -secs, at, |ids| {
+            let mut i = 0;
+            ids.retain(|_| {
+                i += 1;
+                !gone.iter().any(|d| d.index == i - 1)
+            })
+        })?;
     }
     Ok(found)
 }
@@ -264,7 +296,11 @@ pub fn remove(
         ],
     )?;
     if let Some(c) = conn {
-        db::playlist_adjust(c, pid, -1, -(track.duration as i64), &rfc3339(at))?;
+        edit_local(c, pid, -1, -(track.duration as i64), at, |ids| {
+            if index < ids.len() {
+                ids.remove(index);
+            }
+        })?;
     }
     Ok(track)
 }
@@ -299,7 +335,12 @@ pub fn create(
         if p.get("changed").is_none() {
             p["changed"] = json!(rfc3339(at));
         }
-        db::playlist_insert(c, &p)?;
+        let ids: Vec<String> = tracks.iter().map(|t| t.id.clone()).collect();
+        db::atomically(c, || {
+            db::playlist_insert(c, &p)?;
+            db::replace_playlist_tracks(c, &id, &ids)?;
+            db::mark_playlist_synced(c, &id, p["changed"].as_str())
+        })?;
     }
     Ok(id)
 }
@@ -593,6 +634,64 @@ mod tests {
                 .ends_with("--prompt album al1")
         );
         assert!(render_pick(&v).contains("Daft Mix"));
+    }
+
+    fn local_ids(conn: &Connection, pid: &str) -> Vec<String> {
+        db::playlist_track_ids(conn, pid).unwrap()
+    }
+
+    #[test]
+    fn the_local_copy_follows_the_edits_of_a_playlist() {
+        let (_d, env, fake, client) = setup();
+        let conn = db::open_existing(&env).unwrap().unwrap();
+        assert_eq!(local_ids(&conn, "p1"), ["s0", "s1", "s2", "s3"]);
+        add(&client, Some(&conn), "p1", &[info("s1", 200)], 0).unwrap();
+        assert_eq!(local_ids(&conn, "p1"), ["s0", "s1", "s2", "s3", "s1"]);
+        remove(&client, Some(&conn), "p1", 0, 0).unwrap();
+        assert_eq!(local_ids(&conn, "p1"), ["s1", "s2", "s3", "s1"]);
+
+        seed(
+            &fake,
+            "p1",
+            &[("s1", "A", "B"), ("s2", "C", "D"), ("s1", "A", "B")],
+        );
+        db::replace_playlist_tracks(&conn, "p1", &["s1".into(), "s2".into(), "s1".into()]).unwrap();
+        remove_duplicates(&client, Some(&conn), "p1", 0).unwrap();
+        assert_eq!(local_ids(&conn, "p1"), ["s1", "s2"]);
+
+        let id = create(&client, Some(&conn), "alice", "New", &[info("s3", 200)], 0).unwrap();
+        assert_eq!(local_ids(&conn, &id), ["s3"]);
+        delete(&client, Some(&conn), &id).unwrap();
+        assert!(local_ids(&conn, &id).is_empty());
+    }
+
+    #[test]
+    fn a_local_edit_that_fails_changes_neither_the_tracks_nor_the_counts() {
+        let (_d, env, _fake, client) = setup();
+        let conn = db::open_existing(&env).unwrap().unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER refuse BEFORE INSERT ON playlist_tracks WHEN NEW.track = 'boom'
+             BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+        )
+        .unwrap();
+        let before = (counts(&conn, "p1"), local_ids(&conn, "p1"));
+        assert!(add(&client, Some(&conn), "p1", &[info("boom", 200)], 0).is_err());
+        assert_eq!((counts(&conn, "p1"), local_ids(&conn, "p1")), before);
+    }
+
+    #[test]
+    fn an_edit_of_a_playlist_whose_tracks_are_not_held_yet_leaves_them_to_the_sync() {
+        let (_d, env, _fake, client) = setup();
+        let conn = db::open_existing(&env).unwrap().unwrap();
+        // The copy of an older version: it has the playlist, not its tracks.
+        conn.execute_batch("DELETE FROM playlist_tracks; DELETE FROM playlist_synced;")
+            .unwrap();
+        add(&client, Some(&conn), "p1", &[info("s1", 200)], 0).unwrap();
+        assert_eq!(counts(&conn, "p1"), (43, 7700));
+        assert!(
+            local_ids(&conn, "p1").is_empty(),
+            "one track is not the playlist"
+        );
     }
 
     // --- duplicates ---

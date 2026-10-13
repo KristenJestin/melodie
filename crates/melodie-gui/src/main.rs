@@ -1,41 +1,65 @@
 //! `melodie-gui`: the window. A client of the daemon like `melodie watch`; closing it never stops
 //! the music, and it never plays sound itself.
 
+mod albums;
 mod app;
+mod catalog;
+mod mini;
 mod motion;
+mod pages;
 mod player;
 mod queue;
+mod sidebar;
 #[cfg(feature = "frame-stats")]
 mod stats;
+mod tables;
+mod timing;
 mod widgets;
 
+use albums::AlbumGrid;
 use app::Shared;
-use gpui_kit::assets::IconName;
+use catalog::Catalog;
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use melodie_core::env::Env;
 use melodie_core::proto::{self, Request};
+use melodie_gui::browse::Place;
 use melodie_gui::theme::{self, Active, Choice, Palette};
+use mini::MiniPlayer;
+use pages::{HomeView, PageView};
 use player::{PlayerView, palette};
 use queue::QueuePanel;
+use sidebar::Sidebar;
 use std::process::ExitCode;
-use widgets::IconButton;
+use tables::{ArtistList, TrackList};
 
 gpui_kit::assets::icon_assets!(
     Icons,
     [
+        ArrowDown,
+        ArrowUp,
         AudioLines,
+        ChevronLeft,
+        Disc3,
         GripVertical,
         Heart,
+        House,
+        ListEnd,
         ListMusic,
+        ListPlus,
+        ListStart,
         ListX,
+        MicVocal,
         Music,
         Palette,
         Pause,
         Play,
+        RotateCcw,
+        Shuffle,
         SkipBack,
         SkipForward,
+        Sparkles,
         Volume2,
         X,
     ]
@@ -43,10 +67,24 @@ gpui_kit::assets::icon_assets!(
 
 const QUEUE_WIDTH: f32 = 380.0;
 
-struct Root {
-    shared: Entity<Shared>,
+/// The views of the window, each an entity of its own (a list in a view of its own keeps its
+/// scroll layer; each keeps its scroll position when the user comes back to it).
+struct Views {
     player: Entity<PlayerView>,
     queue: Entity<QueuePanel>,
+    sidebar: Entity<Sidebar>,
+    home: Entity<HomeView>,
+    albums: Entity<AlbumGrid>,
+    artists: Entity<ArtistList>,
+    tracks: Entity<TrackList>,
+    page: Entity<PageView>,
+    mini: Entity<MiniPlayer>,
+}
+
+struct Root {
+    shared: Entity<Shared>,
+    catalog: Entity<Catalog>,
+    views: Views,
     focus: FocusHandle,
     /// The last notice, kept while it fades out.
     notice: SharedString,
@@ -56,8 +94,8 @@ struct Root {
 impl Root {
     fn new(
         shared: Entity<Shared>,
-        player: Entity<PlayerView>,
-        queue: Entity<QueuePanel>,
+        catalog: Entity<Catalog>,
+        views: Views,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -76,15 +114,15 @@ impl Root {
             cx.observe(&shared, move |this, shared, cx| {
                 let open = shared.read(cx).queue_open;
                 if open && !was_open {
-                    this.queue.read(cx).reveal_current(cx);
+                    this.views.queue.read(cx).reveal_current(cx);
                 }
                 was_open = open;
             }),
         ];
         Self {
             shared,
-            player,
-            queue,
+            catalog,
+            views,
             focus,
             notice: SharedString::default(),
             _subs: subs,
@@ -93,11 +131,27 @@ impl Root {
 
     fn on_key(&mut self, ev: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         match ev.keystroke.key.as_str() {
-            "escape" => self.shared.update(cx, |s, cx| {
-                s.queue_open = false;
-                s.settings_open = false;
-                cx.notify()
-            }),
+            // what is open closes first; then a page goes back
+            "escape" => {
+                let open = {
+                    let s = self.shared.read(cx);
+                    s.queue_open || s.settings_open
+                };
+                if open {
+                    self.shared.update(cx, |s, cx| {
+                        s.queue_open = false;
+                        s.settings_open = false;
+                        cx.notify()
+                    })
+                } else if self.catalog.read(cx).picker_open {
+                    self.catalog.update(cx, |c, cx| {
+                        c.picker_open = false;
+                        cx.notify()
+                    })
+                } else {
+                    self.catalog.update(cx, |c, cx| c.back(cx))
+                }
+            }
             "space" => self.shared.update(cx, |s, cx| {
                 if s.player.current.is_some() {
                     s.send(Request::Toggle, cx)
@@ -205,11 +259,26 @@ impl Render for Root {
         let nt = motion::flag("notice", notice.is_some(), motion::ENTER, window, cx);
         let width = window.viewport_size().width.as_f32();
         let panel = QUEUE_WIDTH.min(width);
-        let (scrim, gear, card_scrim) = (
-            self.shared.clone(),
-            self.shared.clone(),
-            self.shared.clone(),
-        );
+        let (here, step) = {
+            let c = self.catalog.read(cx);
+            (c.here().clone(), c.nav.step)
+        };
+        let v = &self.views;
+        let content: AnyView = match here {
+            Place::Player => v.player.clone().into(),
+            Place::Home => v.home.clone().into(),
+            Place::Albums => v.albums.clone().into(),
+            Place::Artists => v.artists.clone().into(),
+            Place::Tracks => v.tracks.clone().into(),
+            Place::Album(_) | Place::Artist(_) | Place::Playlist(_) => v.page.clone().into(),
+        };
+        let (scrim, card_scrim) = (self.shared.clone(), self.shared.clone());
+        // the notice stays above the mini player
+        let lift = if here == Place::Player {
+            0.
+        } else {
+            mini::HEIGHT
+        };
         div()
             .id("root")
             .track_focus(&self.focus)
@@ -219,17 +288,24 @@ impl Render for Root {
             .overflow_hidden()
             .bg(pal.bg)
             .text_color(pal.fg)
-            .child(self.player.clone())
             .child(
-                div().absolute().top_3().right_3().child(
-                    IconButton::new("settings", IconName::Palette, pal)
-                        .selected(settings)
-                        .on_click(move |_, _, cx| {
-                            gear.update(cx, |s, cx| {
-                                s.settings_open = !s.settings_open;
-                                cx.notify()
-                            })
-                        }),
+                h_flex().size_full().child(v.sidebar.clone()).child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .child(
+                            // every change of place comes in: a short fade and rise
+                            div()
+                                .id(("view", step))
+                                .flex_1()
+                                .min_h_0()
+                                .child(content)
+                                .with_animation(("view-enter", step), motion::enter(), |el, t| {
+                                    el.opacity(t).mt(px((1.0 - t) * 10.0))
+                                }),
+                        )
+                        .when(here != Place::Player, |d| d.child(v.mini.clone())),
                 ),
             )
             .when(st > 0.0, |d| {
@@ -247,8 +323,8 @@ impl Render for Root {
                         .child(
                             div()
                                 .absolute()
-                                .top(px(60. - 8. * (1. - st)))
-                                .right_3()
+                                .bottom(px(60. - 8. * (1. - st)))
+                                .left_2()
                                 .opacity(st)
                                 .child(settings_card(&self.shared, pal, cx)),
                         ),
@@ -278,14 +354,14 @@ impl Render for Root {
                         .w(px(panel))
                         // clicks on the panel stay in it
                         .on_click(|_, _, cx| cx.stop_propagation())
-                        .child(self.queue.clone()),
+                        .child(self.views.queue.clone()),
                 )
             })
             .when(nt > 0.0, |d| {
                 d.child(
                     div()
                         .absolute()
-                        .bottom(px(12. + 8. * nt))
+                        .bottom(px(lift + 12. + 8. * nt))
                         .left_0()
                         .right_0()
                         .flex()
@@ -332,7 +408,7 @@ fn main() -> ExitCode {
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                 None,
-                size(px(480.), px(800.)),
+                size(px(1180.), px(780.)),
                 cx,
             ))),
             window_min_size: Some(size(px(360.), px(600.))),
@@ -349,9 +425,20 @@ fn main() -> ExitCode {
         };
         let opened = gpui_kit::open_window(options, cx, move |window, cx| {
             let (shared, clock) = app::start(env.clone(), socket.clone(), window, cx);
-            let player = cx.new(|cx| PlayerView::new(shared.clone(), clock, window, cx));
-            let queue = cx.new(|cx| QueuePanel::new(shared.clone(), cx));
-            cx.new(|cx| Root::new(shared, player, queue, window, cx))
+            let catalog = cx.new(|cx| Catalog::new(env.clone(), shared.clone(), cx));
+            let (s, c) = (&shared, &catalog);
+            let views = Views {
+                player: cx.new(|cx| PlayerView::new(s.clone(), clock, window, cx)),
+                queue: cx.new(|cx| QueuePanel::new(s.clone(), cx)),
+                sidebar: cx.new(|_| Sidebar::new(s.clone(), c.clone())),
+                home: cx.new(|_| HomeView::new(s.clone(), c.clone())),
+                albums: cx.new(|_| AlbumGrid::new(s.clone(), c.clone())),
+                artists: cx.new(|_| ArtistList::new(s.clone(), c.clone())),
+                tracks: cx.new(|_| TrackList::new(s.clone(), c.clone())),
+                page: cx.new(|_| PageView::new(s.clone(), c.clone())),
+                mini: cx.new(|_| MiniPlayer::new(s.clone(), c.clone())),
+            };
+            cx.new(|cx| Root::new(shared, catalog, views, window, cx))
         });
         if let Err(e) = opened {
             eprintln!("melodie-gui: no window: {e:#}");

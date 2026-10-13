@@ -7,7 +7,7 @@ use crate::state::{Failure, from_api};
 use crate::time::now_secs;
 use rusqlite::{Connection, Transaction};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::IsTerminal;
 
 const PAGE: usize = 500;
@@ -112,9 +112,52 @@ fn page_through(
     Ok(total)
 }
 
-fn refresh_playlists_and_starred(client: &Client, tx: &Transaction) -> Result<(), Failure> {
+/// The `changed` date each playlist had when the copy last read its tracks.
+fn held_playlists(tx: &Transaction) -> Result<HashMap<String, Option<String>>, Failure> {
+    let mut st = tx.prepare("SELECT playlist, changed FROM playlist_synced")?;
+    let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// `all`: reads the tracks of every playlist; otherwise only of those whose `changed` moved or
+/// whose tracks the copy does not hold.
+fn refresh_playlists_and_starred(
+    client: &Client,
+    tx: &Transaction,
+    all: bool,
+) -> Result<(), Failure> {
+    let held = if all {
+        HashMap::new()
+    } else {
+        held_playlists(tx)?
+    };
     let pl = call(client, "getPlaylists", &[])?;
-    db::replace_playlists(tx, &list(&pl, &["playlists", "playlist"]))?;
+    let lists = list(&pl, &["playlists", "playlist"]);
+    db::replace_playlists(tx, &lists)?;
+    for table in ["playlist_tracks", "playlist_synced"] {
+        tx.execute(
+            &format!("DELETE FROM {table} WHERE playlist NOT IN (SELECT id FROM playlists)"),
+            [],
+        )?;
+    }
+    for p in &lists {
+        let Some(pid) = p["id"].as_str() else {
+            continue;
+        };
+        let changed = p["changed"].as_str().map(str::to_string);
+        if held.get(pid) == Some(&changed) {
+            continue;
+        }
+        let r = match call(client, "getPlaylist", &[("id", pid.to_string())]) {
+            Ok(r) => r,
+            // Deleted since `getPlaylists` answered: it is gone, the next sync forgets it.
+            Err(Failure::NotFound(_)) => continue,
+            Err(e) => return Err(e),
+        };
+        let ids = db::entry_ids(&list(&r, &["playlist", "entry"]));
+        db::replace_playlist_tracks(tx, pid, &ids)?;
+        db::mark_playlist_synced(tx, pid, changed.as_deref())?;
+    }
     let st = call(client, "getStarred2", &[])?;
     db::apply_starred(tx, &st["starred2"])?;
     Ok(())
@@ -154,7 +197,7 @@ fn full_into(client: &Client, path: &std::path::Path) -> Result<Report, Failure>
         page_through(client, "artist", "Artistes", &tx, db::insert_artist)?;
         page_through(client, "album", "Albums", &tx, db::insert_album)?;
         page_through(client, "song", "Morceaux", &tx, db::insert_track)?;
-        refresh_playlists_and_starred(client, &tx)?;
+        refresh_playlists_and_starred(client, &tx, true)?;
         db::set_meta(&tx, "lastScan", &scan)?;
         db::set_meta(&tx, "synced_at", &now_secs().to_string())?;
         db::set_meta(&tx, "full_synced_at", &now_secs().to_string())?;
@@ -180,7 +223,7 @@ fn light(client: &Client, conn: &mut Connection) -> Result<Report, Failure> {
         lists.extend(list(&r, &["albumList2", "album"]));
     }
     let tx = conn.transaction()?;
-    refresh_playlists_and_starred(client, &tx)?;
+    refresh_playlists_and_starred(client, &tx, false)?;
     let mut seen = HashSet::new();
     for a in &lists {
         let Some(id) = a["id"].as_str() else { continue };
@@ -222,7 +265,7 @@ pub fn run(env: &Env, client: &Client, force_full: bool) -> Result<Report, Failu
 mod tests {
     use super::*;
     use crate::api::{ApiError, Creds, token};
-    use crate::fake::Fake;
+    use crate::fake::{self, Fake};
     use crate::search;
     use std::sync::atomic::Ordering;
 
@@ -297,6 +340,107 @@ mod tests {
         assert!(fake.calls_of("search3") > 0);
         fake.clear_calls();
         assert_eq!(run(&env, &client, true).unwrap().kind, Kind::Full);
+    }
+
+    fn playlist_tracks(env: &Env) -> Vec<String> {
+        let conn = db::open_existing(env).unwrap().unwrap();
+        conn.prepare("SELECT track FROM playlist_tracks WHERE playlist = 'p1' ORDER BY pos")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_full_copy_keeps_the_tracks_of_each_playlist() {
+        let (_d, env, fake, client) = setup(3);
+        fake.state
+            .playlists
+            .lock()
+            .unwrap()
+            .insert("p1".into(), vec![fake::song(2), fake::song(0)]);
+        run(&env, &client, true).unwrap();
+        assert_eq!(playlist_tracks(&env), ["s2", "s0"]);
+    }
+
+    #[test]
+    fn a_light_sync_reads_again_only_the_playlists_that_changed() {
+        let (_d, env, fake, client) = setup(3);
+        fake.state
+            .playlists
+            .lock()
+            .unwrap()
+            .insert("p1".into(), vec![fake::song(1)]);
+        run(&env, &client, false).unwrap();
+        fake.clear_calls();
+        fake.state
+            .playlists
+            .lock()
+            .unwrap()
+            .insert("p1".into(), vec![fake::song(1), fake::song(2)]);
+        assert_eq!(run(&env, &client, false).unwrap().kind, Kind::Light);
+        assert_eq!(fake.calls_of("getPlaylist"), 0, "unchanged: not read again");
+        assert_eq!(playlist_tracks(&env), ["s1"]);
+
+        *fake.state.playlist_changed.lock().unwrap() = "2026-10-03T10:00:00Z".into();
+        run(&env, &client, false).unwrap();
+        assert_eq!(fake.calls_of("getPlaylist"), 1);
+        assert_eq!(playlist_tracks(&env), ["s1", "s2"]);
+    }
+
+    #[test]
+    fn an_empty_playlist_is_not_read_again_by_a_light_sync() {
+        let (_d, env, fake, client) = setup(3);
+        fake.state
+            .playlists
+            .lock()
+            .unwrap()
+            .insert("p1".into(), vec![]);
+        run(&env, &client, true).unwrap();
+        assert_eq!(fake.calls_of("getPlaylist"), 1);
+        fake.clear_calls();
+        assert_eq!(run(&env, &client, false).unwrap().kind, Kind::Light);
+        assert_eq!(fake.calls_of("getPlaylist"), 0, "empty and unchanged");
+
+        *fake.state.playlist_changed.lock().unwrap() = "2026-10-03T10:00:00Z".into();
+        fake.state
+            .playlists
+            .lock()
+            .unwrap()
+            .insert("p1".into(), vec![fake::song(1)]);
+        run(&env, &client, false).unwrap();
+        assert_eq!(fake.calls_of("getPlaylist"), 1);
+        assert_eq!(playlist_tracks(&env), ["s1"]);
+    }
+
+    #[test]
+    fn a_playlist_deleted_during_the_sync_is_skipped() {
+        let (_d, env, fake, client) = setup(3);
+        fake.state.playlist_gone.store(true, Ordering::SeqCst);
+        // Listed by `getPlaylists`, gone by the time `getPlaylist` asks: the copy is made without it.
+        for force in [true, false] {
+            run(&env, &client, force).unwrap();
+            assert!(playlist_tracks(&env).is_empty());
+            let conn = db::open_existing(&env).unwrap().unwrap();
+            assert_eq!(db::counts(&conn).unwrap().tracks, 3);
+        }
+        // Any other failure still fails the copy.
+        *fake.state.fail_code.lock().unwrap() = Some(10);
+        assert!(run(&env, &client, true).is_err());
+    }
+
+    #[test]
+    fn a_light_sync_fills_the_playlists_of_an_older_copy() {
+        let (_d, env, fake, client) = setup(3);
+        run(&env, &client, false).unwrap();
+        let conn = db::open_existing(&env).unwrap().unwrap();
+        conn.execute_batch("DROP TABLE playlist_tracks; DROP TABLE playlist_synced")
+            .unwrap();
+        drop(conn);
+        assert_eq!(run(&env, &client, false).unwrap().kind, Kind::Light);
+        assert_eq!(playlist_tracks(&env), ["s0", "s1", "s2"]);
+        assert_eq!(fake.calls_of("getPlaylist"), 2, "once per sync");
     }
 
     #[test]

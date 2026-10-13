@@ -88,7 +88,7 @@ have is "not found" (code 5, see "Connection states"), also without starting the
 
 ## The window
 
-`melodie-gui` opens the player and its queue. It needs a Wayland or X11 session with a Vulkan
+`melodie-gui` opens the library, the player and its queue. It needs a Wayland or X11 session with a Vulkan
 driver, and the `melodie` program beside it (same folder, as a build leaves them) or on the
 `PATH`.
 
@@ -109,7 +109,23 @@ Screenshots and a recording of the animations, made with invented data, are in
 - **The queue**, opened from the player: past tracks greyed, the current one marked, the next
   ones. A click plays a track; drag a track onto another to move it there; the cross on a row
   removes it; the button at the top removes what comes after the current track.
-- **Keys**: Space plays or pauses, Escape closes the queue and the settings.
+- **The library**, in the sidebar: Home, Albums, Artists, Tracks, and the playlists. Everything is
+  read from the local copy, away from the window's thread: browsing never touches the network.
+  - Home: the albums added last, the mixes (the personal mix, the rediscoveries), the albums played
+    most.
+  - Albums: a grid of covers, sorted by date added, name, artist or year (a second click on the
+    sort turns it round). Artists and Tracks: long lists sorted by a click on a column.
+  - A page for an album (its tracks; play, shuffle, play next, add to the queue, add to one of the
+    user's playlists), an artist (its top tracks by plays, its albums; play, shuffle, instant mix)
+    and a playlist (its tracks, as the last synchronisation saw them; the same actions but adding to
+    a playlist). A click on a track plays it; on a row's hover, play it next or add it to the
+    queue. The back arrow (or Escape) goes back to where the page was opened from.
+  - Actions run `melodie` (`play`, `queue`, `mix`, `playlist add --json`): what needs the server
+    still goes through it. Covers come from `~/.cache/melodie/covers/` (the 128 px thumbnails
+    first); the missing ones are fetched by `melodie cover-fetch`, in the background.
+  - At the bottom, what plays: play or pause, next; a click opens the player.
+- **Keys**: Space plays or pauses; Escape closes the queue, the settings or the playlist choice,
+  else goes back.
 - **Colours**: the button at the top right chooses the theme. "Mélodie", the base theme, takes its
   colours from the cover and follows the desktop's dark or light setting. "Omarchy" is offered
   only on Omarchy (`ID=omarchy` in `/etc/os-release` and a readable
@@ -121,7 +137,8 @@ Screenshots and a recording of the animations, made with invented data, are in
 - **Animations**: every change of view, panel or state is short and interruptible, and follows
   the desktop's reduced-motion setting. An unfocused window keeps animating at the screen's rate.
 - Measuring: built with the `frame-stats` feature and run with `MELODIE_GUI_FRAME_STATS=<file>`,
-  the window writes the time of each frame and how long it took to draw (for measurements only).
+  the window writes the time of each frame and how long it took to draw, and says on its error
+  output how long each view took to read the local copy (for measurements only).
 
 ## Addresses
 
@@ -248,8 +265,8 @@ connection states (see below), with a notification.
   current track; on a track change it reads the state again from the copy.
 - `melodie playlist add [--allow-duplicates] [--json] <playlistId> [track <id> | album <id> | current]`:
   `updatePlaylist` with `songIdToAdd` repeated (`current`, the current track, is the default).
-  The playlist is first read from the server (`getPlaylist`, not the local copy, which holds only
-  the counts and may be stale): a track already in it, by id, is skipped, and the output says how
+  The playlist is first read from the server (`getPlaylist`, not the local copy, which may be
+  stale): a track already in it, by id, is skipped, and the output says how
   many ("Ajouté à « X » : 8 morceaux (2 déjà présents, ignorés)", or "Déjà dans « X »" when
   nothing is left to add, code 0, nothing written). `--allow-duplicates` adds them anyway, without
   reading the playlist. A track repeated in the request itself is added once.
@@ -362,11 +379,17 @@ once "Copie de la bibliothèque en cours…" (see "Automatic synchronisation").
 
 ## The local copy
 
-- Full sync: `search3` with an empty query, in pages of 500 (artists, albums, tracks),
-  `getPlaylists`, `getStarred2`, all in one transaction on a temporary file.
+- Full sync: `search3` with an empty query, in pages of 500 (artists, albums with the date each
+  was added, tracks), `getPlaylists` and the tracks of each playlist (`getPlaylist`), `getStarred2`,
+  all in one transaction on a temporary file.
 - Incremental sync: `getScanStatus` (`lastScan`) compared with the stored value; unchanged:
-  playlists, favourites, play counters (`getAlbumList2` `recent` and `frequent`, 500; the tracks of
-  an album whose counters moved are read again with `getAlbum`); changed: full sync.
+  playlists (the tracks of a playlist are read again only when its `changed` date moved),
+  favourites, play counters (`getAlbumList2` `recent` and `frequent`, 500; the tracks of an album
+  whose counters moved are read again with `getAlbum`); changed: full sync. A copy made by an older
+  version gets the new columns and tables there; the date an album was added comes with the next
+  full sync (until then, those albums come last in "recently added").
+- `melodie playlist add`, `remove`, `duplicates --remove` and `create` change the tracks of the
+  playlist in the copy too, as the server did.
 - Search: FTS5 prefixes ("daf pun" finds "Daft Punk"), case and accent insensitive. Order:
   playlists (5), artists (5), albums (8), tracks (12).
 
