@@ -489,6 +489,7 @@ impl Render for PageView {
                 .when(can_back, |d| {
                     d.child(
                         IconButton::new("page-back", IconName::ChevronLeft, pal)
+                            .tip("Back")
                             .on_click(move |_, _, cx| catalog.update(cx, |c, cx| c.back(cx))),
                     )
                 })
@@ -797,6 +798,7 @@ impl Render for SelectionBar {
             })
             .child(
                 IconButton::new("picked-clear", IconName::X, pal)
+                    .tip("Unpick")
                     .diameter(34.)
                     .on_click(move |_, _, cx| clear.update(cx, |c, cx| c.unselect(cx))),
             )

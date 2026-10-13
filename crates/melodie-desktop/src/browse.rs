@@ -38,6 +38,8 @@ impl Place {
 #[derive(Debug, Clone)]
 pub struct Nav {
     stack: Vec<Place>,
+    /// The pages left by going back, the next one last: what the forward button comes back to.
+    ahead: Vec<Place>,
     pub step: u64,
 }
 
@@ -45,6 +47,7 @@ impl Nav {
     pub fn new(start: Place) -> Self {
         Self {
             stack: vec![start],
+            ahead: Vec::new(),
             step: 0,
         }
     }
@@ -62,6 +65,7 @@ impl Nav {
         if to.is_section() {
             self.stack.clear();
         }
+        self.ahead.clear();
         self.stack.push(to);
         self.step += 1;
         true
@@ -73,6 +77,7 @@ impl Nav {
             return false;
         }
         self.stack = vec![to];
+        self.ahead.clear();
         self.step += 1;
         true
     }
@@ -90,7 +95,22 @@ impl Nav {
         if !self.can_go_back() {
             return false;
         }
-        self.stack.pop();
+        let left = self.stack.pop().expect("more than one place");
+        self.ahead.push(left);
+        self.step += 1;
+        true
+    }
+
+    pub fn can_go_forward(&self) -> bool {
+        !self.ahead.is_empty()
+    }
+
+    /// Comes back to the page `back` left.
+    pub fn forward(&mut self) -> bool {
+        let Some(page) = self.ahead.pop() else {
+            return false;
+        };
+        self.stack.push(page);
         self.step += 1;
         true
     }
@@ -145,6 +165,53 @@ mod tests {
         assert!(!nav.can_go_back(), "a section forgets the pages");
         assert!(!nav.back());
         assert_eq!(nav.here(), &Place::Albums);
+    }
+
+    #[test]
+    fn forward_comes_back_to_the_page_back_left() {
+        let mut nav = Nav::new(Place::Home);
+        assert!(!nav.can_go_forward(), "nothing to go forward to yet");
+        assert!(!nav.forward());
+        nav.go(Place::Album("al1".into()));
+        nav.go(Place::Artist("ar1".into()));
+        nav.back();
+        nav.back();
+        assert!(nav.can_go_forward());
+        let step = nav.step;
+        assert!(nav.forward());
+        assert_eq!(nav.here(), &Place::Album("al1".into()));
+        assert!(nav.step > step, "going forward animates too");
+        assert!(nav.forward());
+        assert_eq!(nav.here(), &Place::Artist("ar1".into()));
+        assert!(!nav.can_go_forward(), "the end of the way");
+        assert!(!nav.forward());
+        assert_eq!(nav.places().len(), 3, "back sees them all again");
+    }
+
+    #[test]
+    fn a_new_place_forgets_what_was_ahead() {
+        let mut nav = Nav::new(Place::Home);
+        nav.go(Place::Album("al1".into()));
+        nav.back();
+        nav.go(Place::Artist("ar1".into()));
+        assert!(!nav.can_go_forward(), "a page opened after going back");
+        nav.back();
+        nav.go(Place::Albums);
+        assert!(!nav.can_go_forward(), "a section");
+        nav.go(Place::Album("al2".into()));
+        nav.back();
+        nav.start_at(Place::Playlist("p1".into()));
+        assert!(!nav.can_go_forward(), "the sidebar");
+        // staying where one is changes nothing, forward included
+        nav.go(Place::Album("al3".into()));
+        nav.back();
+        assert!(!nav.go(Place::Playlist("p1".into())));
+        assert!(nav.can_go_forward(), "staying keeps what is ahead");
+        assert!(!nav.start_at(Place::Playlist("p1".into())));
+        assert!(
+            nav.can_go_forward(),
+            "so does the sidebar entry already open"
+        );
     }
 
     #[test]
