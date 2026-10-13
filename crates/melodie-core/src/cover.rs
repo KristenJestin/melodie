@@ -146,9 +146,13 @@ pub struct Disk {
 impl Disk {
     /// Checks files: run it away from the window's thread.
     pub fn read(env: &Env, id: &str) -> Self {
+        let marker = none_path(env, id).is_file();
+        // The marker wins: the daemon's `ensure` has no md5 check, so for a cover that is the
+        // server's default image its file is that image, beside the marker.
+        let file = |t| Some(tier_path(env, id, t)).filter(|p| !marker && p.is_file());
         Self {
-            files: Tier::ALL.map(|t| Some(tier_path(env, id, t)).filter(|p| p.is_file())),
-            marker: none_path(env, id).is_file(),
+            files: Tier::ALL.map(file),
+            marker,
         }
     }
 
@@ -706,6 +710,23 @@ mod tests {
         );
         assert!(matches!(local(&env, "al-9"), Local::Placeholder));
         assert!(Disk::read(&env, "al-9").placeholder());
+    }
+
+    #[test]
+    fn a_placeholder_marker_hides_the_daemons_file() {
+        // the daemon's `ensure` has no md5 check: for an album without art it writes the server's
+        // default image, beside the marker the thumbnail fetch left
+        let (_d, env, _fake, _c) = setup();
+        write_atomic(&none_path(&env, "al-9"), b"").unwrap();
+        tier_files(&env, "al-9", &[Tier::Large]);
+        let disk = Disk::read(&env, "al-9");
+        assert!(disk.placeholder());
+        for t in Tier::ALL {
+            assert_eq!(disk.pick(t), None, "{t:?}");
+            assert!(!disk.has(t), "{t:?}");
+        }
+        assert_eq!(disk.smallest(), None);
+        assert!(matches!(local(&env, "al-9"), Local::Placeholder));
     }
 
     #[test]
