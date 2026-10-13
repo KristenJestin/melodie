@@ -30,6 +30,8 @@ pub struct IconButton {
     selected: bool,
     disabled: bool,
     tip: Option<SharedString>,
+    /// Another icon the first one changes into, and how far it has (0 to 1).
+    morph: Option<(IconName, f32)>,
     on_click: Option<OnClick>,
 }
 
@@ -127,8 +129,15 @@ impl IconButton {
             selected: false,
             disabled: false,
             tip: None,
+            morph: None,
             on_click: None,
         }
+    }
+
+    /// The icon changes into `into` as `t` goes from 0 to 1: play and pause cross-fade.
+    pub fn morph(mut self, into: IconName, t: f32) -> Self {
+        self.morph = Some((into, t));
+        self
     }
 
     /// What the button does, said when the pointer rests on it. Every button without a text
@@ -211,13 +220,35 @@ impl RenderOnce for IconButton {
             .when(self.disabled, |d| d.opacity(0.4))
             .when(live, |d| d.cursor_pointer())
             .when_some(self.on_click.filter(|_| live), |d, f| d.on_click(f))
-            .child(
-                Icon::new(self.icon)
-                    .size(px(icon_size))
-                    .text_color(fg)
-                    // the press sinks the icon a little: felt, not seen
-                    .mt(px(d)),
-            )
+            .map(|b| match self.morph {
+                Some((into, t)) if t > 0.0 => b.child(
+                    div()
+                        .relative()
+                        .size(px(icon_size))
+                        .mt(px(d))
+                        .child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .opacity(1.0 - t)
+                                .child(Icon::new(self.icon).size(px(icon_size)).text_color(fg)),
+                        )
+                        .child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .opacity(t)
+                                .child(Icon::new(into).size(px(icon_size)).text_color(fg)),
+                        ),
+                ),
+                _ => b.child(
+                    Icon::new(self.icon)
+                        .size(px(icon_size))
+                        .text_color(fg)
+                        // the press sinks the icon a little: felt, not seen
+                        .mt(px(d)),
+                ),
+            })
             .when_some(label, |b, text| {
                 b.child(
                     div()
