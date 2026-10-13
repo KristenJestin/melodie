@@ -37,6 +37,10 @@ configuration (see `AGENTS.md`). The daemon integration test starts its own priv
   `{"u","t","s"}` in the keyring (Secret Service, attributes `service=melodie` and
   `url=<server>`). Then starts the copy of the library in the background ("Copie de la
   bibliothèque en cours en arrière-plan").
+  `melodie login --password-stdin --server=<address> --user=<name>` asks nothing: it reads the
+  password from its standard input (one line), never from its command line, which every process
+  can read. This is how the window signs in. The same exit codes as the other commands: 0 signed
+  in, 1 refused, 2 unreachable.
 - `melodie logout`: removes the secret from the keyring and the user from `config.toml`.
 - `melodie status`: server, user, connection state, size, date and age of the copy, whether a
   synchronisation is running.
@@ -104,8 +108,7 @@ Screenshots and a recording of the animations, made with invented data, are in
   bar to drag; play/pause, previous, next; the volume; the heart. Play without a daemon starts the
   personal mix (`melodie mix me`, which starts the daemon); the heart runs `melodie like track
   <id>` or `unlike`: what needs the server goes through `melodie`. A failure is said at the
-  bottom of the window for a few seconds, and so are the connection states (`unreachable`,
-  `auth-refused`).
+  bottom of the window for a few seconds, and so is an `unreachable` server.
 - **The queue**, opened from the player: past tracks greyed, the current one marked, the next
   ones. A click plays a track; drag a track onto another to move it there; the cross on a row
   removes it; the button at the top removes what comes after the current track.
@@ -135,6 +138,17 @@ Screenshots and a recording of the animations, made with invented data, are in
 - **Keys**: Ctrl+F, or / when not typing, opens the search and puts the cursor in its field;
   Space plays or pauses (in the field, it is a space); Escape closes the queue, the settings or the
   playlist choice, else empties the search field, else goes back.
+- **Signing in**: with no login, or when the server refused it (`no-login`, `auth-refused`), the
+  window shows a sign-in screen: the server's address, the user, the password. It runs `melodie
+  login --password-stdin`, the password written on its input: the window keeps no password and no
+  token, and empties the password field (its undo history too) as the attempt starts. A refused
+  password and an unreachable server are told apart. An unreachable server never brings the
+  sign-in screen: the window says "Navidrome is unreachable" and shows the local copy. At start,
+  with a login kept, the window asks `melodie status` whether it still holds.
+- **Settings** (the button at the bottom of the sidebar): the theme; the server, the user and the
+  connection state, with "Sign out" (`melodie logout`: the address stays for the next sign-in);
+  when the local copy was last made, with "Sync now" (`melodie sync`). The library is read again
+  when a new copy is there, the first one after a sign-in included.
 - **Colours**: the button at the top right chooses the theme. "Mélodie", the base theme, takes its
   colours from the cover and follows the desktop's dark or light setting. "Omarchy" is offered
   only on Omarchy (`ID=omarchy` in `/etc/os-release` and a readable
