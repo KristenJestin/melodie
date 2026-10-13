@@ -138,7 +138,11 @@ Screenshots and a recording of the animations, made with invented data, are in
   - Actions run `melodie` (`play`, `queue`, `mix`, `playlist add|create|rename|delete|remove|move|
     duplicates`): what needs the server still goes through it, and the window reads the local copy
     again when it is done. The jobs of one playlist run one after the other, in the order asked. Covers come from `~/.cache/melodie/covers/` (the 128 px thumbnails
-    first); the missing ones are fetched by `melodie cover-fetch`, in the background.
+    first); the missing ones are fetched by `melodie cover-fetch`, in the background, by one process
+    at a time fed from a queue of missing ids, for every place that shows a cover (grids, pages,
+    search, the queue, the player, the bottom bar). An id is asked again until it is on disk, is
+    the server's default image (the glyph stays) or came back missing three times from a finished
+    fetch; a fetch that found the lock taken costs no try. What lands shows without a restart.
   - At the bottom, what plays: play or pause, next; a click opens the player.
 - **The search**, first in the sidebar: one field, and as you type the artists, albums, tracks and
   playlists of the local copy, grouped by kind. The kind whose best result is the most relevant
@@ -516,7 +520,8 @@ downloaded in parallel (8 requests, `getCoverArt` 128) within a total budget of 
 that, the entry keeps its glyph and the rest goes to a detached process (`melodie cover-fetch`,
 new session, hidden subcommand) for the next keystroke. The ids reach it on its standard input and
 it reads the keyring itself: no token in the arguments, the environment or the output. One
-`cover-fetch` at a time (lock `covers/.fetch.lock`). The keyring is read only if a thumbnail is
+`cover-fetch` at a time (lock `covers/.fetch.lock`); one that finds the lock taken exits at once
+with code 75 and downloads nothing (the launcher ignores the code, the window asks again). The keyring is read only if a thumbnail is
 missing. Navidrome's default image (md5 `fcec14e686ad5159a8ed7c51936116d7`) is never shown: a
 `.none` marker avoids downloading it again.
 
