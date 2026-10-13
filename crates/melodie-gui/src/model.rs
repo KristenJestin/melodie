@@ -109,11 +109,6 @@ impl Player {
                     tracks[*i] = t.clone();
                     self.tracks = tracks.into();
                 }
-                if self.track().map(|t| t.entry) != was {
-                    clock.duration = self.track().map_or(0.0, |t| t.duration);
-                    clock.set(0.0, self.state, at);
-                    changed.clock = true;
-                }
             }
             Event::State { state, position } => {
                 self.state = PlayState::parse(state);
@@ -146,6 +141,14 @@ impl Player {
         }
         if self.track().map(|t| t.entry) != was {
             self.track_change += 1;
+            // A `queue` event can change the current entry too (it is removed, or `play` replaces
+            // the queue), and the `track` that follows then finds nothing new. A snapshot brings
+            // its own position.
+            if !matches!(event, Event::Snapshot { .. }) {
+                clock.duration = self.track().map_or(0.0, |t| t.duration);
+                clock.set(0.0, self.state, at);
+                changed.clock = true;
+            }
         }
         changed
     }
@@ -340,6 +343,38 @@ mod tests {
         );
         assert_eq!(p.track_change, before + 1);
         assert_eq!(p.track().unwrap().cover.as_deref(), Some("/tmp/c3.img"));
+    }
+
+    #[test]
+    fn a_queue_event_that_changes_the_current_track_restarts_the_clock() {
+        let (mut p, mut c, t0) = feed(&[snapshot()]);
+        let before = p.track_change;
+        // the current track was removed: the next one slides into its place, then `track` follows
+        let mut third = entry(3, "t3", "Third");
+        third.duration = 90.0;
+        let ch = p.apply(
+            &Event::Queue {
+                queue: queue(Some(1), vec![entry(1, "t1", "First"), third.clone()]),
+            },
+            &mut c,
+            t0,
+        );
+        assert!(ch.player && ch.clock);
+        assert_eq!(p.track().unwrap().entry, 3);
+        assert_eq!(p.track_change, before + 1);
+        assert_eq!(c.at(t0), 0.0);
+        assert_eq!(c.duration, 90.0);
+        // the `track` event that follows finds the same entry: nothing more to restart
+        let ch = p.apply(
+            &Event::Track {
+                index: Some(1),
+                track: Some(third),
+            },
+            &mut c,
+            t0,
+        );
+        assert!(!ch.clock);
+        assert_eq!(p.track_change, before + 1);
     }
 
     #[test]
