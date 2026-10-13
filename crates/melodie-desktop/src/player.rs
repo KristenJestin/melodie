@@ -1,6 +1,7 @@
 //! The player, in the spirit of Amberol: the cover large, the track, the position, a few buttons.
 
 use crate::app::{Shared, Shown};
+use crate::context_menu::Menued as _;
 use crate::dialogs::{self, Dialog};
 use crate::motion;
 use crate::volume::Volume;
@@ -13,8 +14,9 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use melodie_core::proto::Request;
 use melodie_core::track::clock;
-use melodie_desktop::launch::{Adding, Job};
+use melodie_desktop::launch::{Adding, Job, Kind};
 use melodie_desktop::layout;
+use melodie_desktop::menu::{Item, Spot};
 use melodie_desktop::model::{Clock, PlayState};
 use melodie_desktop::theme::Palette;
 use std::time::{Duration, Instant};
@@ -133,6 +135,7 @@ impl Render for PlayerView {
             ),
         };
         let picked = (id.clone(), title.clone());
+        let menu = track.as_ref().map(|t| (Item::entry(t), t.starred));
 
         let play = {
             let shared = shared.clone();
@@ -154,6 +157,9 @@ impl Render for PlayerView {
                     .size(size)
                     .rounded(px(14.))
                     .shadow_xl()
+                    .when_some(menu, |d, (item, starred)| {
+                        d.menu_starred(item, Spot::Player, Some(starred))
+                    })
                     .child(cover(under.as_ref(), size, pal))
                     .when(hi != lo, |d| {
                         d.child(div().absolute().top_0().left_0().opacity(t).child(cover(
@@ -227,6 +233,7 @@ impl Render for PlayerView {
                                             shared.update(cx, |s, cx| {
                                                 s.run(
                                                     Job::Star {
+                                                        kind: Kind::Track,
                                                         id,
                                                         starred: !starred,
                                                     },

@@ -3,10 +3,11 @@
 use crate::albums::{GAP, MIN_CELL, PAD, album_cell, content_width, cover_box, empty_state};
 use crate::app::Shared;
 use crate::catalog::{Catalog, Empty, Page};
+use crate::context_menu;
 use crate::dialogs::{self, Dialog};
 use crate::motion;
 use crate::player::palette;
-use crate::tables::{Cols, RowCtx, track_header, track_row};
+use crate::tables::{Cols, RowCtx, TRACK_ROW, track_header, track_row};
 use crate::widgets::IconButton;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
@@ -314,6 +315,7 @@ impl Render for PageView {
             self.tracks.scroll_to_item(0, ScrollStrategy::Top);
             self.shown = Some(here.clone());
         }
+        context_menu::list_is(&here, &self.tracks, TRACK_ROW, cx);
         let width = content_width(window, &self.shared, cx);
         let cols = |c: Cols| c.fit(width);
         let catalog = &self.catalog;

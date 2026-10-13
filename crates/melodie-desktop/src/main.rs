@@ -4,6 +4,7 @@
 mod albums;
 mod app;
 mod catalog;
+mod context_menu;
 mod cover_cache;
 mod dialogs;
 mod home_page;
@@ -27,6 +28,7 @@ mod widgets;
 use albums::AlbumGrid;
 use app::Shared;
 use catalog::Catalog;
+use context_menu::{ContextMenu, MenuHandle};
 use dialogs::{Dialogs, DialogsHandle};
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::input::{MoveDown, MoveUp};
@@ -120,6 +122,7 @@ struct Views {
     sign_in: Entity<SignInView>,
     dialogs: Entity<Dialogs>,
     picked: Entity<SelectionBar>,
+    menu: Entity<ContextMenu>,
 }
 
 struct Root {
@@ -216,6 +219,7 @@ impl Root {
         judge(Situation {
             here: c.here(),
             palette_open: self.views.quick.read(cx).open,
+            menu_open: self.views.menu.read(cx).is_open(),
             field_focused: v.has_focus(window, cx),
             overlay_open: self.queue_place(window, cx).covers() || s.settings_open,
             dialog_open: self.views.dialogs.read(cx).is_open(),
@@ -228,8 +232,13 @@ impl Root {
 
     fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let k = &ev.keystroke;
+        context_menu::forget_pending(cx);
         let m = k.modifiers;
-        let key = Key::read(m.control, m.shift, &k.key, k.key_char.as_deref());
+        let key = if Key::opens_menu(m.shift, &k.key) {
+            Key::Menu
+        } else {
+            Key::read(m.control, m.shift, &k.key, k.key_char.as_deref())
+        };
         let act = self.situation(window, cx, |s| keys::act(key, s));
         self.run(act, window, cx);
     }
@@ -265,6 +274,7 @@ impl Root {
                 cx.notify()
             }),
             Act::ToggleQueue => self.shared.update(cx, |s, cx| s.toggle_queue(cx)),
+            Act::OpenMenu => context_menu::open_on_picked(&self.catalog, window, cx),
             Act::CloseDialog => self.views.dialogs.update(cx, |d, cx| d.close(cx)),
             // Enter in the name field is the field's own: it confirms once, through its event
             Act::Confirm if self.views.dialogs.read(cx).field_focused(window, cx) => return,
@@ -280,6 +290,12 @@ impl Root {
                     s.send(Request::Toggle, cx)
                 }
             }),
+            Act::CloseMenu => self.views.menu.update(cx, |m, cx| m.close(window, cx)),
+            // the menu first, so that the palette keeps the focus the menu gives back
+            Act::MenuToPalette => {
+                self.views.menu.update(cx, |m, cx| m.close(window, cx));
+                self.views.quick.update(cx, |q, cx| q.toggle(window, cx));
+            }
             Act::TogglePalette => self.views.quick.update(cx, |q, cx| q.toggle(window, cx)),
             Act::PaletteUp => self.views.quick.update(cx, |q, cx| q.step(false, cx)),
             Act::PaletteDown => self.views.quick.update(cx, |q, cx| q.step(true, cx)),
@@ -548,17 +564,25 @@ impl Render for Root {
                     .child(v.picked.clone()),
             )
             .when(st > 0.0, |d| {
+                // any button closes it, and none reaches what is behind (a menu, a row)
+                let hide = |shared: &Entity<Shared>| {
+                    let shared = shared.clone();
+                    move |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
+                        shared.update(cx, |s, cx| {
+                            s.settings_open = false;
+                            cx.notify()
+                        })
+                    }
+                };
                 d.child(
                     div()
                         .id("settings-scrim")
                         .absolute()
                         .inset_0()
-                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                            card_scrim.update(cx, |s, cx| {
-                                s.settings_open = false;
-                                cx.notify()
-                            })
-                        })
+                        .occlude()
+                        .on_mouse_down(MouseButton::Left, hide(&card_scrim))
+                        .on_mouse_down(MouseButton::Right, hide(&card_scrim))
+                        .on_mouse_down(MouseButton::Middle, hide(&card_scrim))
                         .child(
                             div()
                                 .absolute()
@@ -623,6 +647,7 @@ impl Render for Root {
             })
             .child(self.views.quick.clone())
             .child(self.views.dialogs.clone())
+            .child(self.views.menu.clone())
             // over everything, the notices included; clicks stay on it
             .when(si > 0.0, |d| {
                 d.child(
@@ -709,8 +734,10 @@ fn main() -> ExitCode {
                 sign_in: cx.new(|cx| SignInView::new(s.clone(), account.clone(), window, cx)),
                 dialogs: cx.new(|cx| Dialogs::new(s.clone(), c.clone(), window, cx)),
                 picked: cx.new(|_| SelectionBar::new(s.clone(), c.clone())),
+                menu: cx.new(|cx| ContextMenu::new(env.clone(), s.clone(), c.clone(), cx)),
             };
             cx.set_global(DialogsHandle(views.dialogs.clone()));
+            cx.set_global(MenuHandle(views.menu.clone()));
             tips::install(cx);
             cx.new(|cx| Root::new(shared, catalog, account, views, window, cx))
         });

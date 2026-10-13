@@ -5,6 +5,7 @@
 use crate::albums::{PAD, content_width, cover_box, empty_state};
 use crate::app::Shared;
 use crate::catalog::Catalog;
+use crate::context_menu::{self, Menued as _};
 use crate::dialogs::{self, Dialog};
 use crate::player::palette;
 use crate::tips::Tipped as _;
@@ -18,6 +19,7 @@ use melodie_core::track::clock;
 use melodie_desktop::browse::Place;
 use melodie_desktop::covers::Covers;
 use melodie_desktop::launch::{Adding, Job, Kind};
+use melodie_desktop::menu::{Item, Spot};
 use melodie_desktop::selection::{How, Selection};
 use melodie_desktop::theme::Palette;
 use std::sync::Arc;
@@ -334,9 +336,14 @@ pub fn track_row(
     };
     let (select, selectable) = (catalog.clone(), row.selectable);
     let accent = pal.accent;
+    let spot = match row.playlist.clone().filter(|_| cols.edit) {
+        Some((id, name)) => Spot::Playlist { id, name, rank: ix },
+        None => Spot::Library,
+    };
     h_flex()
         .id(key("row"))
         .group(list)
+        .menu(Item::track(t), spot)
         .h(px(TRACK_ROW))
         .flex_none()
         .w_full()
@@ -572,6 +579,7 @@ impl Render for TrackList {
             }
             self.shown_sort = Some(sort);
         }
+        context_menu::list_is(&Place::Tracks, &self.scroll, TRACK_ROW, cx);
         let cols = Cols {
             number: false,
             artist: true,
@@ -690,6 +698,7 @@ fn artist_row(
     let (catalog, id) = (catalog.clone(), a.id.clone());
     h_flex()
         .id(ElementId::Name(format!("artist-row-{ix}").into()))
+        .menu(Item::artist(a), Spot::Library)
         .h(px(ARTIST_ROW))
         .w_full()
         .px(px(PAD))

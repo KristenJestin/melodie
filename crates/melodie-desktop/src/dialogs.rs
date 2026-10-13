@@ -220,8 +220,9 @@ impl Dialogs {
         }
     }
 
-    /// A playlist was chosen: what is in it already is read first, then added or asked about.
-    fn chose(
+    /// A playlist was chosen (here or in a menu): what is in it already is read first, then
+    /// added or asked about.
+    pub fn chose(
         &mut self,
         playlist: String,
         name: String,

@@ -3,6 +3,7 @@
 
 use crate::app::Shared;
 use crate::catalog::{Catalog, Empty};
+use crate::context_menu::Menued as _;
 use crate::motion;
 use crate::player::palette;
 use crate::sidebar;
@@ -17,6 +18,7 @@ use melodie_desktop::browse::{self, Place};
 use melodie_desktop::covers::{Cover, Covers, Use};
 use melodie_desktop::launch::{Job, Kind};
 use melodie_desktop::layout;
+use melodie_desktop::menu::{Item, Spot};
 use melodie_desktop::theme::Palette;
 use std::cell::Cell;
 use std::path::PathBuf;
@@ -100,6 +102,7 @@ pub fn album_cell(
     let play_id = album.id.clone();
     v_flex()
         .id(ElementId::Name(format!("album-{}", album.id).into()))
+        .menu(Item::album(album), Spot::Library)
         .group("album-cell")
         .w(px(side))
         .h(px(side + TEXT))

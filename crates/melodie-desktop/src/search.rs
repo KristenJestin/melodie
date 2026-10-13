@@ -5,6 +5,7 @@
 use crate::albums::{PAD, cover_box, empty_state};
 use crate::app::Shared;
 use crate::catalog::{Catalog, Empty};
+use crate::context_menu::Menued as _;
 use crate::dialogs::{self, Dialog};
 use crate::motion;
 use crate::player::palette;
@@ -22,6 +23,7 @@ use melodie_desktop::browse::Place;
 use melodie_desktop::covers::{Covers, Use};
 use melodie_desktop::find::{self, Action, Answer, Latest};
 use melodie_desktop::launch::{Adding, Kind};
+use melodie_desktop::menu::{Item, Spot};
 use melodie_desktop::theme::Palette;
 use std::sync::Arc;
 use std::time::Instant;
@@ -285,6 +287,7 @@ fn result_row(
     h_flex()
         .id(key("row"))
         .group(list)
+        .menu(Item::hit(hit), Spot::Library)
         .h(px(ROW))
         .flex_none()
         .w_full()

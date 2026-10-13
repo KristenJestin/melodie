@@ -3,6 +3,7 @@
 
 use crate::app::Shared;
 use crate::catalog::Catalog;
+use crate::context_menu::Menued as _;
 use crate::dialogs::{self, Dialog};
 use crate::motion;
 use crate::player::palette;
@@ -13,6 +14,7 @@ use gpui_kit::component::Icon;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use melodie_desktop::browse::Place;
+use melodie_desktop::menu::{Item, Spot};
 use melodie_desktop::theme::{Palette, mix};
 
 /// A window narrower than this has the sidebar of icons.
@@ -191,15 +193,20 @@ impl Render for Sidebar {
                     .gap_1()
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
-                    .children(playlists.iter().map(|p| Entry {
-                        id: ElementId::Name(format!("nav-pl-{}", p.id).into()),
-                        icon: IconName::ListMusic,
-                        label: p.name.clone().into(),
-                        compact,
-                        on: section == Place::Playlist(p.id.clone()),
-                        pal,
-                        to: Place::Playlist(p.id.clone()),
-                        catalog: self.catalog.clone(),
+                    .children(playlists.iter().map(|p| {
+                        div()
+                            .w_full()
+                            .menu(Item::playlist(p), Spot::Library)
+                            .child(Entry {
+                                id: ElementId::Name(format!("nav-pl-{}", p.id).into()),
+                                icon: IconName::ListMusic,
+                                label: p.name.clone().into(),
+                                compact,
+                                on: section == Place::Playlist(p.id.clone()),
+                                pal,
+                                to: Place::Playlist(p.id.clone()),
+                                catalog: self.catalog.clone(),
+                            })
                     })),
             )
             .child(
