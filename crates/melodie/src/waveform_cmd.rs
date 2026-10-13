@@ -61,10 +61,16 @@ pub fn fetch_cmd(env: &Env) -> Result<ExitCode> {
 /// The levels of the track `id`, decoded into a file of `dir` that is removed after.
 fn compute(client: &Client, dir: &Path, id: &str) -> Result<Vec<u8>> {
     let pcm = dir.join(format!(".decode-{}.pcm", std::process::id()));
-    let decoded = decode(&client.stream_url(id), &pcm)
-        .and_then(|()| std::fs::read(&pcm).context("reading the decoded audio"));
+    let levels = decode(&client.stream_url(id), &pcm).and_then(|()| read_levels(&pcm));
     let _ = std::fs::remove_file(&pcm);
-    Ok(waveform::levels(&decoded?))
+    levels
+}
+
+/// The levels of the decoded file `pcm`, read in one pass.
+fn read_levels(pcm: &Path) -> Result<Vec<u8>> {
+    let file = std::fs::File::open(pcm).context("opening the decoded audio")?;
+    let samples = file.metadata()?.len() as usize / 2;
+    waveform::levels_from(file, samples).context("reading the decoded audio")
 }
 
 /// Decodes the stream into `out`: mono, signed 16 bits at `RATE`, as fast as it comes.

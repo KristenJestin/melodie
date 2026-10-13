@@ -8,6 +8,7 @@ use crate::db;
 use crate::env::Env;
 use crate::store::write_atomic;
 use anyhow::Result;
+use std::io::{BufReader, ErrorKind, Read};
 use std::path::PathBuf;
 
 /// The levels of a track, whatever its length: enough for a bar a few hundred pixels wide.
@@ -44,29 +45,42 @@ pub fn write(env: &Env, id: &str, levels: &[u8]) -> Result<()> {
 /// mean square) of each stretch of the track, from 0 to 255, the loudest stretch at 255. A silent
 /// track gives only zeros.
 pub fn levels(pcm: &[u8]) -> Vec<u8> {
-    let n = pcm.len() / 2;
+    levels_from(pcm, pcm.len() / 2).expect("reading a slice")
+}
+
+/// [`levels`] read from `pcm` in one pass, `samples` long, without holding it in memory: an hour
+/// of decoded audio is 58 MB.
+pub fn levels_from(pcm: impl Read, samples: usize) -> std::io::Result<Vec<u8>> {
+    let bounds = |i: usize| i * samples / LEVELS;
+    let mut sums = vec![0.0f64; LEVELS];
+    let mut pcm = BufReader::new(pcm);
+    let mut sample = [0u8; 2];
+    let mut i = 0;
+    for j in 0..samples {
+        match pcm.read_exact(&mut sample) {
+            Ok(()) => {}
+            Err(e) if e.kind() == ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(e),
+        }
+        while j >= bounds(i + 1) {
+            i += 1;
+        }
+        sums[i] += f64::from(i16::from_le_bytes(sample)).powi(2);
+    }
     let rms: Vec<f64> = (0..LEVELS)
-        .map(|i| {
-            let part = &pcm[2 * (i * n / LEVELS)..2 * ((i + 1) * n / LEVELS)];
-            if part.is_empty() {
-                return 0.0;
-            }
-            let sum: f64 = part
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .map(|b| f64::from(i16::from_le_bytes(*b)).powi(2))
-                .sum();
-            (sum / (part.len() / 2) as f64).sqrt()
+        .map(|i| match bounds(i + 1) - bounds(i) {
+            0 => 0.0,
+            len => (sums[i] / len as f64).sqrt(),
         })
         .collect();
     let top = rms.iter().copied().fold(0.0, f64::max);
     if top <= 0.0 {
-        return vec![0; LEVELS];
+        return Ok(vec![0; LEVELS]);
     }
-    rms.iter()
+    Ok(rms
+        .iter()
         .map(|r| (r / top * 255.0).round() as u8)
-        .collect()
+        .collect())
 }
 
 /// The track ids of `waveform-fetch`'s input, one per line, each once.
@@ -117,6 +131,33 @@ mod tests {
         let (loud, quiet) = (l[LEVELS / 4], l[3 * LEVELS / 4]);
         assert_eq!(loud, 255);
         assert!((58..=70).contains(&quiet), "quiet {quiet}");
+    }
+
+    /// Hands its bytes out a few at a time, in odd pieces that cut samples in half.
+    struct Trickle<'a>(&'a [u8]);
+
+    impl Read for Trickle<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.0.len().min(buf.len()).min(3);
+            buf[..n].copy_from_slice(&self.0[..n]);
+            self.0 = &self.0[n..];
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn levels_read_in_one_pass_are_those_of_the_whole_sound() {
+        let mut pcm = tone(7.0, 0.0, 1.0);
+        pcm.extend(tone(3.3, 0.4, 0.1));
+        let n = pcm.len() / 2;
+        assert_eq!(levels_from(Trickle(&pcm), n).unwrap(), levels(&pcm));
+        let mut l = levels(&pcm);
+        l.sort();
+        assert!(l[LEVELS / 2] > 0 && l[LEVELS - 1] == 255);
+        // a file shorter than said: what is there, the rest silent
+        let short = levels_from(Trickle(&pcm[..pcm.len() / 2]), n).unwrap();
+        assert_eq!(short.len(), LEVELS);
+        assert!(short[LEVELS - 1] == 0);
     }
 
     #[test]
