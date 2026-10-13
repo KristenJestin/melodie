@@ -485,7 +485,7 @@ impl Render for TrackList {
             .into();
         let selection = self.catalog.read(cx).selection.clone();
         let catalog = self.catalog.clone();
-        let sort = self.catalog.read(cx).track_sort;
+        let sort = self.catalog.read(cx).sorts.get(&Place::Tracks);
         let header = track_header(&cols, false, sort, pal, move |s, cx| {
             catalog.update(cx, |c, cx| c.sort_tracks(Place::Tracks, s, cx))
         });

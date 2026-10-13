@@ -47,8 +47,6 @@ pub struct SearchView {
     empty: Empty,
     scroll: ScrollHandle,
     all: UniformListScrollHandle,
-    /// How the tracks found are sorted, in the groups (`Place::Search`) and on their own page.
-    sorts: HashMap<Place, ColSort>,
     /// The tracks found as their tables show them, by place.
     tables: HashMap<Place, Shown>,
     /// The step of the place last seen, to focus the field when the search is opened.
@@ -70,7 +68,11 @@ impl SearchView {
         let subs = vec![
             cx.subscribe_in(&input, window, |this, input, ev: &InputEvent, _, cx| {
                 if matches!(ev, InputEvent::Change) {
-                    this.text = input.read(cx).value().to_string();
+                    let text = input.read(cx).value().to_string();
+                    if text != this.text {
+                        this.catalog.update(cx, |c, _| c.sorts.searched());
+                    }
+                    this.text = text;
                     this.ask(cx)
                 }
             }),
@@ -83,6 +85,8 @@ impl SearchView {
                     return;
                 }
                 this.step = step;
+                // the move may have put a list back in its own order
+                this.tabulate(cx);
                 match here {
                     Place::Search => this.focus(window, cx),
                     Place::Found(kind) => {
@@ -112,7 +116,6 @@ impl SearchView {
             empty: Empty::Loading,
             scroll: ScrollHandle::new(),
             all: UniformListScrollHandle::new(),
-            sorts: HashMap::new(),
             tables: HashMap::new(),
             step: 0,
             _subs: subs,
@@ -143,6 +146,7 @@ impl SearchView {
         // no change event for this one
         self.input.update(cx, |i, cx| i.set_value("", window, cx));
         self.text.clear();
+        self.catalog.update(cx, |c, _| c.sorts.searched());
         self.ask(cx);
         true
     }
@@ -169,7 +173,7 @@ impl SearchView {
                     Ok(Some(a)) => {
                         this.want_covers(&a, cx);
                         this.answer = Some(Arc::new(a));
-                        this.tabulate();
+                        this.tabulate(cx);
                         this.empty = Empty::Loading;
                     }
                     Ok(None) => this.empty = Empty::NoCopy,
@@ -185,8 +189,9 @@ impl SearchView {
     }
 
     /// The tracks of the answer as their tables show them.
-    fn tabulate(&mut self) {
+    fn tabulate(&mut self, cx: &App) {
         self.tables.clear();
+        let sorts = &self.catalog.read(cx).sorts;
         let Some(a) = &self.answer else { return };
         let grouped = a.groups.iter().find(|g| g.kind == search::Kind::Track);
         let all = a.all.as_ref().filter(|(k, _)| *k == Kind::Track);
@@ -197,18 +202,15 @@ impl SearchView {
         for (place, hits) in lists {
             if let Some(hits) = hits {
                 let tracks = hits.iter().map(track_table::track_of).collect();
-                let shown = Shown::new(tracks, self.sorts.get(&place).copied());
+                let shown = Shown::new(tracks, sorts.get(&place));
                 self.tables.insert(place, shown);
             }
         }
     }
 
     fn sort(&mut self, place: Place, sort: Option<ColSort>, cx: &mut Context<Self>) {
-        match sort {
-            Some(s) => self.sorts.insert(place, s),
-            None => self.sorts.remove(&place),
-        };
-        self.tabulate();
+        self.catalog.update(cx, |c, _| c.sorts.set(place, sort));
+        self.tabulate(cx);
         cx.notify();
     }
 

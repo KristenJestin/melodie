@@ -153,7 +153,9 @@ Screenshots and a recording of the animations, made with invented data, are in
     back to the list's own order (the album's, the playlist's, the top tracks' rank, the search's
     relevance; the library's Tracks are by artist). Sorting changes the view only: # stays the
     row's rank in the list's own order, and removing a row of a sorted playlist removes that rank.
-    A sorted playlist's rows are not dragged (there is no order to drop them in).
+    A sorted playlist's rows are not dragged (there is no order to drop them in). A sort belongs
+    to the visit: a list opened anew (the sidebar, a link, a search result) shows its own order,
+    one come back to (Back, Forward) keeps its sort, and a new search shows its tracks unsorted.
   - A page for an album (its tracks; play, shuffle, play next, add to the queue, instant mix, add
     to a playlist), an artist (its top tracks by plays, its albums; play, shuffle, instant mix)
     and a playlist (its tracks, as the local copy holds them; play, shuffle, play next, add to the

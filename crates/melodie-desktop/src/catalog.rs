@@ -17,7 +17,7 @@ use melodie_desktop::home::{self, Highlight, Home, Row};
 use melodie_desktop::launch::{self, Job};
 use melodie_desktop::playlists;
 use melodie_desktop::selection::{How, Selection};
-use melodie_desktop::table::{self, ColSort, Shown};
+use melodie_desktop::table::{self, ColSort, Shown, Sorts};
 use melodie_desktop::theme::Tint;
 use melodie_desktop::tint;
 use rusqlite::Connection;
@@ -70,10 +70,9 @@ pub struct Catalog {
     pub album_sort: Sort<AlbumBy>,
     pub artists: Option<Arc<[Artist]>>,
     pub artist_sort: Sort<ArtistBy>,
-    /// The library's tracks are sorted as the local copy is read.
-    pub track_sort: Option<ColSort>,
-    /// How each list of tracks is sorted for the view, by place, while it is on the way back.
-    sorts: HashMap<Place, ColSort>,
+    /// How each list of tracks is sorted for the view, by place; the library's tracks are sorted
+    /// as the local copy is read.
+    pub sorts: Sorts,
     /// Each list of tracks as its table shows it, by place.
     pub views: HashMap<Place, Shown>,
     home: Option<Home>,
@@ -117,8 +116,7 @@ impl Catalog {
             album_sort: Sort::desc(AlbumBy::Added),
             artists: None,
             artist_sort: Sort::asc(ArtistBy::Name),
-            track_sort: None,
-            sorts: HashMap::new(),
+            sorts: Sorts::default(),
             views: HashMap::new(),
             home: None,
             home_view: None,
@@ -145,7 +143,7 @@ impl Catalog {
     /// Goes to a place from within the views (a page goes on top).
     pub fn go(&mut self, to: Place, cx: &mut Context<Self>) {
         if self.nav.go(to) {
-            self.moved(cx);
+            self.moved(true, cx);
         }
     }
 
@@ -174,24 +172,26 @@ impl Catalog {
     /// Goes to what the sidebar holds: it starts over.
     pub fn start_at(&mut self, to: Place, cx: &mut Context<Self>) {
         if self.nav.start_at(to) {
-            self.moved(cx);
+            self.moved(true, cx);
         }
     }
 
     pub fn back(&mut self, cx: &mut Context<Self>) {
         if self.nav.back() {
-            self.moved(cx);
+            self.moved(false, cx);
         }
     }
 
     pub fn forward(&mut self, cx: &mut Context<Self>) {
         if self.nav.forward() {
-            self.moved(cx);
+            self.moved(false, cx);
         }
     }
 
-    fn moved(&mut self, cx: &mut Context<Self>) {
+    /// `anew`: opened, not come back to (see `Sorts::moved`).
+    fn moved(&mut self, anew: bool, cx: &mut Context<Self>) {
         self.selection.clear();
+        self.sorts.moved(&self.nav, anew);
         self.refresh(cx);
         cx.notify();
     }
@@ -211,14 +211,10 @@ impl Catalog {
     /// Sorts the view of the list of tracks at `place`; the list itself never changes.
     pub fn sort_tracks(&mut self, place: Place, sort: Option<ColSort>, cx: &mut Context<Self>) {
         self.selection.clear();
+        self.sorts.set(place.clone(), sort);
         if place == Place::Tracks {
-            self.track_sort = sort;
             self.load_tracks(cx);
         } else {
-            match sort {
-                Some(s) => self.sorts.insert(place.clone(), s),
-                None => self.sorts.remove(&place),
-            };
             self.show(&place);
         }
         cx.notify();
@@ -234,7 +230,7 @@ impl Catalog {
                 return;
             }
         };
-        let shown = Shown::new(tracks, self.sorts.get(place).copied());
+        let shown = Shown::new(tracks, self.sorts.get(place));
         self.views.insert(place.clone(), shown);
     }
 
@@ -531,13 +527,13 @@ impl Catalog {
     }
 
     fn load_tracks(&mut self, cx: &mut Context<Self>) {
-        let sort = self.track_sort;
+        let sort = self.sorts.get(&Place::Tracks);
         self.load(
             "tracks",
             cx,
             move |c| lib::tracks(c, table::library_sort(sort)),
             move |this, list, _| {
-                if this.track_sort == sort {
+                if this.sorts.get(&Place::Tracks) == sort {
                     let shown = Shown::read_sorted(list.into(), sort);
                     this.views.insert(Place::Tracks, shown);
                 }
@@ -593,7 +589,6 @@ impl Catalog {
                 // Only the pages on the way back are kept.
                 let kept: Vec<Place> = this.nav.places().to_vec();
                 this.pages.retain(|p, _| kept.contains(p));
-                this.sorts.retain(|p, _| kept.contains(p));
                 this.views
                     .retain(|p, _| *p == Place::Tracks || kept.contains(p));
                 this.pages.insert(key.clone(), Arc::new(page));

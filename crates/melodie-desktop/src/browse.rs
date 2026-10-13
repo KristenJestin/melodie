@@ -85,6 +85,11 @@ impl Nav {
         &self.stack
     }
 
+    /// The pages left by going back, the next one last.
+    pub fn ahead(&self) -> &[Place] {
+        &self.ahead
+    }
+
     pub fn can_go_back(&self) -> bool {
         self.stack.len() > 1
     }

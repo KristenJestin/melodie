@@ -3,10 +3,12 @@
 //! window drops, and the sort of its headers. Kept away from GPUI so that it is tested. The queue
 //! is not one of these tables: its order is the play order.
 
-use crate::browse::Place;
+use crate::browse::{Nav, Place};
+use crate::launch::Kind;
 use crate::selection::Selection;
 use melodie_core::library::{Sort, Track, TrackBy};
 use melodie_core::search::Hit;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// A column, in the order every table shows them.
@@ -148,6 +150,39 @@ impl Table {
 pub struct ColSort {
     pub col: Col,
     pub descending: bool,
+}
+
+/// How each list of tracks is sorted for the view, by place. A sort belongs to the visit.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Sorts(HashMap<Place, ColSort>);
+
+impl Sorts {
+    pub fn get(&self, place: &Place) -> Option<ColSort> {
+        self.0.get(place).copied()
+    }
+
+    pub fn set(&mut self, place: Place, sort: Option<ColSort>) {
+        match sort {
+            Some(s) => self.0.insert(place, s),
+            None => self.0.remove(&place),
+        };
+    }
+
+    /// After a move to where `nav` is now: a list opened `anew` (a link, the sidebar, a search
+    /// result) shows its own order; one come back to (Back, Forward) keeps its sort.
+    pub fn moved(&mut self, nav: &Nav, anew: bool) {
+        let kept = |p: &Place| nav.places().contains(p) || nav.ahead().contains(p);
+        self.0.retain(|p, _| kept(p));
+        if anew {
+            self.0.remove(nav.here());
+        }
+    }
+
+    /// A new search: the tracks it finds show in their own order.
+    pub fn searched(&mut self) {
+        self.0.remove(&Place::Search);
+        self.0.remove(&Place::Found(Kind::Track));
+    }
 }
 
 /// What a click on the header of `col` gives: ascending, then descending, then the list's own
@@ -420,6 +455,82 @@ mod tests {
                 [Col::Number, Col::Title, Col::Artist, Col::Plays, Col::Time]
             );
         }
+    }
+
+    const BY_TITLE: ColSort = ColSort {
+        col: Col::Title,
+        descending: false,
+    };
+
+    #[test]
+    fn a_list_opened_anew_shows_its_own_order() {
+        let (album, other) = (Place::Album("a1".into()), Place::Album("a2".into()));
+        let mut nav = Nav::new(Place::Albums);
+        let mut sorts = Sorts::default();
+        nav.go(album.clone());
+        sorts.moved(&nav, true);
+        sorts.set(album.clone(), Some(BY_TITLE));
+        sorts.set(Place::Search, Some(BY_TITLE));
+        // the same album again, from a link on another page
+        nav.go(other.clone());
+        sorts.moved(&nav, true);
+        nav.go(album.clone());
+        sorts.moved(&nav, true);
+        assert_eq!(sorts.get(&album), None, "a link");
+        // the search, from the sidebar
+        nav.start_at(Place::Search);
+        sorts.moved(&nav, true);
+        assert_eq!(sorts.get(&Place::Search), None, "the sidebar");
+        // a search result
+        sorts.set(Place::Search, Some(BY_TITLE));
+        sorts.set(Place::Found(Kind::Track), Some(BY_TITLE));
+        nav.go(Place::Found(Kind::Track));
+        sorts.moved(&nav, true);
+        assert_eq!(sorts.get(&Place::Found(Kind::Track)), None, "a result");
+        assert_eq!(sorts.get(&Place::Search), Some(BY_TITLE), "on the way back");
+        // the library's tracks, from the sidebar
+        nav.start_at(Place::Tracks);
+        sorts.moved(&nav, true);
+        sorts.set(Place::Tracks, Some(BY_TITLE));
+        nav.start_at(Place::Albums);
+        sorts.moved(&nav, true);
+        nav.start_at(Place::Tracks);
+        sorts.moved(&nav, true);
+        assert_eq!(sorts, Sorts::default(), "nothing kept");
+    }
+
+    #[test]
+    fn a_list_come_back_to_keeps_its_sort() {
+        let (album, artist) = (Place::Album("a1".into()), Place::Artist("r1".into()));
+        let mut nav = Nav::new(Place::Tracks);
+        let mut sorts = Sorts::default();
+        sorts.set(Place::Tracks, Some(BY_TITLE));
+        nav.go(album.clone());
+        sorts.moved(&nav, true);
+        sorts.set(album.clone(), Some(BY_TITLE));
+        nav.go(artist.clone());
+        sorts.moved(&nav, true);
+        sorts.set(artist.clone(), Some(BY_TITLE));
+        nav.back();
+        sorts.moved(&nav, false);
+        assert_eq!(sorts.get(&album), Some(BY_TITLE), "Back");
+        assert_eq!(sorts.get(&Place::Tracks), Some(BY_TITLE), "further back");
+        nav.forward();
+        sorts.moved(&nav, false);
+        assert_eq!(sorts.get(&artist), Some(BY_TITLE), "Forward");
+    }
+
+    #[test]
+    fn a_new_search_shows_the_tracks_found_in_their_own_order() {
+        let mut sorts = Sorts::default();
+        let album = Place::Album("a1".into());
+        for p in [Place::Search, Place::Found(Kind::Track), album.clone()] {
+            sorts.set(p, Some(BY_TITLE));
+        }
+        sorts.searched();
+        assert_eq!(sorts.get(&Place::Search), None);
+        assert_eq!(sorts.get(&Place::Found(Kind::Track)), None);
+        assert_eq!(sorts.get(&album), Some(BY_TITLE), "not a search");
     }
 
     #[test]
