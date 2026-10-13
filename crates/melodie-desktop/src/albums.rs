@@ -235,6 +235,9 @@ pub fn sort_chips<C: Copy + PartialEq + 'static>(
         }))
 }
 
+/// The list, rows and columns shown, and the side of the covers: what an ask was made for.
+type Shown = (usize, usize, usize, usize, u32);
+
 pub struct AlbumGrid {
     shared: Entity<Shared>,
     catalog: Entity<Catalog>,
@@ -243,7 +246,7 @@ pub struct AlbumGrid {
     shown_sort: Option<Sort<AlbumBy>>,
     /// What the covers of the rows shown were last asked for, so that a frame that shows the same
     /// rows asks nothing.
-    asked: Rc<Cell<Option<(usize, usize, usize, usize, u32)>>>,
+    asked: Rc<Cell<Option<Shown>>>,
 }
 
 impl AlbumGrid {
