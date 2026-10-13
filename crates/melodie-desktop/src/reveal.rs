@@ -6,6 +6,9 @@ use std::time::Duration;
 /// How far, in pixels, a revealed thing travels while it appears.
 pub const TRAVEL: f32 = 6.0;
 
+/// How much a picture under the pointer dims.
+pub const DIM: f32 = 0.15;
+
 /// Coming in: as quick as a hover.
 pub const IN: Duration = Duration::from_millis(160);
 /// Going out: quicker, so a pointer moving on leaves nothing behind.
@@ -23,6 +26,12 @@ impl Look {
     /// Nothing to draw, nothing to hit: the thing is left out of the hit test.
     pub fn hidden(&self) -> bool {
         self.opacity <= 0.0
+    }
+
+    /// The opacity of the picture the thing comes over (or of a card that reveals nothing but
+    /// dims under the pointer): it dims as the thing comes, to `1 - DIM`.
+    pub fn under(&self) -> f32 {
+        1.0 - DIM * self.opacity
     }
 }
 
@@ -90,6 +99,14 @@ mod tests {
         assert_eq!(l.opacity, 1.0);
         assert_eq!(l.offset, 0.0);
         assert!(!l.hidden());
+    }
+
+    #[test]
+    fn the_picture_under_dims_as_the_thing_comes() {
+        assert_eq!(at(0.0).under(), 1.0);
+        assert_eq!(at(1.0).under(), 1.0 - DIM);
+        let half = at(0.5).under();
+        assert!(1.0 - DIM < half && half < 1.0, "{half}");
     }
 
     #[test]

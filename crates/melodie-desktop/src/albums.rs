@@ -162,7 +162,7 @@ impl RenderOnce for AlbumCell {
                 div()
                     .relative()
                     // the cover dims as the button comes
-                    .child(cover_box(cover, side, 10.0, pal).opacity(1.0 - 0.15 * look.opacity))
+                    .child(cover_box(cover, side, 10.0, pal).opacity(look.under()))
                     .child(
                         div().absolute().right_2().bottom_2().child(
                             div().revealed(look, false).child(
