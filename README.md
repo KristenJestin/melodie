@@ -198,6 +198,15 @@ Screenshots and a recording of the animations, made with invented data, are in
   inside the window; the arrows, Enter, Right and Left (the playlists) and Escape work in it; a
   click beside it closes it and goes no further. The menu key or Shift+F10 opens it on the row
   picked (the one clicked last), at the pointer.
+- **The search palette**: Ctrl+K, from any place, opens a search over the current page (dimmed
+  behind), the cursor in its field; Ctrl+K again, Escape, the mouse's back button or a click
+  beside it closes it and gives the focus back where it was. It is the search page's search,
+  with the genres of the local copy after the other kinds. Up and Down move through the results
+  across the groups (round the ends); Enter plays a track, opens an album, an artist or a playlist,
+  plays a genre's mix; Shift+Enter adds to the queue; Ctrl+Enter opens a track's album, or plays
+  an album, an artist or a playlist. The keys of the row chosen are shown at the bottom. Before
+  anything is typed it lists what was opened (album, artist and playlist pages) or played (tracks,
+  genre mixes) in the window since it started, then the albums played last according to the local copy.
 - **Keys**: Ctrl+F, or / when not typing, opens the search and puts the cursor in its field;
   Space plays or pauses (in the field, it is a space); `q` shows or hides the queue (in the field,
   it is a letter); Escape closes a dialog, else the queue laid over a narrow window or the
@@ -344,7 +353,8 @@ exposed), and keeps the queue in step with mpv's playlist. The daemon does not l
 - Log: `~/.local/state/melodie/melodie.log`, overwritten at every start, without token.
 - Variables: `MELODIE_AO` sets mpv's audio output (`null` for tests). Reserved for tests:
   `MELODIE_TEST_SECRET` (a file standing for the keyring; with it set, no notification is sent),
-  `MELODIE_MPRIS_NAME` (replaces the bus name suffix) and `MELODIE_IDLE_SECS` (the idle delay).
+  `MELODIE_MPRIS_NAME` (replaces the bus name suffix), `MELODIE_IDLE_SECS` (the idle delay) and
+  `MELODIE_OPEN_URI_HOLD_MS` (holds the MPRIS `OpenUri` answer back).
 
 ## Favourites and playlists
 

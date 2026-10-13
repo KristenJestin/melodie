@@ -243,7 +243,13 @@ fn tip(action: Action) -> &'static str {
 }
 
 /// Does what a result's action says: a job of `melodie`, its page, or the playlist to add to.
-fn act(action: Action, hit: &Hit, catalog: &Entity<Catalog>, window: &mut Window, cx: &mut App) {
+pub fn act(
+    action: Action,
+    hit: &Hit,
+    catalog: &Entity<Catalog>,
+    window: &mut Window,
+    cx: &mut App,
+) {
     if let Some(job) = find::job(action, hit) {
         catalog.update(cx, |c, cx| c.run(job, cx));
     } else if action == Action::Open {

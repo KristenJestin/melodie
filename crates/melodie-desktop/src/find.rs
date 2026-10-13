@@ -157,6 +157,7 @@ pub fn about(hit: &Hit) -> String {
 #[derive(Debug, Default)]
 pub struct Latest {
     asked: u64,
+    answered: u64,
 }
 
 impl Latest {
@@ -167,6 +168,21 @@ impl Latest {
 
     pub fn is_latest(&self, n: u64) -> bool {
         n == self.asked
+    }
+
+    /// Notes that the answer to question `n` arrived; one to an older question counts for
+    /// nothing. Says whether it was the latest.
+    pub fn answered(&mut self, n: u64) -> bool {
+        let latest = self.is_latest(n);
+        if latest {
+            self.answered = n;
+        }
+        latest
+    }
+
+    /// The latest question has its answer: what is shown is for what was asked last.
+    pub fn is_ready(&self) -> bool {
+        self.answered == self.asked
     }
 }
 
@@ -325,5 +341,20 @@ mod tests {
             "a slow answer to « r » after « ra »"
         );
         assert!(latest.is_latest(second));
+    }
+
+    #[test]
+    fn nothing_is_ready_until_the_latest_question_is_answered() {
+        let mut latest = Latest::default();
+        let first = latest.ask();
+        assert!(!latest.is_ready(), "asked, not answered");
+        let second = latest.ask();
+        assert!(!latest.answered(first), "an older answer is not the latest");
+        assert!(!latest.is_ready(), "and it does not make it ready");
+        assert!(latest.answered(second));
+        assert!(latest.is_ready());
+        // a new keystroke: the rows shown are for the text before
+        latest.ask();
+        assert!(!latest.is_ready());
     }
 }

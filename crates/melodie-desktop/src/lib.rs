@@ -14,6 +14,7 @@ pub mod layout;
 pub mod link;
 pub mod menu;
 pub mod model;
+pub mod quick;
 pub mod selection;
 pub mod theme;
 pub mod thumbs;

@@ -2,17 +2,24 @@
 //! focus: kept away from GPUI so that it is tested.
 
 use crate::browse::Place;
+use crate::quick::How;
 
 /// A key press, as far as the window cares.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
     /// Ctrl+F.
     Find,
+    /// Ctrl+K: the search palette.
+    Palette,
     /// The `/` character.
     Slash,
     Escape,
     Space,
     Enter,
+    ShiftEnter,
+    CtrlEnter,
+    Up,
+    Down,
     /// The `q` character: shows or hides the queue.
     Queue,
     /// The menu key, or Shift+F10: the menu of the row picked.
@@ -22,17 +29,27 @@ pub enum Key {
 
 impl Key {
     /// `key` is the key name and `key_char` the text it types, as GPUI gives them.
-    pub fn read(ctrl: bool, key: &str, key_char: Option<&str>) -> Self {
+    pub fn read(ctrl: bool, shift: bool, key: &str, key_char: Option<&str>) -> Self {
         if ctrl && key == "f" {
             Self::Find
+        } else if ctrl && key == "k" {
+            Self::Palette
         } else if key_char == Some("/") {
             Self::Slash
         } else if key == "escape" {
             Self::Escape
         } else if key == "space" {
             Self::Space
+        } else if key == "enter" && ctrl {
+            Self::CtrlEnter
+        } else if key == "enter" && shift {
+            Self::ShiftEnter
         } else if key == "enter" {
             Self::Enter
+        } else if key == "up" {
+            Self::Up
+        } else if key == "down" {
+            Self::Down
         } else if !ctrl && key_char == Some("q") {
             Self::Queue
         } else {
@@ -60,6 +77,8 @@ pub enum Thumb {
 #[derive(Debug, Clone, Copy)]
 pub struct Situation<'a> {
     pub here: &'a Place,
+    /// The search palette is open, over the current place.
+    pub palette_open: bool,
     /// The search field has the window focus.
     pub field_focused: bool,
     /// The settings card is open, or the queue is shown over the main area (a narrow window).
@@ -79,6 +98,13 @@ pub struct Situation<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Act {
     OpenSearch,
+    /// Opens the search palette, or closes it.
+    TogglePalette,
+    /// Moves through the palette's results.
+    PaletteUp,
+    PaletteDown,
+    /// Runs one of the actions of the palette's result.
+    PaletteRun(How),
     CloseOverlays,
     CloseDialog,
     /// What the dialog's main button does.
@@ -119,11 +145,25 @@ pub fn act(key: Key, s: Situation) -> Act {
     if s.dialog_open {
         return match key {
             Key::Escape => Act::CloseDialog,
-            Key::Enter => Act::Confirm,
+            // as before the modifiers were read
+            Key::Enter | Key::ShiftEnter | Key::CtrlEnter => Act::Confirm,
+            _ => Act::Pass,
+        };
+    }
+    // over the current place: its keys first, and what is typed goes to its field
+    if s.palette_open {
+        return match key {
+            Key::Palette | Key::Escape => Act::TogglePalette,
+            Key::Up => Act::PaletteUp,
+            Key::Down => Act::PaletteDown,
+            Key::Enter => Act::PaletteRun(How::Main),
+            Key::ShiftEnter => Act::PaletteRun(How::Queue),
+            Key::CtrlEnter => Act::PaletteRun(How::Other),
             _ => Act::Pass,
         };
     }
     match key {
+        Key::Palette => Act::TogglePalette,
         Key::Find => Act::OpenSearch,
         Key::Slash if !typing => Act::OpenSearch,
         Key::Escape if s.overlay_open => Act::CloseOverlays,
@@ -160,6 +200,7 @@ mod tests {
     fn at(here: &Place, field_focused: bool) -> Situation<'_> {
         Situation {
             here,
+            palette_open: false,
             field_focused,
             overlay_open: false,
             dialog_open: false,
@@ -400,13 +441,103 @@ mod tests {
 
     #[test]
     fn keys_are_read_from_the_keystroke() {
-        assert_eq!(Key::read(false, "q", Some("q")), Key::Queue);
-        assert_eq!(Key::read(true, "q", Some("q")), Key::Other);
-        assert_eq!(Key::read(true, "f", Some("f")), Key::Find);
-        assert_eq!(Key::read(false, "f", Some("f")), Key::Other);
-        assert_eq!(Key::read(false, "/", Some("/")), Key::Slash);
-        assert_eq!(Key::read(false, "escape", None), Key::Escape);
-        assert_eq!(Key::read(false, "space", Some(" ")), Key::Space);
-        assert_eq!(Key::read(false, "enter", None), Key::Enter);
+        assert_eq!(Key::read(false, false, "q", Some("q")), Key::Queue);
+        assert_eq!(Key::read(true, false, "q", Some("q")), Key::Other);
+        assert_eq!(Key::read(true, false, "f", Some("f")), Key::Find);
+        assert_eq!(Key::read(false, false, "f", Some("f")), Key::Other);
+        assert_eq!(Key::read(false, false, "/", Some("/")), Key::Slash);
+        assert_eq!(Key::read(false, false, "escape", None), Key::Escape);
+        assert_eq!(Key::read(false, false, "space", Some(" ")), Key::Space);
+        assert_eq!(Key::read(false, false, "enter", None), Key::Enter);
+    }
+
+    fn places() -> [Place; 11] {
+        [
+            Place::Player,
+            Place::Home,
+            Place::Albums,
+            Place::Artists,
+            Place::Tracks,
+            Place::Album("al1".into()),
+            Place::Artist("ar1".into()),
+            Place::Playlist("p1".into()),
+            Place::Search,
+            Place::Found(Kind::Track),
+            Place::Found(Kind::Album),
+        ]
+    }
+
+    #[test]
+    fn ctrl_k_opens_and_closes_the_palette_from_every_place() {
+        for here in places() {
+            for focused in [false, true] {
+                for (overlay_open, selection) in [(false, false), (true, false), (false, true)] {
+                    let s = Situation {
+                        overlay_open,
+                        selection,
+                        field_empty: false,
+                        ..at(&here, focused)
+                    };
+                    assert_eq!(act(Key::Palette, s), Act::TogglePalette, "{here:?}");
+                    let open = Situation {
+                        palette_open: true,
+                        ..s
+                    };
+                    assert_eq!(act(Key::Palette, open), Act::TogglePalette, "{here:?}");
+                    // Escape closes it first, whatever else is open behind it
+                    assert_eq!(act(Key::Escape, open), Act::TogglePalette, "{here:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_palette_waits_behind_a_dialog_and_the_sign_in_screen() {
+        let page = Place::Album("al1".into());
+        let dialog = Situation {
+            dialog_open: true,
+            ..at(&page, false)
+        };
+        assert_eq!(act(Key::Palette, dialog), Act::Pass);
+        let covered = Situation {
+            sign_in: true,
+            ..at(&page, false)
+        };
+        assert_eq!(act(Key::Palette, covered), Act::Pass);
+    }
+
+    #[test]
+    fn the_arrows_and_enter_drive_the_open_palette() {
+        for here in places() {
+            let open = Situation {
+                palette_open: true,
+                field_empty: false,
+                ..at(&here, false)
+            };
+            assert_eq!(act(Key::Up, open), Act::PaletteUp);
+            assert_eq!(act(Key::Down, open), Act::PaletteDown);
+            assert_eq!(act(Key::Enter, open), Act::PaletteRun(How::Main));
+            assert_eq!(act(Key::ShiftEnter, open), Act::PaletteRun(How::Queue));
+            assert_eq!(act(Key::CtrlEnter, open), Act::PaletteRun(How::Other));
+            // what is typed goes to its field: a space, a slash, a q
+            for key in [Key::Space, Key::Slash, Key::Queue, Key::Find, Key::Other] {
+                assert_eq!(act(key, open), Act::Pass, "{key:?}");
+            }
+            // closed, the arrows are not ours
+            let closed = at(&here, false);
+            assert_eq!(act(Key::Up, closed), Act::Pass);
+            assert_eq!(act(Key::Down, closed), Act::Pass);
+        }
+    }
+
+    #[test]
+    fn the_palette_keys_are_read_from_the_keystroke() {
+        assert_eq!(Key::read(true, false, "k", Some("k")), Key::Palette);
+        assert_eq!(Key::read(false, false, "k", Some("k")), Key::Other);
+        assert_eq!(Key::read(false, false, "up", None), Key::Up);
+        assert_eq!(Key::read(false, false, "down", None), Key::Down);
+        assert_eq!(Key::read(false, true, "enter", None), Key::ShiftEnter);
+        assert_eq!(Key::read(true, false, "enter", None), Key::CtrlEnter);
+        assert_eq!(Key::read(false, false, "enter", None), Key::Enter);
     }
 }

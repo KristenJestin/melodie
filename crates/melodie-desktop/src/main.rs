@@ -13,6 +13,7 @@ mod pages;
 mod playbar;
 mod player;
 mod queue;
+mod quick_view;
 mod search;
 mod sidebar;
 mod signin;
@@ -30,6 +31,7 @@ use catalog::Catalog;
 use context_menu::{ContextMenu, MenuHandle};
 use dialogs::{Dialogs, DialogsHandle};
 use gpui_kit::base::{h_flex, v_flex};
+use gpui_kit::component::input::{MoveDown, MoveUp};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use home_page::HomeView;
@@ -45,6 +47,7 @@ use pages::{PageView, SelectionBar};
 use playbar::PlayBar;
 use player::{Bar, PlayerView, palette};
 use queue::QueuePanel;
+use quick_view::QuickSearch;
 use search::SearchView;
 use sidebar::Sidebar;
 use signin::{Account, SignInView};
@@ -114,6 +117,7 @@ struct Views {
     tracks: Entity<TrackList>,
     page: Entity<PageView>,
     search: Entity<SearchView>,
+    quick: Entity<QuickSearch>,
     playbar: Entity<PlayBar>,
     sign_in: Entity<SignInView>,
     dialogs: Entity<Dialogs>,
@@ -170,6 +174,13 @@ impl Root {
                     window.focus(&this.focus, cx);
                 }
             }),
+            // the palette closed without anything focused before it: the root takes the focus
+            cx.observe_in(&views.quick, window, |this, quick, window, cx| {
+                let q = quick.read(cx);
+                if !q.open && q.has_focus(window, cx) {
+                    window.focus(&this.focus, cx);
+                }
+            }),
             cx.observe(&shared, move |this, shared, cx| {
                 let open = shared.read(cx).queue_open;
                 if open && !was_open {
@@ -207,6 +218,7 @@ impl Root {
         );
         judge(Situation {
             here: c.here(),
+            palette_open: self.views.quick.read(cx).open,
             field_focused: v.has_focus(window, cx),
             overlay_open: self.queue_place(window, cx).covers() || s.settings_open,
             dialog_open: self.views.dialogs.read(cx).is_open(),
@@ -220,11 +232,18 @@ impl Root {
     fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let k = &ev.keystroke;
         context_menu::forget_pending(cx);
-        let key = if Key::opens_menu(k.modifiers.shift, &k.key) {
+        let m = k.modifiers;
+        let key = if Key::opens_menu(m.shift, &k.key) {
             Key::Menu
         } else {
-            Key::read(k.modifiers.control, &k.key, k.key_char.as_deref())
+            Key::read(m.control, m.shift, &k.key, k.key_char.as_deref())
         };
+        let act = self.situation(window, cx, |s| keys::act(key, s));
+        self.run(act, window, cx);
+    }
+
+    /// The arrows, which the palette's field takes as actions before any key listener.
+    fn on_arrow(&mut self, key: Key, window: &mut Window, cx: &mut Context<Self>) {
         let act = self.situation(window, cx, |s| keys::act(key, s));
         self.run(act, window, cx);
     }
@@ -270,6 +289,10 @@ impl Root {
                     s.send(Request::Toggle, cx)
                 }
             }),
+            Act::TogglePalette => self.views.quick.update(cx, |q, cx| q.toggle(window, cx)),
+            Act::PaletteUp => self.views.quick.update(cx, |q, cx| q.step(false, cx)),
+            Act::PaletteDown => self.views.quick.update(cx, |q, cx| q.step(true, cx)),
+            Act::PaletteRun(how) => self.views.quick.update(cx, |q, cx| q.run(how, window, cx)),
             Act::Pass => return,
         }
         cx.stop_propagation();
@@ -450,6 +473,12 @@ impl Render for Root {
             .id("root")
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key))
+            .capture_action(
+                cx.listener(|this, _: &MoveUp, window, cx| this.on_arrow(Key::Up, window, cx)),
+            )
+            .capture_action(
+                cx.listener(|this, _: &MoveDown, window, cx| this.on_arrow(Key::Down, window, cx)),
+            )
             .on_mouse_down(
                 MouseButton::Navigate(NavigationDirection::Back),
                 cx.listener(|this, _, window, cx| this.on_thumb(Thumb::Back, window, cx)),
@@ -609,6 +638,7 @@ impl Render for Root {
                         ),
                 )
             })
+            .child(self.views.quick.clone())
             .child(self.views.dialogs.clone())
             .child(self.views.menu.clone())
             // over everything, the notices included; clicks stay on it
@@ -692,6 +722,7 @@ fn main() -> ExitCode {
                 tracks: cx.new(|_| TrackList::new(s.clone(), c.clone())),
                 page: cx.new(|_| PageView::new(s.clone(), c.clone())),
                 search: cx.new(|cx| SearchView::new(s.clone(), c.clone(), env.clone(), window, cx)),
+                quick: cx.new(|cx| QuickSearch::new(s.clone(), c.clone(), env.clone(), window, cx)),
                 playbar: cx.new(|_| PlayBar::new(s.clone(), c.clone(), volume.clone(), inline)),
                 sign_in: cx.new(|cx| SignInView::new(s.clone(), account.clone(), window, cx)),
                 dialogs: cx.new(|cx| Dialogs::new(s.clone(), c.clone(), window, cx)),
