@@ -160,16 +160,17 @@ impl Account {
         self.shared.update(cx, |s, cx| s.fail(what, cx));
     }
 
-    /// After `melodie login` said yes: the library follows the first copy as it comes.
-    pub fn signed_in(&mut self, cx: &mut Context<Self>) {
+    /// After `melodie login` said yes: the library follows the first copy as it comes. `since` is
+    /// when the attempt began (`now_secs`).
+    pub fn signed_in(&mut self, since: u64, cx: &mut Context<Self>) {
         self.read_settings();
         self.set_standing(Standing::Ok, cx);
-        self.await_copy(cx);
+        self.await_copy(since, cx);
     }
 
-    /// Looks for a newer copy until one comes (or for a quarter of an hour).
-    fn await_copy(&mut self, cx: &mut Context<Self>) {
-        let before = self.synced_at;
+    /// Looks for the copy `melodie login` started, made since `since`, until it comes (or for a
+    /// quarter of an hour). `melodie sync` is waited for itself, never polled.
+    fn await_copy(&mut self, since: u64, cx: &mut Context<Self>) {
         self.syncing = true;
         cx.notify();
         let env = self.env.clone();
@@ -180,7 +181,7 @@ impl Account {
                 let at = cx
                     .background_spawn(async move { account::synced_at(&env) })
                     .await;
-                let fresh = at.is_some() && at != before;
+                let fresh = account::is_new_copy(at, since);
                 if fresh || started.elapsed() > COPY_FOR {
                     let _ = this.update(cx, |a, cx| {
                         a.syncing = false;
@@ -228,17 +229,32 @@ impl Account {
         });
         cx.spawn(async move |this, cx| {
             let (code, refused, said) = task.await;
+            // what the run left, read before the screen says it is over
+            let env = this.read_with(cx, |a, _| a.env.clone());
+            let at = match env {
+                Ok(env) => {
+                    cx.background_spawn(async move { account::synced_at(&env) })
+                        .await
+                }
+                Err(_) => None,
+            };
             let _ = this.update(cx, |a, cx| {
                 a.syncing = false;
-                match Standing::after(code, refused) {
-                    // another copy may be running already: its end is awaited the same way
-                    Some(Standing::Ok) => {
+                match account::sync_end(code, refused, &said) {
+                    account::SyncEnd::Done => {
                         a.set_standing(Standing::Ok, cx);
-                        a.await_copy(cx);
+                        if a.synced_at != at {
+                            a.synced_at = at;
+                            a.copy_step += 1;
+                        }
                     }
-                    Some(s) => a.set_standing(s, cx),
-                    None if said.is_empty() => a.say("Could not sync the library", cx),
-                    None => a.say(format!("Could not sync the library: {said}"), cx),
+                    account::SyncEnd::Standing(s) => a.set_standing(s, cx),
+                    account::SyncEnd::Failed(said) if said.is_empty() => {
+                        a.say("Could not sync the library", cx)
+                    }
+                    account::SyncEnd::Failed(said) => {
+                        a.say(format!("Could not sync the library: {said}"), cx)
+                    }
                 }
                 cx.notify();
             });
@@ -406,6 +422,7 @@ impl SignInView {
             Err(why) => return self.fail(why, cx),
         };
         let password = self.password.read(cx).value();
+        let since = now_secs();
         // `set_value` drops the text and the undo history: the field no longer holds it
         self.password
             .update(cx, |i, cx| i.set_value("", window, cx));
@@ -423,7 +440,7 @@ impl SignInView {
                 v.busy = false;
                 match out {
                     Outcome::SignedIn => {
-                        v.account.update(cx, |a, cx| a.signed_in(cx));
+                        v.account.update(cx, |a, cx| a.signed_in(since, cx));
                     }
                     other => {
                         v.fail(other.message(), cx);

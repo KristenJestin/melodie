@@ -152,6 +152,32 @@ pub fn sign_in(program: &Path, server: &str, user: &str, password: &str) -> Outc
     }
 }
 
+/// Whether the local copy dates from the sign-in or after: the first copy `melodie login` started.
+/// Dates are whole seconds, so a copy made in the second the sign-in began counts.
+pub fn is_new_copy(synced_at: Option<u64>, since: u64) -> bool {
+    synced_at.is_some_and(|at| at >= since)
+}
+
+/// How a `melodie sync` run the window waited for ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyncEnd {
+    /// The copy is made (or another run holds it): the library is read again, nothing more awaited.
+    Done,
+    /// The server said something about the login.
+    Standing(Standing),
+    /// A local problem, in `melodie`'s own words (empty when it said none).
+    Failed(String),
+}
+
+/// What `melodie sync` exiting with `code` means.
+pub fn sync_end(code: Option<i32>, refused_marked: bool, said: &str) -> SyncEnd {
+    match Standing::after(code, refused_marked) {
+        Some(Standing::Ok) => SyncEnd::Done,
+        Some(s) => SyncEnd::Standing(s),
+        None => SyncEnd::Failed(said.to_string()),
+    }
+}
+
 /// When the local copy was last made, in seconds since the epoch.
 pub fn synced_at(env: &Env) -> Option<u64> {
     let conn = db::open_existing(env).ok()??;
@@ -393,6 +419,34 @@ mod tests {
             ),
             Outcome::Unreachable
         );
+    }
+
+    #[test]
+    fn the_first_copy_is_the_one_made_since_the_sign_in_began() {
+        assert!(is_new_copy(Some(101), 100));
+        // the same second counts: dates are whole seconds, a small library is copied in one
+        assert!(is_new_copy(Some(100), 100));
+        // the copy of an older login is not the first copy of this one
+        assert!(!is_new_copy(Some(99), 100));
+        assert!(!is_new_copy(None, 100));
+    }
+
+    #[test]
+    fn a_sync_that_returns_is_over_with_its_message() {
+        assert_eq!(sync_end(Some(0), false, ""), SyncEnd::Done);
+        assert_eq!(
+            sync_end(Some(1), true, ""),
+            SyncEnd::Standing(Standing::AuthRefused)
+        );
+        assert_eq!(
+            sync_end(Some(2), false, "Serveur injoignable"),
+            SyncEnd::Standing(Standing::Unreachable)
+        );
+        assert_eq!(
+            sync_end(Some(3), false, "base locale : disk full"),
+            SyncEnd::Failed("base locale : disk full".into())
+        );
+        assert_eq!(sync_end(None, false, ""), SyncEnd::Failed(String::new()));
     }
 
     #[test]
