@@ -22,6 +22,9 @@ const THUMB_SIZE: u32 = 128;
 pub const BUDGET: Duration = Duration::from_millis(250);
 /// Téléchargements simultanés.
 const WORKERS: usize = 8;
+/// Code de sortie de `melodie cover-fetch` quand un autre tient le verrou : rien n'a été fait
+/// (`EX_TEMPFAIL`). Le lanceur ignore le code ; la fenêtre redemande plus tard.
+pub const LOCKED_EXIT: u8 = 75;
 /// Image « sans pochette » de Navidrome (étoile blanche) : jamais affichée.
 const PLACEHOLDER_MD5: &str = "fcec14e686ad5159a8ed7c51936116d7";
 
