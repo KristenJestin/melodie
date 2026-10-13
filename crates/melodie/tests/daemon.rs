@@ -1028,6 +1028,9 @@ fn favoris_playlists_et_mixes_de_bout_en_bout() {
         .iter()
         .filter(|c| c.starts_with("getSong?") || c.starts_with("getAlbum?"))
         .count();
+    // Longer than the test lasts, even on a loaded machine: the commands below act on the track
+    // playing, which must stay the same one.
+    sb.fake.state.stream_secs.store(300, Ordering::SeqCst);
     let out = sb.ok(&["mix", "me", "--seed", "1"]);
     assert!(out.contains("3 morceaux"), "{out}");
     wait_until(5, "lecture du mix", || sb.now()["state"] == "playing");
@@ -2579,7 +2582,13 @@ fn open_uri_on_mpris_of_an_unknown_id_is_logged_as_not_found_and_changes_nothing
 fn open_uri_on_mpris_with_a_refused_token_quits_like_a_refused_stream() {
     let sb = Sandbox::new(true);
     addressable_library(&sb);
-    sb.ok(&["open", "melodie:album/al1"]);
+    // The answer to `OpenUri` is held back (less than the daemon waits for it) so the refusal
+    // reaches the engine first: the daemon is quitting while the call still waits for its
+    // answer, which a loaded machine does by chance. The caller must still get it.
+    let mut c = sb.cmd(&["open", "melodie:album/al1"]);
+    c.env("MELODIE_OPEN_URI_HOLD_MS", "500");
+    let o = c.output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let Some((_conn, p)) = bus_player(&sb) else {
         return;
     };
