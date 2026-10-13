@@ -34,6 +34,9 @@ pub struct SearchView {
     catalog: Entity<Catalog>,
     env: Env,
     pub input: Entity<InputState>,
+    field: Entity<Field>,
+    /// The text of the field, as last changed.
+    text: String,
     latest: Latest,
     /// The kind of every result asked last, to ask again when another is opened.
     asked_all: Option<Kind>,
@@ -60,8 +63,9 @@ impl SearchView {
             InputState::new(window, cx).placeholder("Artists, albums, tracks, playlists")
         });
         let subs = vec![
-            cx.subscribe_in(&input, window, |this, _, ev: &InputEvent, _, cx| {
+            cx.subscribe_in(&input, window, |this, input, ev: &InputEvent, _, cx| {
                 if matches!(ev, InputEvent::Change) {
+                    this.text = input.read(cx).value().to_string();
                     this.ask(cx)
                 }
             }),
@@ -86,11 +90,17 @@ impl SearchView {
                 }
             }),
         ];
+        let field = cx.new(|_| Field {
+            input: input.clone(),
+            shared: shared.clone(),
+        });
         Self {
             shared,
             catalog,
             env,
             input,
+            field,
+            text: String::new(),
             latest: Latest::default(),
             asked_all: None,
             answer: None,
@@ -117,17 +127,19 @@ impl SearchView {
 
     /// Empties the field; false when it was empty already.
     pub fn clear(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        if self.input.read(cx).value().is_empty() {
+        if self.text.is_empty() {
             return false;
         }
+        // no change event for this one
         self.input.update(cx, |i, cx| i.set_value("", window, cx));
+        self.text.clear();
         self.ask(cx);
         true
     }
 
     /// Reads the local copy for the text of the field, away from the window.
     fn ask(&mut self, cx: &mut Context<Self>) {
-        let text = self.input.read(cx).value().to_string();
+        let text = self.text.clone();
         let all = match self.catalog.read(cx).here() {
             Place::Found(kind) => Some(*kind),
             _ => None,
@@ -172,6 +184,26 @@ impl SearchView {
             .flat_map(|(_, hits)| hits.iter());
         let ids: Vec<String> = shown.chain(all).filter_map(|h| h.cover.clone()).collect();
         self.catalog.update(cx, |c, cx| c.want_covers(ids, cx));
+    }
+}
+
+/// The field, a view of its own: its blinking caret redraws it alone, not the results beside it.
+struct Field {
+    input: Entity<InputState>,
+    shared: Entity<Shared>,
+}
+
+impl Render for Field {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let pal = palette(&self.shared, window, cx);
+        Input::new(&self.input)
+            .prefix(
+                Icon::new(IconName::Search)
+                    .size(px(18.))
+                    .text_color(pal.secondary),
+            )
+            .cleanable(true)
+            .h(px(44.))
     }
 }
 
@@ -324,7 +356,7 @@ impl Render for SearchView {
                 c.picker_open,
             )
         };
-        let text = self.input.read(cx).value().to_string();
+        let text = self.text.clone();
         let view = cx.entity();
         let catalog = &self.catalog;
         let pk = motion::flag(
@@ -347,18 +379,7 @@ impl Render for SearchView {
                         .on_click(move |_, _, cx| catalog.update(cx, |c, cx| c.back(cx))),
                 )
             })
-            .child(
-                div().flex_1().min_w_0().child(
-                    Input::new(&self.input)
-                        .prefix(
-                            Icon::new(IconName::Search)
-                                .size(px(18.))
-                                .text_color(pal.secondary),
-                        )
-                        .cleanable(true)
-                        .h(px(44.)),
-                ),
-            );
+            .child(div().flex_1().min_w_0().child(self.field.clone()));
         let answer = self.answer.clone().filter(|_| !text.trim().is_empty());
         let body: AnyElement = match (&here, answer) {
             _ if text.trim().is_empty() => hint(
