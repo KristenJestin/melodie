@@ -1,5 +1,5 @@
-//! `melodie` : client Navidrome (API Subsonic/OpenSubsonic), copie locale
-//! de la bibliothèque, recherche, et lecteur de fond (démon libmpv + MPRIS).
+//! `melodie`: Navidrome client (Subsonic/OpenSubsonic API), local copy of the
+//! library, search, and background player (libmpv daemon + MPRIS).
 
 mod autosync;
 mod cover_cmd;
@@ -28,14 +28,14 @@ use std::process::ExitCode;
     name = "melodie",
     bin_name = "melodie",
     version,
-    about = "Client Navidrome : connexion, copie locale, recherche"
+    about = "Navidrome client: login, local copy, search"
 )]
 struct Cli {
     #[command(subcommand)]
     command: Cmd,
 }
 
-/// Ce qu'on peut lire.
+/// What can be played.
 #[derive(Clone, Copy, ValueEnum)]
 enum KindArg {
     Playlist,
@@ -55,7 +55,7 @@ impl From<KindArg> for search::Kind {
     }
 }
 
-/// Ce qu'on peut aimer.
+/// What can be liked.
 #[derive(Clone, Copy, ValueEnum)]
 enum StarArg {
     Track,
@@ -73,122 +73,122 @@ impl From<StarArg> for db::StarKind {
     }
 }
 
-/// Un mix.
+/// A mix.
 #[derive(Subcommand)]
 enum MixWhat {
-    /// Mix personnel sur toute la bibliothèque
+    /// Personal mix over the whole library
     Me,
-    /// Albums écoutés mais pas depuis 90 jours
+    /// Albums played before, but not in the last 90 days
     Rediscover,
-    /// Mix instantané autour d'un morceau (identifiant ou titre)
+    /// Instant mix around a track (id or title)
     Track {
         #[arg(required = true, num_args = 1..)]
         id: Vec<String>,
     },
-    /// Mix instantané autour d'un album (identifiant ou nom)
+    /// Instant mix around an album (id or name)
     Album {
         #[arg(required = true, num_args = 1..)]
         id: Vec<String>,
     },
-    /// Mix instantané autour d'un artiste (identifiant ou nom)
+    /// Instant mix around an artist (id or name)
     Artist {
         #[arg(required = true, num_args = 1..)]
         id: Vec<String>,
     },
-    /// Mix d'un genre (nom)
+    /// Mix of a genre (name)
     Genre {
         #[arg(required = true, num_args = 1..)]
         name: Vec<String>,
     },
 }
 
-/// Écriture des playlists.
+/// Playlist editing.
 #[derive(Subcommand)]
 enum PlaylistCmd {
-    /// Ajoute un morceau, un album ou le morceau en cours (défaut) à une playlist
+    /// Adds a track, an album or the current track (default) to a playlist
     Add {
         playlist_id: String,
-        /// `current`, `track <id>` ou `album <id>`
+        /// `current`, `track <id>` or `album <id>`
         target: Vec<String>,
-        /// Ajoute aussi les morceaux déjà présents (sinon ils sont ignorés et comptés)
+        /// Also adds the tracks already in the playlist (otherwise they are skipped and counted)
         #[arg(long)]
         allow_duplicates: bool,
-        /// Sortie JSON : morceaux ajoutés et morceaux déjà présents
+        /// JSON output: tracks added and tracks already present
         #[arg(long)]
         json: bool,
     },
-    /// Liste les doublons d'une playlist ; avec --remove, retire les doublons exacts
+    /// Lists the duplicates of a playlist; with --remove, removes the exact ones
     Duplicates {
         playlist_id: String,
-        /// Retire les doublons exacts (même identifiant) et garde la première occurrence
+        /// Removes exact duplicates (same id) and keeps the first occurrence
         #[arg(long)]
         remove: bool,
-        /// Sortie JSON
+        /// JSON output
         #[arg(long)]
         json: bool,
     },
-    /// Retire le morceau de rang <index> (à partir de 0)
+    /// Removes the track at <index> (counted from 0)
     Remove { playlist_id: String, index: usize },
-    /// Crée une playlist, éventuellement avec un morceau, un album ou le morceau en cours
+    /// Creates a playlist, optionally with a track, an album or the current track
     Create {
-        /// <nom> puis `current`, `track <id>` ou `album <id>` (avec --prompt : la cible seule)
+        /// <name>, then `current`, `track <id>` or `album <id>` (with --prompt: the target only)
         args: Vec<String>,
-        /// Demande le nom au clavier
+        /// Asks for the name on the keyboard
         #[arg(long)]
         prompt: bool,
     },
-    /// Renomme une playlist
+    /// Renames a playlist
     Rename {
         playlist_id: String,
         #[arg(required = true, num_args = 1..)]
         name: Vec<String>,
     },
-    /// Supprime une playlist
+    /// Deletes a playlist
     Delete { playlist_id: String },
-    /// Liste des playlists de l'utilisateur, avec l'action d'ajout (sous-menu du lanceur)
+    /// Lists the user's playlists with the add action (launcher submenu)
     Pick {
         #[arg(long)]
         json: bool,
-        /// `current` (défaut), `track <id>` ou `album <id>`
+        /// `current` (default), `track <id>` or `album <id>`
         target: Vec<String>,
     },
 }
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Se connecte à un serveur Navidrome (le mot de passe n'est pas conservé)
+    /// Logs in to a Navidrome server (the password is not kept)
     Login,
-    /// Supprime le secret du trousseau
+    /// Removes the secret from the keyring
     Logout,
-    /// Serveur, utilisateur, état de la connexion, copie locale
+    /// Server, user, connection state, local copy
     Status,
-    /// Met à jour la copie locale de la bibliothèque
+    /// Updates the local copy of the library
     Sync {
-        /// Copie complète, sans comparer le dernier scan du serveur
+        /// Full copy, without comparing the server's last scan
         #[arg(long)]
         full: bool,
-        /// Synchronisation de fond (lancée par le module : silencieuse, journal dans sync.log)
+        /// Background sync (started by the player: silent, logged in sync.log)
         #[arg(long, hide = true)]
         background: bool,
     },
-    /// Cherche dans la copie locale
+    /// Searches the local copy
     Search {
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
-        /// Sortie JSON au format du lanceur
+        /// JSON output in the launcher format
         #[arg(long)]
         json: bool,
     },
-    /// Liste les playlists
+    /// Lists the playlists
     Playlists {
         #[arg(long)]
         json: bool,
     },
-    /// Lance la lecture d'une playlist, d'un album, d'un artiste ou d'un morceau
+    /// Plays a playlist, an album, an artist or a track
     Play {
         kind: KindArg,
         id: String,
-        /// Mélange la file
+        /// Shuffles the queue
         #[arg(long)]
         shuffle: bool,
     },
@@ -232,85 +232,85 @@ enum Cmd {
     },
     /// Follows what the player does: one JSON event per line (never starts the daemon)
     Watch,
-    /// Lecture ou pause
+    /// Plays or pauses
     Toggle,
-    /// Met en pause
+    /// Pauses
     Pause,
-    /// Reprend la lecture
+    /// Resumes playback
     Resume,
-    /// Morceau suivant
+    /// Next track
     Next,
-    /// Morceau précédent (ou début du morceau en cours)
+    /// Previous track (or the start of the current one)
     Prev,
-    /// Arrête la lecture et vide la file
+    /// Stops playback and empties the queue
     Stop,
-    /// Volume : sans argument l'affiche ; `<0-100>`, `+5` ou `-5` le règle (mémorisé)
+    /// Volume: without an argument shows it; `<0-100>`, `+5` or `-5` sets it (remembered)
     Volume {
         #[arg(allow_hyphen_values = true)]
         change: Option<String>,
     },
-    /// Morceau en cours, position, qualité, état
+    /// Current track, position, quality, state
     Now {
-        /// Sortie JSON
+        /// JSON output
         #[arg(long)]
         json: bool,
     },
-    /// Aime le morceau en cours, ou un morceau, album ou artiste
+    /// Likes the current track, or a track, album or artist
     Like {
         #[arg(requires = "id")]
         kind: Option<StarArg>,
         #[arg(requires = "kind")]
         id: Option<String>,
-        /// Inverse l'état actuel au lieu d'aimer
+        /// Flips the current state instead of liking
         #[arg(long)]
         toggle: bool,
     },
-    /// Retire des favoris le morceau en cours, ou un morceau, album ou artiste
+    /// Removes the current track, or a track, album or artist, from the favourites
     Unlike {
         #[arg(requires = "id")]
         kind: Option<StarArg>,
         #[arg(requires = "kind")]
         id: Option<String>,
     },
-    /// Écrit dans les playlists du serveur
+    /// Edits the playlists on the server
     Playlist {
         #[command(subcommand)]
         cmd: PlaylistCmd,
     },
-    /// Calcule un mix sur la copie locale et le lit
+    /// Computes a mix on the local copy and plays it
     Mix {
         #[command(subcommand)]
         what: MixWhat,
-        /// Ajoute à la file au lieu de la remplacer
+        /// Adds to the queue instead of replacing it
         #[arg(long, global = true)]
         queue: bool,
-        /// Affiche la liste sans rien jouer
+        /// Prints the list without playing anything
         #[arg(long, global = true)]
         print: bool,
-        /// Sortie JSON au format du lanceur (sans rien jouer)
+        /// JSON output in the launcher format (plays nothing)
         #[arg(long, global = true)]
         json: bool,
-        /// Graine du hasard (résultats reproductibles)
+        /// Random seed (reproducible results)
         #[arg(long, global = true)]
         seed: Option<u64>,
-        /// Nombre de morceaux
+        /// Number of tracks
         #[arg(long, global = true, default_value_t = mix::DEFAULT_SIZE)]
         size: usize,
     },
-    /// Mixes proposés au lanceur : mix perso, redécouvertes, genres
+    /// Mixes offered to the launcher: personal mix, rediscoveries, genres
     Mixes {
         #[arg(long)]
         json: bool,
     },
-    /// Contenu du lanceur sans saisie : playlists puis mixes
+    /// Launcher content without any typing: playlists, then mixes
     Home {
         #[arg(long)]
         json: bool,
     },
-    /// Télécharge des vignettes (identifiants sur l'entrée standard, lancé par la recherche)
+    /// Downloads thumbnails (ids on standard input, started by search)
     #[command(hide = true)]
     CoverFetch,
-    /// Démon de lecture (lancé par `play` et `queue`)
+    /// Playback daemon (started by `play` and `queue`)
     #[command(hide = true)]
     Daemon,
 }
@@ -781,6 +781,7 @@ fn status(env: &Env) -> Result<ExitCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
 
     /// The window runs `melodie like track -- <id>`: the id must come out whole even when it
     /// starts with a dash.
@@ -795,5 +796,47 @@ mod tests {
             assert!(matches!(kind, Some(StarArg::Track)));
             assert_eq!(id.as_deref(), Some("-7f3a"));
         }
+    }
+
+    /// Words that exist in French and not in English; the help must hold none of them.
+    const FRENCH_WORDS: &[&str] = &[
+        "le", "la", "les", "un", "une", "des", "du", "ou", "et", "avec", "sans", "pour", "dans",
+        "sur", "est", "pas", "qui", "que", "ce", "cette", "ces", "aux", "au", "morceau",
+        "morceaux", "ajoute", "retire", "liste", "lecture", "sortie", "copie", "serveur",
+    ];
+
+    fn help_of(cmd: &mut clap::Command, out: &mut Vec<(String, String)>) {
+        cmd.build();
+        out.push((
+            cmd.get_name().to_string(),
+            cmd.render_long_help().to_string(),
+        ));
+        for sub in cmd.get_subcommands_mut() {
+            help_of(sub, out);
+        }
+    }
+
+    #[test]
+    fn help_of_every_command_is_in_english() {
+        let mut helps = Vec::new();
+        help_of(&mut Cli::command(), &mut helps);
+        // The hidden subcommands are rendered too: they are help text all the same.
+        assert!(helps.len() > 30, "only {} helps rendered", helps.len());
+        let mut french = Vec::new();
+        for (name, help) in &helps {
+            if let Some(c) = help.chars().find(|c| c.is_alphabetic() && !c.is_ascii()) {
+                french.push(format!("{name}: non-ASCII letter {c:?}"));
+            }
+            for word in help.split(|c: char| !c.is_alphabetic()) {
+                if FRENCH_WORDS.contains(&word.to_lowercase().as_str()) {
+                    french.push(format!("{name}: French word {word:?}"));
+                }
+            }
+        }
+        assert!(
+            french.is_empty(),
+            "French left in the help:\n{}",
+            french.join("\n")
+        );
     }
 }
