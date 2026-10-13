@@ -166,10 +166,34 @@ pub fn check_add(client: &Client, pid: &str, tracks: &[TrackInfo]) -> Result<Add
 /// The tracks of a playlist, in the server's order.
 fn entries(client: &Client, pid: &str) -> Result<Vec<TrackInfo>, Failure> {
     let r = call(client, "getPlaylist", &[("id", pid.to_string())])?;
-    Ok(r["playlist"]["entry"]
+    Ok(tracks_in(&r))
+}
+
+fn tracks_in(r: &Value) -> Vec<TrackInfo> {
+    r["playlist"]["entry"]
         .as_array()
         .map(|a| a.iter().filter_map(TrackInfo::from_api).collect())
-        .unwrap_or_default())
+        .unwrap_or_default()
+}
+
+/// The tracks of a playlist, in the server's order, checked to be all of them: Navidrome leaves
+/// out of `getPlaylist` the tracks whose file is missing, though it counts them in `songCount`
+/// and keeps them in the playlist. Rewriting the playlist from such a list would drop them.
+fn whole_entries(client: &Client, pid: &str) -> Result<Vec<TrackInfo>, Failure> {
+    let r = call(client, "getPlaylist", &[("id", pid.to_string())])?;
+    let list = tracks_in(&r);
+    match r["playlist"]["songCount"].as_u64() {
+        Some(n) if n == list.len() as u64 => Ok(list),
+        Some(n) => Err(Failure::Internal(anyhow!(
+            "the server shows {} of its {n} tracks (the others may be missing files): the \
+             playlist was left as it is, rather than lose them",
+            list.len()
+        ))),
+        None => Err(Failure::Internal(anyhow!(
+            "the server did not say how many tracks the playlist holds: it was left as it is, \
+             rather than lose some"
+        ))),
+    }
 }
 
 /// A track as the `--json` outputs of `playlist add` and `playlist duplicates` show it.
@@ -382,7 +406,7 @@ pub fn move_track(
     expect: Option<&str>,
     at: u64,
 ) -> Result<TrackInfo, Failure> {
-    let list = entries(client, pid)?;
+    let list = whole_entries(client, pid)?;
     let track = entry_at(&list, from, expect)?;
     if to >= list.len() {
         return Err(Failure::Internal(anyhow!(
@@ -533,6 +557,7 @@ mod tests {
     use crate::fake::{Fake, params};
     use crate::search::Kind;
     use crate::sync;
+    use std::sync::atomic::Ordering;
 
     fn setup() -> (tempfile::TempDir, Env, Fake, Client) {
         let d = tempfile::tempdir().unwrap();
@@ -1213,6 +1238,23 @@ mod tests {
         remove_duplicates(&client, Some(&conn), "p1", 0).unwrap();
         assert_eq!(server_ids(&fake, "p1"), ["s0", "s1"]);
         assert_eq!(local_ids(&conn, "p1"), ["s0", "s1"]);
+    }
+
+    #[test]
+    fn a_move_refuses_when_the_server_hides_some_entries() {
+        let (_d, env, fake, client) = setup();
+        let conn = db::open_existing(&env).unwrap().unwrap();
+        seed(&fake, "p1", &[("s0", "A", "X"), ("s1", "B", "X")]);
+        fake.state.hidden_entries.store(1, Ordering::SeqCst);
+        let before = local_ids(&conn, "p1");
+        let r = move_track(&client, Some(&conn), "p1", 0, 1, Some("s0"), 0);
+        let Err(Failure::Internal(e)) = r else {
+            panic!("{r:?}")
+        };
+        assert!(e.to_string().contains("2 of its 3 tracks"), "{e}");
+        assert_eq!(fake.calls_of("createPlaylist"), 0, "nothing written");
+        assert_eq!(server_ids(&fake, "p1"), ["s0", "s1"]);
+        assert_eq!(local_ids(&conn, "p1"), before);
     }
 
     #[test]

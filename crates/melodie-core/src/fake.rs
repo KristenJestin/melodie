@@ -23,6 +23,9 @@ pub struct State {
     /// While true, `getPlaylist` does not know `p1` (code 70) though `getPlaylists` still
     /// lists it: it was deleted between the two calls.
     pub playlist_gone: AtomicBool,
+    /// Entries `getPlaylist` counts in `songCount` but leaves out, as Navidrome does with the
+    /// tracks whose file is missing.
+    pub hidden_entries: AtomicUsize,
     pub expected_token: Mutex<String>,
     /// Code d'erreur Subsonic à renvoyer pour tout, si présent.
     pub fail_code: Mutex<Option<i64>>,
@@ -140,6 +143,7 @@ impl Fake {
             last_scan: Mutex::new("2026-10-01T10:00:00Z".into()),
             playlist_changed: Mutex::new("2026-10-01T10:00:00Z".into()),
             playlist_gone: AtomicBool::new(false),
+            hidden_entries: AtomicUsize::new(0),
             expected_token: Mutex::new(token.to_string()),
             fail_code: Mutex::new(None),
             raw: Mutex::new(None),
@@ -335,7 +339,10 @@ impl State {
                     Some(seeded) => seeded.clone(),
                     None => songs,
                 };
-                ok(json!({"playlist": {"id": "p1", "name": "Daft Mix", "entry": entry}}))
+                let count = entry.len() + self.hidden_entries.load(Ordering::SeqCst);
+                ok(
+                    json!({"playlist": {"id": "p1", "name": "Daft Mix", "songCount": count, "entry": entry}}),
+                )
             }
             "updatePlaylist" => {
                 let id = param(query, "playlistId").unwrap_or_default();
