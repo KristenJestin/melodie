@@ -393,9 +393,18 @@ shipped, public themes.)
    `with_animation` keyed by a generation counter. Nothing calls `request_animation_frame` unless
    something is moving. Check how reduced motion
    is honoured before writing any hand-made frame request.
-5. **Position bar and clocks tick**, they are not animated: four updates a second.
+5. **Position bar and clocks tick**, they are not animated: four updates a second. Every time and
+   count that changes in place is drawn in tabular digits (`figures::clock_text`, `count_text`,
+   `.tabular()`: the `tnum` feature, which GPUI exposes as `font_features` and the window's font,
+   Adwaita Sans, has), so a digit changing moves nothing.
 6. **Lists.** Long lists are `uniform_list` or the `DataTable` (fixed row height), each in a view of
-   its own, with no animation requested inside a row. Covers are requested at the displayed size.
+   its own. The one animation inside a row is the fade of what shows under the pointer (the row's
+   buttons, the play button on a cover: `reveal`, `widgets::hover`): it runs for 110 to 160 ms
+   when the pointer moves to another row, and asks for nothing the rest of the time. GPUI Fast
+   also reports a hover when the layout moves under a still pointer (a list scrolled with the
+   wheel): that change is instant, otherwise every row crossed would start a fade and the list
+   would almost never get its scroll layer (`reveal::Moves`). Covers are requested at the
+   displayed size.
 7. **Theme.** A `Palette` value (background, surface, text, secondary text, accent, dark/light) is
    the only thing the views use. The base palette is derived per track; the Omarchy one is read from
    `colors.toml`. The gpui-component `Theme` is written from the palette **once per theme change**

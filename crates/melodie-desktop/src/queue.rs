@@ -5,14 +5,14 @@ use crate::app::Shared;
 use crate::context_menu::Menued as _;
 use crate::player::palette;
 use crate::tips::Tipped as _;
-use crate::widgets::IconButton;
+use crate::widgets::{IconButton, Revealed as _, hover};
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::Icon;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use melodie_core::proto::Request;
-use melodie_core::track::clock;
+use melodie_desktop::figures::{Figures as _, clock_text, count_text};
 use melodie_desktop::menu::{Item, Spot};
 use melodie_desktop::model::Row;
 use melodie_desktop::theme::Palette;
@@ -76,16 +76,13 @@ impl Render for QueuePanel {
                                     .text_color(pal.fg)
                                     .child("Queue"),
                             )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(pal.secondary)
-                                    .child(match count {
-                                        0 => "Empty".to_string(),
-                                        1 => "1 track".to_string(),
-                                        n => format!("{n} tracks"),
-                                    }),
-                            ),
+                            .child(div().text_xs().text_color(pal.secondary).child(count_text(
+                                match count {
+                                    0 => "Empty".to_string(),
+                                    1 => "1 track".to_string(),
+                                    n => format!("{n} tracks"),
+                                },
+                            ))),
                     )
                     .child(
                         IconButton::new("clear-next", IconName::ListX, pal)
@@ -164,7 +161,7 @@ impl Render for QueueList {
         let pal = palette(&self.shared, window, cx);
         let shared = self.shared.clone();
         let len = tracks.len();
-        uniform_list("queue-rows", len, move |range, _, _| {
+        uniform_list("queue-rows", len, move |range, window, cx| {
             range
                 .map(|ix| {
                     let t = &tracks[ix];
@@ -176,12 +173,12 @@ impl Render for QueueList {
                         .cloned()
                         .or_else(|| t.cover.clone().map(PathBuf::from));
                     let entry = t.entry;
+                    let hover = hover(("queue-hover", entry), window, cx);
                     let (play, remove, dropped) = (shared.clone(), shared.clone(), shared.clone());
                     let accent = pal.accent;
-                    h_flex()
-                        .id(("queue-row", t.entry))
+                    hover
+                        .track(h_flex().id(("queue-row", t.entry)))
                         .menu_starred(Item::entry(t), Spot::Queue { ix, entry }, Some(t.starred))
-                        .group("queue-row")
                         .h(px(ROW))
                         .w_full()
                         .px_2()
@@ -234,6 +231,7 @@ impl Render for QueueList {
                                 .w(px(22.))
                                 .flex()
                                 .justify_center()
+                                .tabular()
                                 .text_xs()
                                 .text_color(pal.secondary)
                                 .map(|d| match row {
@@ -293,7 +291,7 @@ impl Render for QueueList {
                             div()
                                 .text_xs()
                                 .text_color(pal.secondary)
-                                .child(clock(t.duration)),
+                                .child(clock_text(t.duration)),
                         )
                         .child(
                             div()
@@ -304,8 +302,7 @@ impl Render for QueueList {
                                 .items_center()
                                 .justify_center()
                                 .rounded_full()
-                                .invisible()
-                                .group_hover("queue-row", |s| s.visible())
+                                .revealed(hover.look, true)
                                 .hover(|s| s.bg(Hsla { a: 0.10, ..pal.fg }))
                                 .tip("Remove from the queue", pal)
                                 .on_click(move |_, _, cx| {

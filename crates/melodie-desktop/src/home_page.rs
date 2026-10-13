@@ -9,7 +9,7 @@ use crate::context_menu::Menued as _;
 use crate::motion;
 use crate::pages::plural;
 use crate::player::palette;
-use crate::widgets::IconButton;
+use crate::widgets::{IconButton, hover};
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::Icon;
@@ -199,12 +199,19 @@ fn artist_cell(
     covers: &Covers,
     pal: Palette,
     catalog: &Entity<Catalog>,
+    window: &mut Window,
+    cx: &mut App,
 ) -> Stateful<Div> {
     let (catalog, id) = (catalog.clone(), a.id.clone());
-    v_flex()
-        .id(ElementId::Name(format!("home-artist-{}", a.id).into()))
+    let hover = hover(
+        ElementId::Name(format!("home-artist-hover-{}", a.id).into()),
+        window,
+        cx,
+    );
+    let look = hover.look;
+    hover
+        .track(v_flex().id(ElementId::Name(format!("home-artist-{}", a.id).into())))
         .menu(Item::artist(a), Spot::Library)
-        .group("home-artist")
         .w(px(CIRCLE))
         .flex_none()
         .items_center()
@@ -221,7 +228,7 @@ fn artist_cell(
                 IconName::MicVocal,
                 pal,
             )
-            .group_hover("home-artist", |s| s.opacity(0.85)),
+            .opacity(look.under()),
         )
         .child(
             div()
@@ -247,12 +254,19 @@ fn playlist_cell(
     covers: &Covers,
     pal: Palette,
     catalog: &Entity<Catalog>,
+    window: &mut Window,
+    cx: &mut App,
 ) -> Stateful<Div> {
     let (catalog, id) = (catalog.clone(), p.id.clone());
-    v_flex()
-        .id(ElementId::Name(format!("home-playlist-{}", p.id).into()))
+    let hover = hover(
+        ElementId::Name(format!("home-playlist-hover-{}", p.id).into()),
+        window,
+        cx,
+    );
+    let look = hover.look;
+    hover
+        .track(v_flex().id(ElementId::Name(format!("home-playlist-{}", p.id).into())))
         .menu(Item::playlist(p), Spot::Library)
-        .group("home-playlist")
         .w(px(SQUARE))
         .flex_none()
         .gap_1()
@@ -268,7 +282,7 @@ fn playlist_cell(
                 IconName::ListMusic,
                 pal,
             )
-            .group_hover("home-playlist", |s| s.opacity(0.85)),
+            .opacity(look.under()),
         )
         .child(
             div()
@@ -493,7 +507,7 @@ impl Render for RowView {
                 .collect(),
             Row::Artists(v) => v
                 .iter()
-                .map(|a| artist_cell(a, &covers, pal, catalog).into_any_element())
+                .map(|a| artist_cell(a, &covers, pal, catalog, window, cx).into_any_element())
                 .collect(),
             Row::Mixes(v) => v
                 .iter()
@@ -501,7 +515,7 @@ impl Render for RowView {
                 .collect(),
             Row::Playlists(v) => v
                 .iter()
-                .map(|p| playlist_cell(p, &covers, pal, catalog).into_any_element())
+                .map(|p| playlist_cell(p, &covers, pal, catalog, window, cx).into_any_element())
                 .collect(),
         };
         v_flex().child(section_header(kind, pal, catalog)).child(

@@ -13,7 +13,8 @@ use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use melodie_core::proto::Request;
-use melodie_core::track::clock;
+use melodie_desktop::bar;
+use melodie_desktop::figures::clock_text;
 use melodie_desktop::launch::{Adding, Job, Kind};
 use melodie_desktop::layout;
 use melodie_desktop::menu::{Item, Spot};
@@ -454,9 +455,10 @@ impl Render for Bar {
             let times = crate::playbar::parts(&self.shared, window, cx).times;
             // fixed widths: the slider does not shift when 9:59 becomes 10:00; the elapsed time
             // leans against the slider, the total time too
-            let time = |t: f64| div().w(px(40.)).flex_none().child(clock(t));
+            let time = |t: f64| div().w(px(40.)).flex_none().child(clock_text(t));
             return h_flex()
                 .w_full()
+                .h(px(bar::POSITION))
                 .gap_2()
                 .items_center()
                 .text_xs()
@@ -475,8 +477,8 @@ impl Render for Bar {
                     .justify_between()
                     .text_xs()
                     .text_color(pal.secondary)
-                    .child(clock(position))
-                    .child(clock(c.duration)),
+                    .child(clock_text(position))
+                    .child(clock_text(c.duration)),
             )
             .into_any_element()
     }
