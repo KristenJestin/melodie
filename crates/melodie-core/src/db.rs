@@ -27,7 +27,7 @@ CREATE TABLE albums (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, artist TEXT NOT NULL DEFAULT '', artistId TEXT,
   year INTEGER NOT NULL DEFAULT 0, genre TEXT, songCount INTEGER NOT NULL DEFAULT 0,
   duration INTEGER NOT NULL DEFAULT 0, playCount INTEGER NOT NULL DEFAULT 0, played TEXT,
-  starred TEXT, userRating INTEGER NOT NULL DEFAULT 0, coverArt TEXT
+  starred TEXT, userRating INTEGER NOT NULL DEFAULT 0, coverArt TEXT, created TEXT
 );
 CREATE TABLE tracks (
   id TEXT PRIMARY KEY, title TEXT NOT NULL, artist TEXT NOT NULL DEFAULT '', artistId TEXT,
@@ -46,6 +46,8 @@ CREATE TABLE playlists (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, songCount INTEGER NOT NULL DEFAULT 0,
   duration INTEGER NOT NULL DEFAULT 0, changed TEXT, coverArt TEXT, owner TEXT
 );
+CREATE TABLE playlist_tracks (playlist TEXT NOT NULL, pos INTEGER NOT NULL, track TEXT NOT NULL);
+CREATE INDEX playlist_tracks_playlist ON playlist_tracks(playlist);
 CREATE VIRTUAL TABLE fts_playlists USING fts5(id UNINDEXED, name, tokenize='unicode61 remove_diacritics 2');
 CREATE VIRTUAL TABLE fts_artists USING fts5(id UNINDEXED, name, tokenize='unicode61 remove_diacritics 2');
 CREATE VIRTUAL TABLE fts_albums USING fts5(id UNINDEXED, name, artist, tokenize='unicode61 remove_diacritics 2');
@@ -103,6 +105,23 @@ pub fn carry_skips(old: &std::path::Path, new: &std::path::Path) -> Result<()> {
         conn.execute("INSERT INTO skips(id, at) SELECT id, at FROM old.skips", [])?;
     }
     conn.execute_batch("DETACH DATABASE old")?;
+    Ok(())
+}
+
+/// Brings a copy made by an older version up to the schema: what was added since is created
+/// empty, and filled by the next synchronisation (the date an album was added, by the next full
+/// one).
+pub fn upgrade(conn: &Connection) -> Result<()> {
+    let has_created = conn
+        .prepare("SELECT 1 FROM pragma_table_info('albums') WHERE name = 'created'")?
+        .exists([])?;
+    if !has_created {
+        conn.execute_batch("ALTER TABLE albums ADD COLUMN created TEXT")?;
+    }
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS playlist_tracks (playlist TEXT NOT NULL, pos INTEGER NOT NULL, track TEXT NOT NULL);
+         CREATE INDEX IF NOT EXISTS playlist_tracks_playlist ON playlist_tracks(playlist);",
+    )?;
     Ok(())
 }
 
@@ -201,8 +220,8 @@ pub fn insert_album(tx: &Transaction, v: &Value) -> Result<bool> {
     let artist = text(v, "artist").unwrap_or_default();
     let n = tx.execute(
         "INSERT OR IGNORE INTO albums(id, name, artist, artistId, year, genre, songCount, duration,
-           playCount, played, starred, userRating, coverArt)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+           playCount, played, starred, userRating, coverArt, created)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         params![
             id,
             name,
@@ -216,7 +235,8 @@ pub fn insert_album(tx: &Transaction, v: &Value) -> Result<bool> {
             text(v, "played"),
             text(v, "starred"),
             num(v, "userRating"),
-            cover(v)
+            cover(v),
+            text(v, "created")
         ],
     )?;
     if n == 1 {
@@ -500,7 +520,19 @@ pub fn playlist_rename(conn: &Connection, id: &str, name: &str, at: &str) -> Res
     Ok(())
 }
 
+/// The tracks of a playlist as the server lists them (`entry` objects), in its order.
+pub fn replace_playlist_tracks(conn: &Connection, pid: &str, entries: &[Value]) -> Result<()> {
+    conn.execute("DELETE FROM playlist_tracks WHERE playlist = ?1", [pid])?;
+    let mut ins =
+        conn.prepare("INSERT INTO playlist_tracks(playlist, pos, track) VALUES (?1, ?2, ?3)")?;
+    for (pos, tid) in entries.iter().filter_map(id).enumerate() {
+        ins.execute(params![pid, pos as i64, tid])?;
+    }
+    Ok(())
+}
+
 pub fn playlist_delete(conn: &Connection, id: &str) -> Result<()> {
+    conn.execute("DELETE FROM playlist_tracks WHERE playlist = ?1", [id])?;
     conn.execute("DELETE FROM playlists WHERE id = ?1", [id])?;
     conn.execute("DELETE FROM fts_playlists WHERE id = ?1", [id])?;
     Ok(())
@@ -566,5 +598,65 @@ mod tests {
         // Ancienne copie sans table : rien à reporter, sans erreur.
         carry_skips(&old, &fresh).unwrap();
         carry_skips(&d.path().join("absente.db"), &fresh).unwrap();
+    }
+
+    #[test]
+    fn an_album_keeps_the_date_it_was_added() {
+        let d = tempfile::tempdir().unwrap();
+        let mut conn = create(&d.path().join("l.db")).unwrap();
+        let tx = conn.transaction().unwrap();
+        insert_album(
+            &tx,
+            &serde_json::json!({"id":"al1","name":"A","created":"2026-09-01T10:00:00Z"}),
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        let created: Option<String> = conn
+            .query_row("SELECT created FROM albums WHERE id = 'al1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(created.as_deref(), Some("2026-09-01T10:00:00Z"));
+    }
+
+    #[test]
+    fn an_older_copy_gets_the_added_date_and_the_playlist_tracks() {
+        let d = tempfile::tempdir().unwrap();
+        let conn = Connection::open(d.path().join("old.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE albums (id TEXT PRIMARY KEY, name TEXT NOT NULL);
+             INSERT INTO albums(id, name) VALUES ('al1', 'A');",
+        )
+        .unwrap();
+        upgrade(&conn).unwrap();
+        upgrade(&conn).unwrap(); // twice is harmless
+        let created: Option<String> = conn
+            .query_row("SELECT created FROM albums", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(created, None);
+        let n: i64 = conn
+            .query_row("SELECT count(*) FROM playlist_tracks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn the_tracks_of_a_playlist_are_replaced_in_order() {
+        let d = tempfile::tempdir().unwrap();
+        let conn = create(&d.path().join("l.db")).unwrap();
+        let e = |id: &str| serde_json::json!({"id": id});
+        replace_playlist_tracks(&conn, "p1", &[e("t2"), e("t1"), e("t2")]).unwrap();
+        replace_playlist_tracks(&conn, "p2", &[e("t9")]).unwrap();
+        replace_playlist_tracks(&conn, "p1", &[e("t3"), e("t1")]).unwrap();
+        let rows: Vec<(String, i64, String)> = conn
+            .prepare("SELECT playlist, pos, track FROM playlist_tracks ORDER BY playlist, pos")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        let want = [("p1", 0, "t3"), ("p1", 1, "t1"), ("p2", 0, "t9")]
+            .map(|(p, i, t)| (p.to_string(), i, t.to_string()));
+        assert_eq!(rows, want);
     }
 }
