@@ -20,7 +20,7 @@ use melodie_desktop::covers::Covers;
 use melodie_desktop::figures::Figures as _;
 use melodie_desktop::launch::{Adding, Job, Kind};
 use melodie_desktop::selection::Selection;
-use melodie_desktop::table::{Col, Shown, Table};
+use melodie_desktop::table::{Col, ColSort, Shown, Table};
 use melodie_desktop::theme::Palette;
 use std::sync::Arc;
 
@@ -65,8 +65,8 @@ pub struct PageView {
     catalog: Entity<Catalog>,
     tracks: UniformListScrollHandle,
     scroll: ScrollHandle,
-    /// The place the lists were last shown for: another one starts from the top.
-    shown: Option<Place>,
+    /// The place and the sort the lists were last shown with: another one starts from the top.
+    shown: Option<(Place, Option<ColSort>)>,
 }
 
 impl PageView {
@@ -321,9 +321,10 @@ impl Render for PageView {
                 own,
             )
         };
-        if self.shown.as_ref() != Some(&here) {
+        let now = (here.clone(), shown.as_ref().and_then(|s| s.sort));
+        if self.shown.as_ref() != Some(&now) {
             self.tracks.scroll_to_item(0, ScrollStrategy::Top);
-            self.shown = Some(here.clone());
+            self.shown = Some(now);
         }
         context_menu::list_is(&here, &self.tracks, TRACK_ROW, cx);
         let width = content_width(window, &self.shared, cx);
