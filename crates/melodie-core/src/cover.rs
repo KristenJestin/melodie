@@ -324,29 +324,46 @@ pub fn spawn_downloads(
     ids: Vec<String>,
     done: std::sync::mpsc::Sender<String>,
 ) {
-    pool(env, client, ids, done, |env, client, id| {
-        let _ = download_thumb(env, client, id);
+    pool(env, client, ids, done, |env, client, id, done| {
+        let _ = download_thumb(env, client, &id);
+        done.send(id).is_ok()
     });
 }
 
-/// The same for covers at any tier.
+/// The same for covers at any tier. The tiers of one cover are fetched one after the other by
+/// the same worker: each starts from the thumbnail (see [`download`]), which two workers would
+/// write at once.
 pub fn spawn_wants(
     env: &Env,
     client: Arc<Client>,
     wants: Vec<Want>,
     done: std::sync::mpsc::Sender<Want>,
 ) {
-    pool(env, client, wants, done, |env, client, w| {
-        let _ = download(env, client, &w.id, w.tier);
+    let mut by_id: Vec<Vec<Want>> = Vec::new();
+    for w in wants {
+        match by_id.iter_mut().find(|g| g[0].id == w.id) {
+            Some(group) => group.push(w),
+            None => by_id.push(vec![w]),
+        }
+    }
+    pool(env, client, by_id, done, |env, client, group, done| {
+        for w in group {
+            let _ = download(env, client, &w.id, w.tier);
+            if done.send(w).is_err() {
+                return false;
+            }
+        }
+        true
     });
 }
 
-fn pool<T: Send + 'static>(
+/// Runs `work` on the items with up to `WORKERS` threads; `work` says whether to go on.
+fn pool<T: Send + 'static, D: Send + 'static>(
     env: &Env,
     client: Arc<Client>,
     items: Vec<T>,
-    done: std::sync::mpsc::Sender<T>,
-    work: fn(&Env, &Client, &T),
+    done: std::sync::mpsc::Sender<D>,
+    work: fn(&Env, &Client, T, &std::sync::mpsc::Sender<D>) -> bool,
 ) {
     let n = items.len().min(WORKERS);
     let queue = Arc::new(Mutex::new(VecDeque::from(items)));
@@ -357,8 +374,7 @@ fn pool<T: Send + 'static>(
                 let Some(item) = queue.lock().unwrap_or_else(|e| e.into_inner()).pop_front() else {
                     break;
                 };
-                work(&env, &client, &item);
-                if done.send(item).is_err() {
+                if !work(&env, &client, item, &done) {
                     break;
                 }
             }
@@ -723,6 +739,31 @@ mod tests {
         assert_eq!(lines[0], "al-1", "the launcher's line is the bare id");
         assert_eq!(lines[2], "al-3\t300");
         assert_eq!(parse_wants(&lines.join("\n")).len(), wants.len());
+    }
+
+    #[test]
+    fn two_tiers_of_one_cover_never_write_its_thumbnail_at_once() {
+        // a regression: two workers both fetched the thumbnail first and wrote it at once, and one
+        // lost the rename (they shared a temporary file)
+        for round in 0..5 {
+            let (_d, env, fake, creds) = setup();
+            // both thumbnail requests are answered together, so that both writes meet
+            fake.state.cover_delay_ms.store(30, Ordering::SeqCst);
+            let client = Arc::new(Client::new(&fake.url, creds));
+            let (tx, rx) = channel();
+            let id = format!("al-{round}");
+            let wants = vec![Want::new(&id, Tier::Row), Want::new(&id, Tier::Large)];
+            spawn_wants(&env, client, wants, tx);
+            for _ in 0..2 {
+                rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            }
+            assert!(tier_path(&env, &id, Tier::Row).is_file(), "round {round}");
+            assert!(tier_path(&env, &id, Tier::Large).is_file(), "round {round}");
+            // one worker, one thumbnail request: nothing else could have written it
+            let calls = fake.state.calls.lock().unwrap().clone();
+            let thumbs = calls.iter().filter(|c| c.contains("size=128")).count();
+            assert_eq!(thumbs, 1, "round {round}: {calls:?}");
+        }
     }
 
     #[test]
