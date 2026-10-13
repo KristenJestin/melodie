@@ -145,7 +145,8 @@ Screenshots and a recording of the animations, made with invented data, are in
   - **Every list of tracks is the same table** (Tracks, an album, a playlist, an artist's top
     tracks, the search's tracks; not the queue, whose order is the play order): a header row with
     the columns in one order, #, title, artist, album, year, plays, time, those that make no sense
-    in a place left out (no album or year on an album's page, no artist on the artist's page, no #
+    in a place left out (no album or year on an album's page, nor artist when every track is the
+    album artist's, no artist on the artist's page, no #
     in Tracks or the search, no year or plays in the search, which does not read them). #, year, plays and time have a fixed width;
     title, artist and album share the rest. Under 640 pixels of content, album, year and plays go,
     everywhere. A click on a header sorts by it, ascending; a second, descending; a third goes

@@ -89,7 +89,10 @@ impl Col {
 pub enum Table {
     /// Every track of the library.
     Tracks,
+    /// An album whose tracks are all its artist's.
     Album,
+    /// An album with tracks of other artists.
+    Compilation,
     Playlist,
     /// An artist's top tracks.
     TopTracks,
@@ -97,22 +100,33 @@ pub enum Table {
     Search,
 }
 
-pub const TABLES: [Table; 5] = [
+pub const TABLES: [Table; 6] = [
     Table::Tracks,
     Table::Album,
+    Table::Compilation,
     Table::Playlist,
     Table::TopTracks,
     Table::Search,
 ];
 
 impl Table {
+    /// The table of an album by `artist` holding `tracks`.
+    pub fn album(artist: &str, tracks: &[Track]) -> Self {
+        if tracks.iter().all(|t| t.artist == artist) {
+            Self::Album
+        } else {
+            Self::Compilation
+        }
+    }
+
     /// The columns that make no sense here.
     fn leaves_out(self, col: Col) -> bool {
         match self {
             // the library's own order is by artist: a rank in it says nothing
             Self::Tracks => col == Col::Number,
             // the same for every row
-            Self::Album => matches!(col, Col::Album | Col::Year),
+            Self::Album => matches!(col, Col::Artist | Col::Album | Col::Year),
+            Self::Compilation => matches!(col, Col::Album | Col::Year),
             Self::Playlist => false,
             Self::TopTracks => col == Col::Artist,
             // a result's rank is its relevance; the search reads no year or plays of a track
@@ -342,6 +356,10 @@ mod tests {
         // what is left out makes no sense there
         assert_eq!(
             Table::Album.cols(WIDE),
+            [Col::Number, Col::Title, Col::Plays, Col::Time]
+        );
+        assert_eq!(
+            Table::Compilation.cols(WIDE),
             [Col::Number, Col::Title, Col::Artist, Col::Plays, Col::Time]
         );
         assert_eq!(Table::Playlist.cols(WIDE), COLS);
@@ -371,6 +389,37 @@ mod tests {
             Table::Search.cols(WIDE),
             [Col::Title, Col::Artist, Col::Album, Col::Time]
         );
+    }
+
+    #[test]
+    fn an_album_of_one_artist_leaves_out_the_artist_column() {
+        let t = vec![
+            track("t0", "Cedar", "Bob", "Moss", 1),
+            track("t1", "Dune", "Bob", "Moss", 2),
+        ];
+        let table = Table::album("Bob", &t);
+        assert_eq!(table, Table::Album);
+        assert_eq!(
+            table.cols(WIDE).to_vec(),
+            [Col::Number, Col::Title, Col::Plays, Col::Time]
+        );
+    }
+
+    #[test]
+    fn an_album_of_many_artists_shows_the_artist_column() {
+        let t = vec![
+            track("t0", "Cedar", "Bob", "Moss", 1),
+            track("t1", "Dune", "Cid", "Moss", 2),
+        ];
+        // a compilation, or one track with a guest
+        for artist in ["Various Artists", "Bob"] {
+            let table = Table::album(artist, &t);
+            assert_eq!(table, Table::Compilation);
+            assert_eq!(
+                table.cols(WIDE).to_vec(),
+                [Col::Number, Col::Title, Col::Artist, Col::Plays, Col::Time]
+            );
+        }
     }
 
     #[test]

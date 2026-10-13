@@ -413,7 +413,7 @@ impl Render for PageView {
                     .child(track_list(
                         "album-tracks",
                         shown(),
-                        cols(Table::Album),
+                        cols(Table::album(&album.artist, tracks)),
                         pal,
                         &self.tracks,
                         catalog,
