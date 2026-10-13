@@ -19,6 +19,8 @@ impl Job {
             Self::Star { id, starred } => vec![
                 if *starred { "like" } else { "unlike" }.into(),
                 "track".into(),
+                // an id may start with a dash
+                "--".into(),
                 id.clone(),
             ],
         }
@@ -46,12 +48,23 @@ mod tests {
             id: "t1".into(),
             starred: true,
         };
-        assert_eq!(like.args(), ["like", "track", "t1"]);
+        assert_eq!(like.args(), ["like", "track", "--", "t1"]);
         let unlike = Job::Star {
             id: "t1".into(),
             starred: false,
         };
-        assert_eq!(unlike.args(), ["unlike", "track", "t1"]);
+        assert_eq!(unlike.args(), ["unlike", "track", "--", "t1"]);
+    }
+
+    #[test]
+    fn an_id_that_starts_with_a_dash_is_not_an_option() {
+        let like = Job::Star {
+            id: "-t1".into(),
+            starred: true,
+        };
+        let args = like.args();
+        let dashes = args.iter().position(|a| a == "--").unwrap();
+        assert_eq!(args.iter().position(|a| a == "-t1"), Some(dashes + 1));
     }
 
     #[test]

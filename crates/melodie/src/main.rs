@@ -777,3 +777,23 @@ fn status(env: &Env) -> Result<ExitCode> {
         Err(f) => ExitCode::from(f.exit_code()),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The window runs `melodie like track -- <id>`: the id must come out whole even when it
+    /// starts with a dash.
+    #[test]
+    fn an_id_after_double_dash_is_not_read_as_an_option() {
+        for verb in ["like", "unlike"] {
+            let cli = Cli::try_parse_from(["melodie", verb, "track", "--", "-7f3a"]).unwrap();
+            let (kind, id) = match cli.command {
+                Cmd::Like { kind, id, .. } | Cmd::Unlike { kind, id } => (kind, id),
+                _ => panic!("{verb} is not a like"),
+            };
+            assert!(matches!(kind, Some(StarArg::Track)));
+            assert_eq!(id.as_deref(), Some("-7f3a"));
+        }
+    }
+}
