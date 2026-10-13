@@ -74,6 +74,7 @@ impl<P: PartialEq + Copy> Moves<P> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scan::{Source, sources};
 
     #[test]
     fn hidden_it_is_transparent_and_a_step_away() {
@@ -164,23 +165,37 @@ mod tests {
         assert!(m.seen((10.0, 52.0)));
     }
 
+    /// The lines of `src` where a thing is shown at once under the pointer.
+    fn popping(src: &Source) -> Vec<usize> {
+        src.calls("group_hover")
+            .into_iter()
+            .filter(|(_, args)| args.contains(".visible()"))
+            .map(|(at, _)| src.line(at))
+            .collect()
+    }
+
+    #[test]
+    fn a_pop_is_seen_however_it_is_written() {
+        let one_line = Source::new("a.rs", "d.group_hover(\"g\", |s| s.visible())");
+        assert_eq!(popping(&one_line), [1]);
+        let split = Source::new(
+            "a.rs",
+            "d.invisible()\n    .group_hover(\"row\", |style| {\n        style.visible()\n    })\n",
+        );
+        assert_eq!(popping(&split), [2]);
+        let dimmed = Source::new("a.rs", "d.group_hover(\"g\", |s| s.opacity(0.85))");
+        assert!(popping(&dimmed).is_empty());
+    }
+
     #[test]
     fn nothing_pops_under_the_pointer() {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut seen = 0;
-        for file in std::fs::read_dir(dir).unwrap() {
-            let path = file.unwrap().path();
-            if path.extension().is_none_or(|e| e != "rs") || path.ends_with("reveal.rs") {
-                continue;
-            }
-            let src = std::fs::read_to_string(&path).unwrap();
-            seen += src.matches("reveal::").count();
-            for (n, line) in src.lines().enumerate() {
-                assert!(
-                    !(line.contains("group_hover(") && line.contains("s.visible()")),
-                    "{}:{}: shown at once under the pointer; fade it with `reveal`",
-                    path.display(),
-                    n + 1
+        for src in sources("reveal.rs") {
+            seen += src.code().matches("reveal::").count();
+            if let Some(n) = popping(&src).first() {
+                panic!(
+                    "{}:{n}: shown at once under the pointer; fade it with `reveal`",
+                    src.name
                 );
             }
         }
