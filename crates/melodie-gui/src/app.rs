@@ -227,6 +227,11 @@ impl Shared {
             return; // another track came meanwhile
         }
         self.art.tint = shown.tint;
+        // The base theme follows the cover: gpui-kit's own colours (ring, primary, popover) must
+        // follow too, or they keep the previous tint.
+        if self.theme.active().follows_cover() {
+            apply_component_theme(self.target_palette(), cx);
+        }
         self.art.step += 1;
         self.art.shown.push_back((self.art.step, shown));
         while self.art.shown.len() > KEEP_COVERS {

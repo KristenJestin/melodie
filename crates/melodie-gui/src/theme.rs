@@ -239,6 +239,13 @@ pub enum Active {
     BaseOmarchyGone,
 }
 
+impl Active {
+    /// Whether the colours are tinted by the cover on screen (the base theme, not Omarchy's).
+    pub fn follows_cover(&self) -> bool {
+        matches!(self, Self::Base | Self::BaseOmarchyGone)
+    }
+}
+
 pub fn active(stored: Option<Choice>, detected: bool, offered: Option<Palette>) -> Active {
     match (stored, offered) {
         (Some(Choice::Base), _) => Active::Base,
@@ -506,6 +513,18 @@ background = "#eff1f5"
         );
         // not Omarchy any more at all: the choice is hidden, nothing to say
         assert_eq!(active(Some(Choice::Omarchy), false, None), Active::Base);
+    }
+
+    #[test]
+    fn a_new_cover_retints_the_component_theme_only_with_the_base_theme() {
+        let p = Palette::base(None, true);
+        assert!(active(None, false, None).follows_cover());
+        assert!(active(Some(Choice::Base), true, Some(p)).follows_cover());
+        assert!(
+            active(Some(Choice::Omarchy), true, None).follows_cover(),
+            "Omarchy's files gone: the base theme is on screen"
+        );
+        assert!(!active(Some(Choice::Omarchy), true, Some(p)).follows_cover());
     }
 
     #[test]
