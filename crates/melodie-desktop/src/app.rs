@@ -7,6 +7,7 @@ use gpui_kit::component::{Theme, ThemeMode};
 use gpui_kit::*;
 use melodie_core::env::Env;
 use melodie_core::proto::{QueueEntry, Request};
+use melodie_desktop::covers::Use;
 use melodie_desktop::launch::{self, Job, Lanes};
 use melodie_desktop::link::{self, Msg};
 use melodie_desktop::model::{Clock, Connection, Player};
@@ -336,8 +337,8 @@ impl Shared {
             let playing = self.player.track().and_then(|t| t.cover_id.clone());
             let wanted = thumbs::wanted(&tracks);
             self.covers.update(cx, |c, cx| {
-                c.want(playing, true, cx);
-                c.want(wanted, false, cx);
+                c.want(playing, Use::SMALL, true, cx);
+                c.want(wanted, Use::SMALL, false, cx);
             });
         }
         self.thumbs_of = Some(tracks.clone());
@@ -490,7 +491,8 @@ pub fn start(
     let clock = cx.new(|_| Clock::default());
     let covers = cx.new({
         let env = env.clone();
-        |_| CoverCache::new(env)
+        let scale = window.scale_factor();
+        move |_| CoverCache::new(env, scale)
     });
     let shared = cx.new(|_| Shared {
         player: Player::default(),

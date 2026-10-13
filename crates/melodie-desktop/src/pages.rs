@@ -16,11 +16,10 @@ use gpui_kit::*;
 use melodie_core::library::{Album, Track};
 use melodie_core::search::human_duration;
 use melodie_desktop::browse::{self, Place};
+use melodie_desktop::covers::Covers;
 use melodie_desktop::launch::{Adding, Job, Kind};
 use melodie_desktop::selection::Selection;
 use melodie_desktop::theme::Palette;
-use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 fn section_title(text: &'static str, pal: Palette) -> Div {
@@ -38,7 +37,7 @@ fn section_title(text: &'static str, pal: Palette) -> Div {
 fn album_rows(
     albums: &[Album],
     rows: usize,
-    covers: &HashMap<String, PathBuf>,
+    covers: &Covers,
     width: f32,
     pal: Palette,
     catalog: &Entity<Catalog>,
@@ -305,7 +304,7 @@ impl Render for PageView {
             (
                 here.clone(),
                 page,
-                c.covers.clone(),
+                Covers::new(c.covers.clone(), window.scale_factor()),
                 c.nav.can_go_back(),
                 c.empty,
                 c.selection.clone(),
@@ -335,7 +334,12 @@ impl Render for PageView {
                 })
         };
         let cover = |id: &Option<String>, round: f32| {
-            cover_box(id.as_ref().and_then(|c| covers.get(c)), 180., round, pal)
+            cover_box(
+                id.as_ref().and_then(|c| covers.get(c, 180.)),
+                180.,
+                round,
+                pal,
+            )
         };
         let body: AnyElement = match page.as_deref() {
             None => empty_state(empty, "", pal).into_any_element(),

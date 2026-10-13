@@ -9,6 +9,7 @@ use secret_service::blocking::SecretService;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Valeur de l'attribut `service` des secrets de ce module.
 pub const SERVICE: &str = "melodie";
@@ -57,8 +58,15 @@ pub fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("création de {}", dir.display()))?;
     }
+    // One temporary file per write: two writers of the same file (the daemon and a `cover-fetch`)
+    // must not share it.
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
+    tmp.push(format!(
+        ".{}-{}.tmp",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
     let tmp = PathBuf::from(tmp);
     std::fs::write(&tmp, data).with_context(|| format!("écriture de {}", tmp.display()))?;
     std::fs::rename(&tmp, path).with_context(|| format!("remplacement de {}", path.display()))
@@ -165,6 +173,35 @@ pub fn auth_refused_marked(env: &Env) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn two_writers_of_one_file_never_lose_the_rename() {
+        // the daemon's cover and a `cover-fetch` at 512 px both write `covers/<id>.img`; they
+        // used to share one temporary file, and the second rename found it gone
+        let d = tempfile::tempdir().unwrap();
+        let file = d.path().join("covers").join("al-1.img");
+        let start = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let writers: Vec<_> = (0..8u8)
+            .map(|n| {
+                let (file, start) = (file.clone(), start.clone());
+                std::thread::spawn(move || {
+                    start.wait();
+                    (0..100).try_for_each(|_| write_atomic(&file, &[n; 4096]))
+                })
+            })
+            .collect();
+        for w in writers {
+            w.join().unwrap().unwrap();
+        }
+        let got = std::fs::read(&file).unwrap();
+        assert_eq!(got.len(), 4096);
+        assert!(
+            got.iter().all(|b| *b == got[0]),
+            "one writer's bytes, whole"
+        );
+        let left: Vec<_> = std::fs::read_dir(file.parent().unwrap()).unwrap().collect();
+        assert_eq!(left.len(), 1, "no temporary file stays");
+    }
 
     #[test]
     fn reglages_aller_retour() {

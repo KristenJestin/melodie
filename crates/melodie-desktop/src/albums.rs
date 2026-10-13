@@ -4,6 +4,7 @@
 use crate::app::Shared;
 use crate::catalog::{Catalog, Empty};
 use crate::context_menu::Menued as _;
+use crate::motion;
 use crate::player::palette;
 use crate::sidebar;
 use crate::widgets::IconButton;
@@ -14,12 +15,14 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use melodie_core::library::{Album, AlbumBy, Sort};
 use melodie_desktop::browse::{self, Place};
+use melodie_desktop::covers::{Cover, Covers, Use};
 use melodie_desktop::launch::{Job, Kind};
 use melodie_desktop::layout;
 use melodie_desktop::menu::{Item, Spot};
 use melodie_desktop::theme::Palette;
-use std::collections::HashMap;
+use std::cell::Cell;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 
 /// The narrowest a cover gets before a column goes.
@@ -39,8 +42,9 @@ pub fn content_width(window: &Window, shared: &Entity<Shared>, cx: &App) -> f32 
 }
 
 /// A cover, or its place while there is none: the image comes from a file GPUI reads and decodes
-/// in the background, over the placeholder.
-pub fn cover_box(path: Option<&PathBuf>, side: f32, round: f32, pal: Palette) -> Div {
+/// in the background, over the placeholder. A cover that has just replaced a smaller one fades
+/// in over it.
+pub fn cover_box(cover: Option<Cover>, side: f32, round: f32, pal: Palette) -> Div {
     div()
         .size(px(side))
         .flex_none()
@@ -50,14 +54,26 @@ pub fn cover_box(path: Option<&PathBuf>, side: f32, round: f32, pal: Palette) ->
         .flex()
         .items_center()
         .justify_center()
-        .map(|d| match path {
+        .map(|d| match cover {
             // GPUI does not clip children to rounded corners: the image is rounded itself
-            Some(p) => d.child(
-                img(p.clone())
-                    .size_full()
-                    .rounded(px(round))
-                    .object_fit(ObjectFit::Cover),
-            ),
+            Some(Cover { path, under: None }) => d.child(picture_file(path, round)),
+            Some(Cover {
+                path,
+                under: Some(under),
+            }) => {
+                let id = ElementId::Name(format!("cover-fade-{}", path.display()).into());
+                d.relative()
+                    .child(picture_file(under, round).absolute().top_0().left_0())
+                    .child(
+                        div()
+                            .size_full()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .child(picture_file(path, round))
+                            .with_animation(id, motion::crossfade(), |el, t| el.opacity(t)),
+                    )
+            }
             None => d.child(
                 Icon::new(IconName::Disc3)
                     .size(px((side * 0.3).round()))
@@ -66,10 +82,17 @@ pub fn cover_box(path: Option<&PathBuf>, side: f32, round: f32, pal: Palette) ->
         })
 }
 
+fn picture_file(path: PathBuf, round: f32) -> Img {
+    img(path)
+        .size_full()
+        .rounded(px(round))
+        .object_fit(ObjectFit::Cover)
+}
+
 /// One album: its cover (a play button over it on hover), its name and artist. A click opens it.
 pub fn album_cell(
     album: &Album,
-    covers: &HashMap<String, PathBuf>,
+    covers: &Covers,
     side: f32,
     pal: Palette,
     catalog: &Entity<Catalog>,
@@ -97,7 +120,7 @@ pub fn album_cell(
                 .relative()
                 .child(
                     cover_box(
-                        album.cover.as_ref().and_then(|c| covers.get(c)),
+                        album.cover.as_ref().and_then(|c| covers.get(c, side)),
                         side,
                         10.0,
                         pal,
@@ -215,12 +238,18 @@ pub fn sort_chips<C: Copy + PartialEq + 'static>(
         }))
 }
 
+/// The list, rows and columns shown, and the side of the covers: what an ask was made for.
+type Shown = (usize, usize, usize, usize, u32);
+
 pub struct AlbumGrid {
     shared: Entity<Shared>,
     catalog: Entity<Catalog>,
     scroll: UniformListScrollHandle,
     /// The sort the list was last shown in: another one starts from the top.
     shown_sort: Option<Sort<AlbumBy>>,
+    /// What the covers of the rows shown were last asked for, so that a frame that shows the same
+    /// rows asks nothing.
+    asked: Rc<Cell<Option<Shown>>>,
 }
 
 impl AlbumGrid {
@@ -230,6 +259,7 @@ impl AlbumGrid {
             catalog,
             scroll: UniformListScrollHandle::new(),
             shown_sort: None,
+            asked: Rc::default(),
         }
     }
 }
@@ -239,7 +269,12 @@ impl Render for AlbumGrid {
         let pal = palette(&self.shared, window, cx);
         let (albums, covers, sort, empty): (Option<Arc<[Album]>>, _, _, _) = {
             let c = self.catalog.read(cx);
-            (c.albums.clone(), c.covers.clone(), c.album_sort, c.empty)
+            (
+                c.albums.clone(),
+                Covers::new(c.covers.clone(), window.scale_factor()),
+                c.album_sort,
+                c.empty,
+            )
         };
         if albums.is_some() && self.shown_sort != Some(sort) {
             if self.shown_sort.is_some() {
@@ -288,7 +323,24 @@ impl Render for AlbumGrid {
             Some(list) => {
                 let rows = list.len().div_ceil(cols);
                 let catalog = self.catalog.clone();
-                uniform_list("album-rows", rows, move |range, _, _| {
+                let asked = self.asked.clone();
+                uniform_list("album-rows", rows, move |range, _, cx| {
+                    // the library came at thumbnail size; the rows shown want their own, before
+                    // anything that waits. Asked later: nothing here reads a file.
+                    let key = (
+                        Arc::as_ptr(&list) as *const Album as usize,
+                        range.start,
+                        range.end,
+                        cols,
+                        side as u32,
+                    );
+                    if asked.replace(Some(key)) != Some(key) {
+                        let ids = browse::row_covers(&list, range.clone(), cols);
+                        let catalog = catalog.clone();
+                        cx.defer(move |cx| {
+                            catalog.update(cx, |c, cx| c.want_covers(ids, Use::of(side), true, cx))
+                        });
+                    }
                     range
                         .map(|row| {
                             let start = row * cols;
