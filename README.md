@@ -272,13 +272,16 @@ connection states (see below), with a notification.
   the server). `like --toggle` flips the state. Notification "♥ Ajouté aux favoris : <title>" or
   "Retiré des favoris". The daemon updates `starred` (`now --json`, MPRIS `melodie:starred`) of the
   current track; on a track change it reads the state again from the copy.
-- `melodie playlist add [--allow-duplicates] [--json] <playlistId> [track <id> | album <id> | current]`:
+- `melodie playlist add [--allow-duplicates | --dry-run] [--json] <playlistId> [track <id>… | album <id> | current]`:
   `updatePlaylist` with `songIdToAdd` repeated (`current`, the current track, is the default).
   The playlist is first read from the server (`getPlaylist`, not the local copy, which may be
   stale): a track already in it, by id, is skipped, and the output says how
   many ("Ajouté à « X » : 8 morceaux (2 déjà présents, ignorés)", or "Déjà dans « X »" when
   nothing is left to add, code 0, nothing written). `--allow-duplicates` adds them anyway, without
-  reading the playlist. A track repeated in the request itself is added once.
+  reading the playlist. A track repeated in the request itself is added once. `track` takes one
+  id or several (a selection), added in that order. `--dry-run` reads the playlist and says what
+  would be added and what is already there, without writing anything (the window asks its
+  question from it).
 - `melodie playlist duplicates [--remove] [--json] <playlistId>`: lists the repeats of a playlist,
   by rank and the rank of the occurrence they repeat. The text output counts ranks from 1; the
   `--json` `index` and `first` count from 0, like Subsonic's `songIndexToRemove` (unlike `remove`,
@@ -288,9 +291,16 @@ connection states (see below), with a notification.
   ones only, keeping the first occurrence and the order of the rest, in one `updatePlaylist`
   whose `songIndexToRemove` are all ranks of the order before the call (Navidrome's reading,
   checked in its source and tested on the fake server). The likely ones are listed and left.
-- `melodie playlist remove <playlistId> <rank>`: removes the track at that rank, counted from 1
-  like what `duplicates` prints (rank 0 is refused). It is converted once to Subsonic's 0-based
-  `songIndexToRemove` and checked against the server's playlist before writing.
+- `melodie playlist remove [--expect <id>]… <playlistId> <rank>…`: removes the tracks at these
+  ranks, counted from 1 like what `duplicates` prints (rank 0 is refused). They are converted once
+  to Subsonic's 0-based `songIndexToRemove`, checked against the server's playlist and sent in one
+  `updatePlaylist` (every index refers to the order before the call). With `--expect`, given once
+  per rank, each rank must still hold that track id, or nothing is removed: a window shows the
+  playlist as it last read it.
+- `melodie playlist move [--expect <id>] <playlistId> <from> <to>`: moves the track at rank
+  `from` to rank `to` (from 1). Subsonic has no move: the whole order is written again by
+  `createPlaylist` with the `playlistId` (Navidrome replaces the tracks and keeps the playlist,
+  its name and its owner). `--expect` as for `remove`.
 - `melodie playlist create <name> [current | track <id> | album <id>]`,
   `playlist rename <id> <name…>`, `playlist delete <id>` (no confirmation).
   `create --prompt [target]` asks for the name on the keyboard (for `xdg-terminal-exec`).
@@ -454,7 +464,8 @@ Unlike the launcher lists above, these two answer one object, with camel-case ke
 ```
 
 `added` is what was sent to the server, `already` what was found in the playlist and left out
-(always empty with `--allow-duplicates`, which does not read the playlist). The launcher or the
+(always empty with `--allow-duplicates`, which does not read the playlist). With `--dry-run`,
+nothing is sent: `added` is what would be, and the object has one more key, `"dryRun": true`. The launcher or the
 window can offer to add `already` again with `--allow-duplicates`.
 
 ```json
