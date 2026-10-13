@@ -234,6 +234,14 @@ impl Clock {
     }
 }
 
+/// The slider's end, in percent: what the daemon accepts (`docs/events.md`, `volume` up to 1.3).
+pub const VOLUME_SLIDER_MAX: f32 = melodie_core::prefs::MAX_VOLUME as f32;
+
+/// The volume slider's value (percent) for the daemon's volume (1 = 100 %).
+pub fn volume_percent(v: f64) -> f32 {
+    (v * 100.0).clamp(0.0, f64::from(VOLUME_SLIDER_MAX)) as f32
+}
+
 /// The `to` of a `queue_move` when the row `from` is dropped on the row `onto`; `None` when it
 /// does not move.
 pub fn drop_move(from: usize, onto: usize, len: usize) -> Option<(usize, usize)> {
@@ -583,6 +591,20 @@ mod tests {
         let n = p.track_change;
         p.apply(&snapshot(), &mut c, t0);
         assert_eq!(p.track_change, n);
+    }
+
+    #[test]
+    fn a_volume_above_100_percent_set_from_the_command_line_shows_as_it_is() {
+        assert_eq!(volume_percent(0.0), 0.0);
+        assert_eq!(volume_percent(0.8), 80.0);
+        assert_eq!(volume_percent(1.2), 120.0);
+        assert_eq!(
+            volume_percent(1.3),
+            VOLUME_SLIDER_MAX,
+            "the slider reaches what the daemon allows"
+        );
+        assert_eq!(volume_percent(2.0), VOLUME_SLIDER_MAX);
+        assert_eq!(volume_percent(-1.0), 0.0);
     }
 
     #[test]

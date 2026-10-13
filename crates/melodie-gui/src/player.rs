@@ -12,7 +12,7 @@ use gpui_kit::*;
 use melodie_core::proto::Request;
 use melodie_core::track::clock;
 use melodie_gui::launch::Job;
-use melodie_gui::model::{Clock, PlayState};
+use melodie_gui::model::{Clock, PlayState, VOLUME_SLIDER_MAX, volume_percent};
 use melodie_gui::theme::Palette;
 use std::time::{Duration, Instant};
 
@@ -49,7 +49,7 @@ impl PlayerView {
         let volume = cx.new(|_| {
             SliderState::new()
                 .min(0.)
-                .max(100.)
+                .max(VOLUME_SLIDER_MAX)
                 .step(1.)
                 .default_value(volume_percent(v))
         });
@@ -87,10 +87,6 @@ impl PlayerView {
             _subs: subs,
         }
     }
-}
-
-fn volume_percent(v: f64) -> f32 {
-    (v * 100.0).clamp(0.0, 100.0) as f32
 }
 
 /// A cover, or its place while there is none.
