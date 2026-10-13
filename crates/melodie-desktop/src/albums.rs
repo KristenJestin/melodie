@@ -14,6 +14,7 @@ use gpui_kit::*;
 use melodie_core::library::{Album, AlbumBy, Sort};
 use melodie_desktop::browse::{self, Place};
 use melodie_desktop::launch::{Job, Kind};
+use melodie_desktop::layout;
 use melodie_desktop::theme::Palette;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -27,10 +28,12 @@ const TEXT: f32 = 48.0;
 /// The padding on each side of a view's content.
 pub const PAD: f32 = 24.0;
 
-/// The width of a view's content, between the sidebar and the window's edge.
-pub fn content_width(window: &Window) -> f32 {
+/// The width of a view's content, between the sidebar and the window's edge or the queue. The
+/// queue's settled place, not its animated one: the content is laid out once when it opens or
+/// closes, not on every frame of the slide.
+pub fn content_width(window: &Window, shared: &Entity<Shared>, cx: &App) -> f32 {
     let w = window.viewport_size().width.as_f32();
-    w - sidebar::width(w) - 2.0 * PAD
+    layout::main_width(w, sidebar::width(w), shared.read(cx).queue_open) - 2.0 * PAD
 }
 
 /// A cover, or its place while there is none: the image comes from a file GPUI reads and decodes
@@ -233,7 +236,7 @@ impl Render for AlbumGrid {
             }
             self.shown_sort = Some(sort);
         }
-        let width = content_width(window);
+        let width = content_width(window, &self.shared, cx);
         let cols = browse::columns(width, MIN_CELL, GAP);
         let side = ((width - GAP * (cols - 1) as f32) / cols as f32).floor();
         let catalog = self.catalog.clone();

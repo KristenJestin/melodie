@@ -8,6 +8,7 @@ pub mod edit;
 pub mod find;
 pub mod keys;
 pub mod launch;
+pub mod layout;
 pub mod link;
 pub mod model;
 pub mod selection;

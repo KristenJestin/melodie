@@ -212,13 +212,7 @@ impl Render for Sidebar {
                         IconButton::new("nav-queue", IconName::ListMusic, pal)
                             .tip("Queue")
                             .selected(queue_open)
-                            .on_click(move |_, _, cx| {
-                                queue.update(cx, |s, cx| {
-                                    s.queue_open = !s.queue_open;
-                                    s.settings_open = false;
-                                    cx.notify()
-                                })
-                            }),
+                            .on_click(move |_, _, cx| queue.update(cx, |s, cx| s.toggle_queue(cx))),
                     )
                     .child(
                         IconButton::new("settings", IconName::Settings, pal)

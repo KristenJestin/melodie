@@ -33,6 +33,7 @@ use melodie_core::proto::{self, Request};
 use melodie_desktop::account::{self, Screen};
 use melodie_desktop::browse::Place;
 use melodie_desktop::keys::{self, Act, Key, Situation, Thumb};
+use melodie_desktop::layout::{self, QUEUE_WIDTH};
 use melodie_desktop::theme::{self, Active, Choice, Palette};
 use mini::MiniPlayer;
 use pages::{HomeView, PageView, SelectionBar};
@@ -89,8 +90,6 @@ gpui_kit::assets::icon_assets!(
         X,
     ]
 );
-
-const QUEUE_WIDTH: f32 = 380.0;
 
 /// The views of the window, each an entity of its own (a list in a view of its own keeps its
 /// scroll layer; each keeps its scroll position when the user comes back to it).
@@ -178,6 +177,15 @@ impl Root {
         }
     }
 
+    fn queue_place(&self, window: &Window, cx: &App) -> layout::Queue {
+        let width = window.viewport_size().width.as_f32();
+        layout::Queue::of(
+            width,
+            sidebar::width(width),
+            self.shared.read(cx).queue_open,
+        )
+    }
+
     /// What the window knows now, for `keys` to judge by.
     fn situation<R>(&self, window: &Window, cx: &App, judge: impl FnOnce(Situation) -> R) -> R {
         let (s, c, v) = (
@@ -188,7 +196,7 @@ impl Root {
         judge(Situation {
             here: c.here(),
             field_focused: v.has_focus(window, cx),
-            overlay_open: s.queue_open || s.settings_open,
+            overlay_open: self.queue_place(window, cx).covers() || s.settings_open,
             dialog_open: self.views.dialogs.read(cx).is_open(),
             selection: c.selection.count(c.here()) > 0,
             field_empty: v.is_empty(),
@@ -213,6 +221,7 @@ impl Root {
     fn run(&mut self, act: Act, window: &mut Window, cx: &mut Context<Self>) {
         // a tooltip would outlive the button of a page that goes
         tips::hide(cx);
+        let covers = self.queue_place(window, cx).covers();
         match act {
             Act::OpenSearch => {
                 self.catalog
@@ -221,10 +230,13 @@ impl Root {
             }
             // what is open closes first; then a page goes back
             Act::CloseOverlays => self.shared.update(cx, |s, cx| {
-                s.queue_open = false;
                 s.settings_open = false;
+                if covers {
+                    s.show_queue(false, cx);
+                }
                 cx.notify()
             }),
+            Act::ToggleQueue => self.shared.update(cx, |s, cx| s.toggle_queue(cx)),
             Act::CloseDialog => self.views.dialogs.update(cx, |d, cx| d.close(cx)),
             // Enter in the name field is the field's own: it confirms once, through its event
             Act::Confirm if self.views.dialogs.read(cx).field_focused(window, cx) => return,
@@ -366,9 +378,9 @@ fn sign_in_follow(
 
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (open, settings, notice) = {
+        let (settings, notice) = {
             let s = self.shared.read(cx);
-            (s.queue_open, s.settings_open, s.notice())
+            (s.settings_open, s.notice())
         };
         let (signing, notice) = {
             let a = self.account.read(cx);
@@ -379,7 +391,11 @@ impl Render for Root {
             self.notice = n.clone();
         }
         let pal = palette(&self.shared, window, cx);
-        let q = motion::flag("queue-open", open, motion::PANEL, window, cx);
+        let place = self.queue_place(window, cx);
+        // Docked, the column's width moves and the main area follows; on a narrow window the
+        // queue slides over the main area instead.
+        let col = motion::to("queue-column", place.column(), motion::PANEL, window, cx);
+        let q = motion::flag("queue-over", place.covers(), motion::PANEL, window, cx);
         let st = motion::flag("settings-open", settings, motion::PANEL, window, cx);
         let nt = motion::flag("notice", notice.is_some(), motion::ENTER, window, cx);
         let si = motion::flag("sign-in", signing, motion::ENTER, window, cx);
@@ -424,24 +440,57 @@ impl Render for Root {
             .bg(pal.bg)
             .text_color(pal.fg)
             .child(
-                h_flex().size_full().child(v.sidebar.clone()).child(
-                    v_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .h_full()
-                        .child(
-                            // every change of place comes in: a short fade and rise
+                h_flex()
+                    .size_full()
+                    .child(v.sidebar.clone())
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            // laid out for the queue's settled place: what is wider than the
+                            // area while the column slides away stays under it, clipped
+                            .overflow_hidden()
+                            .child(
+                                // every change of place comes in: a short fade and rise
+                                div()
+                                    .id(("view", step))
+                                    .flex_1()
+                                    .min_h_0()
+                                    .child(content)
+                                    .with_animation(
+                                        ("view-enter", step),
+                                        motion::enter(),
+                                        |el, t| el.opacity(t).mt(px((1.0 - t) * 10.0)),
+                                    ),
+                            )
+                            .when(here != Place::Player, |d| d.child(v.mini.clone())),
+                    )
+                    // the panel moves with the column's edge, so it slides in as the column opens
+                    .when(col > 0.0, |d| {
+                        d.child(
                             div()
-                                .id(("view", step))
-                                .flex_1()
-                                .min_h_0()
-                                .child(content)
-                                .with_animation(("view-enter", step), motion::enter(), |el, t| {
-                                    el.opacity(t).mt(px((1.0 - t) * 10.0))
+                                .id("queue-column")
+                                .flex_none()
+                                .h_full()
+                                .w(px(col))
+                                .relative()
+                                .overflow_hidden()
+                                // a view is drawn once: while it slides over a narrow window, the
+                                // column closing beside it stays empty
+                                .when(q == 0.0, |d| {
+                                    d.child(
+                                        div()
+                                            .absolute()
+                                            .top_0()
+                                            .bottom_0()
+                                            .left_0()
+                                            .w(px(QUEUE_WIDTH))
+                                            .child(self.views.queue.clone()),
+                                    )
                                 }),
                         )
-                        .when(here != Place::Player, |d| d.child(v.mini.clone())),
-                ),
+                    }),
             )
             // the rows picked: what can be done with them, above the mini player
             .child(
@@ -449,7 +498,7 @@ impl Render for Root {
                     .absolute()
                     .bottom(px(lift + 12.))
                     .left(px(sidebar::width(width)))
-                    .right_0()
+                    .right(px(col))
                     .flex()
                     .justify_center()
                     .child(v.picked.clone()),
@@ -482,12 +531,11 @@ impl Render for Root {
                         .id("queue-scrim")
                         .absolute()
                         .inset_0()
+                        // a click beside the queue only hides it
+                        .occlude()
                         .bg(hsla(0., 0., 0., 0.35 * q))
                         .on_click(move |_, _, cx| {
-                            scrim.update(cx, |s, cx| {
-                                s.queue_open = false;
-                                cx.notify()
-                            })
+                            scrim.update(cx, |s, cx| s.show_queue(false, cx))
                         }),
                 )
                 .child(

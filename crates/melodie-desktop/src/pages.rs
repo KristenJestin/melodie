@@ -145,7 +145,7 @@ impl Render for HomeView {
             let c = self.catalog.read(cx);
             (c.home.clone(), c.covers.clone(), c.empty)
         };
-        let width = content_width(window);
+        let width = content_width(window, &self.shared, cx);
         let catalog = &self.catalog;
         let Some(home) = home else {
             return div().size_full().child(empty_state(empty, "", pal));
@@ -172,7 +172,11 @@ impl Render for HomeView {
                 })
                 .child(section_title("Mixes", pal))
                 .child(
+                    // the settled width, as the covers: the cards do not wrap again on every
+                    // frame of the queue sliding
                     h_flex()
+                        .w(px(width + 2.0 * PAD))
+                        .flex_none()
                         .px(px(PAD))
                         .gap_4()
                         .flex_wrap()
@@ -477,7 +481,7 @@ impl Render for PageView {
             self.tracks.scroll_to_item(0, ScrollStrategy::Top);
             self.shown = Some(here.clone());
         }
-        let width = content_width(window);
+        let width = content_width(window, &self.shared, cx);
         let cols = |c: Cols| c.fit(width);
         let catalog = &self.catalog;
         let back = {

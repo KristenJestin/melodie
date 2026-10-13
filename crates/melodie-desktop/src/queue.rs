@@ -97,10 +97,7 @@ impl Render for QueuePanel {
                         IconButton::new("close-queue", IconName::X, pal)
                             .tip("Close the queue")
                             .on_click(move |_, _, cx| {
-                                close.update(cx, |s, cx| {
-                                    s.queue_open = false;
-                                    cx.notify()
-                                })
+                                close.update(cx, |s, cx| s.show_queue(false, cx))
                             }),
                     ),
             )

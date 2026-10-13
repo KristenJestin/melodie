@@ -263,6 +263,9 @@ pub struct Settings {
     /// Absent until the user chooses: the first launch then follows Omarchy when it is there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<Choice>,
+    /// The queue is shown beside the main area (or over it, on a narrow window).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub queue: bool,
 }
 
 impl Settings {
@@ -280,6 +283,13 @@ impl Settings {
 
     pub fn save(&self, env: &Env) -> Result<()> {
         write_atomic(&Self::path(env), toml::to_string(self)?.as_bytes())
+    }
+
+    /// Changes one setting and keeps the others as the file has them.
+    pub fn update(env: &Env, change: impl FnOnce(&mut Self)) -> Result<()> {
+        let mut s = Self::load(env);
+        change(&mut s);
+        s.save(env)
     }
 }
 
@@ -534,6 +544,7 @@ background = "#eff1f5"
         assert_eq!(Settings::load(&env), Settings::default());
         let s = Settings {
             theme: Some(Choice::Base),
+            ..Settings::default()
         };
         s.save(&env).unwrap();
         assert_eq!(
@@ -543,6 +554,41 @@ background = "#eff1f5"
         assert_eq!(Settings::load(&env), s);
         std::fs::write(Settings::path(&env), "theme = 12").unwrap();
         assert_eq!(Settings::load(&env), Settings::default());
+    }
+
+    #[test]
+    fn the_queue_shown_or_hidden_is_kept_in_window_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        assert!(
+            !Settings::load(&env).queue,
+            "hidden until the user shows it"
+        );
+        Settings::update(&env, |s| s.queue = true).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(Settings::path(&env)).unwrap(),
+            "queue = true\n"
+        );
+        assert!(Settings::load(&env).queue);
+        Settings::update(&env, |s| s.queue = false).unwrap();
+        assert!(!Settings::load(&env).queue);
+    }
+
+    #[test]
+    fn choosing_the_theme_keeps_the_queue_and_the_queue_keeps_the_theme() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        Settings::update(&env, |s| s.queue = true).unwrap();
+        Settings::update(&env, |s| s.theme = Some(Choice::Omarchy)).unwrap();
+        Settings::update(&env, |s| s.queue = false).unwrap();
+        Settings::update(&env, |s| s.queue = true).unwrap();
+        assert_eq!(
+            Settings::load(&env),
+            Settings {
+                theme: Some(Choice::Omarchy),
+                queue: true,
+            }
+        );
     }
 
     fn recv(rx: &Receiver<Option<Palette>>) -> Option<Palette> {

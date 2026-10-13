@@ -13,6 +13,7 @@ use gpui_kit::*;
 use melodie_core::proto::Request;
 use melodie_core::track::clock;
 use melodie_desktop::launch::{Adding, Job};
+use melodie_desktop::layout;
 use melodie_desktop::model::{Clock, PlayState, VOLUME_SLIDER_MAX, volume_percent};
 use melodie_desktop::theme::Palette;
 use std::time::{Duration, Instant};
@@ -141,7 +142,8 @@ impl Render for PlayerView {
         };
 
         let viewport = window.viewport_size();
-        let width = viewport.width.as_f32() - crate::sidebar::width(viewport.width.as_f32());
+        let w = viewport.width.as_f32();
+        let width = layout::main_width(w, crate::sidebar::width(w), queue_open);
         let side = (width - 64.0)
             .min(viewport.height.as_f32() - 340.0)
             .clamp(160.0, 440.0);
@@ -342,13 +344,7 @@ impl Render for PlayerView {
                         IconButton::new("queue", IconName::ListMusic, pal)
                             .tip("Queue")
                             .selected(queue_open)
-                            .on_click(move |_, _, cx| {
-                                shared.update(cx, |s, cx| {
-                                    s.queue_open = !s.queue_open;
-                                    s.settings_open = false;
-                                    cx.notify()
-                                })
-                            })
+                            .on_click(move |_, _, cx| shared.update(cx, |s, cx| s.toggle_queue(cx)))
                     })),
             )
             .child(

@@ -110,9 +110,14 @@ Screenshots and a recording of the animations, made with invented data, are in
   personal mix (`melodie mix me`, which starts the daemon); the heart runs `melodie like track
   <id>` or `unlike`: what needs the server goes through `melodie`. A failure is said at the
   bottom of the window for a few seconds, and so is an `unreachable` server.
-- **The queue**, opened from the player: past tracks greyed, the current one marked, the next
-  ones. A click plays a track; drag a track onto another to move it there; the cross on a row
-  removes it; the button at the top removes what comes after the current track.
+- **The queue**, shown or hidden by its button (in the player and at the bottom of the sidebar)
+  or the `q` key: a column on the right of the window, beside the pages and the player, which
+  narrow to make room; nothing is covered. Below 1160 pixels of width (the sidebar's 220, the
+  queue's 380 and 560 for the main area) it slides over the main area instead, and Escape or a
+  click beside it hides it. Shown or hidden is kept between launches. Past tracks greyed, the
+  current one marked, the next ones. A click plays a track; drag a track onto another to move it
+  there; the cross on a row removes it; the button at the top removes what comes after the
+  current track.
 - **The library**, in the sidebar: Home, Albums, Artists, Tracks, and the playlists. Everything is
   read from the local copy, away from the window's thread: browsing never touches the network.
   - Home: the albums added last, the mixes (the personal mix, the rediscoveries, and a mix for
@@ -157,13 +162,14 @@ Screenshots and a recording of the animations, made with invented data, are in
   or an album). The local copy is read away from the window's thread, and the answer to an older
   keystroke is never shown over a newer one; the search never touches the network.
 - **Keys**: Ctrl+F, or / when not typing, opens the search and puts the cursor in its field;
-  Space plays or pauses (in the field, it is a space); Escape closes a dialog, else the queue or the
+  Space plays or pauses (in the field, it is a space); `q` shows or hides the queue (in the field,
+  it is a letter); Escape closes a dialog, else the queue laid over a narrow window or the
   settings, else unpicks the rows picked, else empties the search field, else goes back. In a
   dialog, Enter does what its main button does (Escape cancels).
 - **The mouse's back and forward buttons** go back and forward between the pages, like the
-  browser's: back goes back a page (it closes the queue or the settings first), forward returns
-  to the page back left, and does nothing when there is none (a page opened after going
-  back forgets it). They do nothing behind a dialog or the sign-in screen.
+  browser's: back goes back a page (it closes the queue laid over a narrow window or the settings
+  first), forward returns to the page back left, and does nothing when there is none (a page
+  opened after going back forgets it). They do nothing behind a dialog or the sign-in screen.
 - **Tooltips**: every button that shows an icon alone says what it does when the pointer rests on
   it for about 0.4 s: a short fade and rise, beside the button, never over it. They go at a press
   or a key.
@@ -185,7 +191,7 @@ Screenshots and a recording of the animations, made with invented data, are in
   back to the base theme, saying so, while the theme file is missing. Before any choice, the
   window uses Omarchy when it is offered, else the base theme. The choice is kept in
   `~/.local/state/melodie/window.toml` (`theme = "base"` or `"omarchy"`), a file of the window's
-  own.
+  own, beside `queue = true` while the queue is shown.
 - **Animations**: every change of view, panel or state is short and interruptible, and follows
   the desktop's reduced-motion setting. An unfocused window keeps animating at the screen's rate.
 - Measuring: built with the `frame-stats` feature and run with `MELODIE_DESKTOP_FRAME_STATS=<file>`,
@@ -403,7 +409,7 @@ result), `--size N` (50 by default).
 - `~/.cache/melodie/covers/`: local covers (512 px, daemon); `covers/thumbs/`: 128 px thumbnails
   for the launcher; `<id>.img.none`: Navidrome's default image (set aside).
 - `~/.cache/melodie/auth-refused`: marker of the last refusal by the server (see below).
-- `~/.local/state/melodie/window.toml`: the window's theme choice.
+- `~/.local/state/melodie/window.toml`: the window's theme choice, and whether the queue is shown.
 - `~/.local/state/melodie/state.toml`: remembered volume; `melodie.log`: the daemon's log;
   `sync.log`: the log of background synchronisations. `XDG_STATE_HOME` honoured.
 - `$XDG_RUNTIME_DIR/melodie/melodie.sock`, `melodie.lock`: the daemon's socket and lock;
