@@ -13,7 +13,9 @@ use gpui_kit::component::Icon;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use melodie_desktop::browse::Place;
+use melodie_desktop::playlists;
 use melodie_desktop::theme::{Palette, mix};
+use std::path::PathBuf;
 
 /// A window narrower than this has the sidebar of icons.
 const COMPACT: f32 = 760.0;
@@ -38,11 +40,16 @@ impl Sidebar {
     }
 }
 
-/// An entry: its icon, its name unless compact, marked when it is where the user is.
+/// The side of a playlist's picture: the entry's icon, a little larger so that it reads.
+const PICTURE: f32 = 24.0;
+
+/// An entry: its icon (a playlist's own picture instead, when it has one), its name unless
+/// compact, marked when it is where the user is.
 #[derive(IntoElement)]
 struct Entry {
     id: ElementId,
     icon: IconName,
+    picture: Option<PathBuf>,
     label: SharedString,
     compact: bool,
     on: bool,
@@ -73,12 +80,20 @@ impl RenderOnce for Entry {
                 ..mix(pal.fg, pal.accent, s)
             })
             .on_click(move |_, _, cx| catalog.update(cx, |c, cx| c.start_at(to.clone(), cx)))
-            .child(
-                Icon::new(self.icon)
+            .child(match self.picture {
+                // GPUI does not clip children to rounded corners: the image is rounded itself
+                Some(path) => img(path)
+                    .size(px(PICTURE))
+                    .flex_none()
+                    .rounded(px(4.))
+                    .object_fit(ObjectFit::Cover)
+                    .into_any_element(),
+                None => Icon::new(self.icon)
                     .size(px(18.))
                     .flex_none()
-                    .text_color(mix(fg, pal.accent, s)),
-            )
+                    .text_color(mix(fg, pal.accent, s))
+                    .into_any_element(),
+            })
             .when(!self.compact, |d| {
                 d.child(
                     div()
@@ -98,9 +113,13 @@ impl Render for Sidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let pal = palette(&self.shared, window, cx);
         let compact = width(window.viewport_size().width.as_f32()) < 100.0;
-        let (section, playlists) = {
+        let (section, list, covers) = {
             let c = self.catalog.read(cx);
-            (c.nav.section().clone(), c.playlists.clone())
+            (
+                c.nav.section().clone(),
+                c.playlists.clone(),
+                c.covers.clone(),
+            )
         };
         let (queue_open, settings_open) = {
             let s = self.shared.read(cx);
@@ -109,6 +128,7 @@ impl Render for Sidebar {
         let entry = |id: &'static str, icon, label: &'static str, to: Place| Entry {
             id: id.into(),
             icon,
+            picture: None,
             label: label.into(),
             compact,
             on: section == to,
@@ -191,9 +211,10 @@ impl Render for Sidebar {
                     .gap_1()
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
-                    .children(playlists.iter().map(|p| Entry {
+                    .children(list.iter().map(|p| Entry {
                         id: ElementId::Name(format!("nav-pl-{}", p.id).into()),
                         icon: IconName::ListMusic,
+                        picture: playlists::picture(p, &covers).cloned(),
                         label: p.name.clone().into(),
                         compact,
                         on: section == Place::Playlist(p.id.clone()),
