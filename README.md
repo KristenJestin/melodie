@@ -162,12 +162,17 @@ Screenshots and a recording of the animations, made with invented data, are in
     there) or add them anyway.
   - Actions run `melodie` (`play`, `queue`, `mix`, `playlist add|create|rename|delete|remove|move|
     duplicates`): what needs the server still goes through it, and the window reads the local copy
-    again when it is done. The jobs of one playlist run one after the other, in the order asked. Covers come from `~/.cache/melodie/covers/` (the 128 px thumbnails
-    first); the missing ones are fetched by `melodie cover-fetch`, in the background, by one process
-    at a time fed from a queue of missing ids, for every place that shows a cover (grids, pages,
-    search, the queue, the player, the bottom bar). An id is asked again until it is on disk, is
-    the server's default image (the glyph stays) or came back missing three times from a finished
-    fetch; a fetch that found the lock taken costs no try. What lands shows without a restart.
+    again when it is done. The jobs of one playlist run one after the other, in the order asked. Covers come from `~/.cache/melodie/covers/`, at the size
+    the window draws them: the window asks for the pixels a cover covers times the screen's scale
+    factor and draws the smallest file that is not upscaled (128 px for list rows, 300 px for
+    grids, rows and page headers, 512 px, the daemon's own file, above that, as on a screen at
+    scale 2). While a larger file is fetched, a smaller one already on disk is shown, then the
+    larger one fades in over it. The missing ones are fetched by `melodie cover-fetch`, in the
+    background, by one process at a time fed from a queue of missing covers (an id at a size), for
+    every place that shows a cover (grids, pages, search, the queue, the player, the bottom bar).
+    A cover is asked again until it is on disk, is the server's default image (the glyph stays,
+    at every size) or came back missing three times from a finished fetch; a fetch that found the
+    lock taken costs no try. What lands shows without a restart.
   - At the bottom, what plays: play or pause, next; a click opens the player.
 - **The search**, first in the sidebar: one field, and as you type the artists, albums, tracks and
   playlists of the local copy, grouped by kind. The kind whose best result is the most relevant
@@ -431,8 +436,9 @@ result), `--size N` (50 by default).
 - `~/.cache/melodie/library.db`: the local copy (SQLite, FTS5 `unicode61 remove_diacritics 2`),
   `XDG_CACHE_HOME` honoured. Recreated at every full synchronisation (a `.tmp` file, then a
   rename).
-- `~/.cache/melodie/covers/`: local covers (512 px, daemon); `covers/thumbs/`: 128 px thumbnails
-  for the launcher; `<id>.img.none`: Navidrome's default image (set aside).
+- `~/.cache/melodie/covers/`: local covers (512 px, daemon, also the window's largest tier);
+  `covers/thumbs/`: 128 px thumbnails for the launcher; `covers/row/`: 300 px covers of the
+  window's grids and rows; `thumbs/<id>.img.none`: Navidrome's default image (set aside).
 - `~/.cache/melodie/auth-refused`: marker of the last refusal by the server (see below).
 - `~/.local/state/melodie/window.toml`: the window's theme choice, and whether the queue is shown.
 - `~/.local/state/melodie/state.toml`: remembered volume; `melodie.log`: the daemon's log;
@@ -572,7 +578,11 @@ internal cover id (`_cover`) is replaced by `"icon": "<local path>"`: first the 
 downloaded in parallel (8 requests, `getCoverArt` 128) within a total budget of 250 ms; beyond
 that, the entry keeps its glyph and the rest goes to a detached process (`melodie cover-fetch`,
 new session, hidden subcommand) for the next keystroke. The ids reach it on its standard input and
-it reads the keyring itself: no token in the arguments, the environment or the output. One
+it reads the keyring itself: no token in the arguments, the environment or the output. A line is
+an id (the 128 px thumbnail: the launcher's, unchanged) or `<id><tab><size>` with a size of 128,
+300 or 512 (the window's tiers, beside the launcher's files; another size is ignored); a larger tier of a
+cover not seen yet goes through its thumbnail first, the only size where the default image is
+known by its bytes. One
 `cover-fetch` at a time (lock `covers/.fetch.lock`); one that finds the lock taken exits at once
 with code 75 and downloads nothing (the launcher ignores the code, the window asks again). The keyring is read only if a thumbnail is
 missing. Navidrome's default image (md5 `fcec14e686ad5159a8ed7c51936116d7`) is never shown: a

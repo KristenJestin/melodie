@@ -4,6 +4,7 @@
 
 use crate::app::Shared;
 use crate::cover_cache::CoverCache;
+use crate::home_page::{CIRCLE, SQUARE};
 use gpui_kit::*;
 use melodie_core::db;
 use melodie_core::env::Env;
@@ -13,6 +14,7 @@ use melodie_core::library::{
 use melodie_core::store;
 use melodie_core::time::now_secs;
 use melodie_desktop::browse::{Nav, Place};
+use melodie_desktop::covers::{Files, Use};
 use melodie_desktop::home::{self, Highlight, Home, Row};
 use melodie_desktop::launch::{self, Job};
 use melodie_desktop::selection::{How, Selection};
@@ -80,7 +82,7 @@ pub struct Catalog {
     pub pages: HashMap<Place, Arc<Page>>,
     /// Cover files by cover id, as far as they were looked up (a copy of the cache's, which
     /// the views read without a lock).
-    pub covers: Arc<HashMap<String, PathBuf>>,
+    pub covers: Arc<Files>,
     cover_cache: Entity<CoverCache>,
     /// The last read of the local copy failed this way.
     pub empty: Empty,
@@ -376,7 +378,12 @@ impl Catalog {
 
     fn load_playlists(&mut self, cx: &mut Context<Self>) {
         self.load("playlists", cx, lib::playlists, |this, list, cx| {
-            this.want_covers(list.iter().filter_map(|p| p.cover.clone()), cx);
+            this.want_covers(
+                list.iter().filter_map(|p| p.cover.clone()),
+                Use::of(SQUARE),
+                true,
+                cx,
+            );
             this.playlists = list.into();
             this.home_changed(cx);
         });
@@ -399,20 +406,27 @@ impl Catalog {
     fn home_changed(&mut self, cx: &mut Context<Self>) {
         let Some(home) = &self.home else { return };
         let view = home::view(home, &self.playlists);
-        let covers: Vec<String> = view
-            .sections
+        let (mut albums, mut artists) = (Vec::new(), Vec::new());
+        for section in &view.sections {
+            match &section.row {
+                Row::Albums(v) => albums.extend(v.iter().filter_map(|a| a.cover.clone())),
+                Row::Artists(v) => artists.extend(v.iter().filter_map(|a| a.cover.clone())),
+                Row::Mixes(_) | Row::Playlists(_) => {}
+            }
+        }
+        let highlighted: Vec<String> = view
+            .highlights
             .iter()
-            .flat_map(|s| -> Vec<Option<String>> {
-                match &s.row {
-                    Row::Albums(v) => v.iter().map(|a| a.cover.clone()).collect(),
-                    Row::Artists(v) => v.iter().map(|a| a.cover.clone()).collect(),
-                    Row::Mixes(_) | Row::Playlists(_) => vec![],
-                }
+            .filter_map(|h| match h {
+                Highlight::Album { album, .. } => album.cover.clone(),
+                Highlight::Mix => None,
             })
-            .flatten()
             .collect();
         self.home_view = Some(Arc::new(view));
-        self.want_covers(covers, cx);
+        // the home is what is on screen: its covers go before the library's
+        self.want_covers(albums, Use::of(SQUARE), true, cx);
+        self.want_covers(artists, Use::of(CIRCLE), true, cx);
+        self.want_covers(highlighted, Use::CARD, true, cx);
         self.want_tints(cx);
     }
 
@@ -427,7 +441,7 @@ impl Catalog {
                 Highlight::Mix => None,
             })
             .filter(|id| !self.tints.contains_key(id) && !self.tinting.contains(id))
-            .filter_map(|id| self.covers.get(&id).map(|p| (id, p.clone())))
+            .filter_map(|id| self.covers.smallest(&id).cloned().map(|p| (id, p)))
             .collect();
         if todo.is_empty() {
             return;
@@ -467,6 +481,8 @@ impl Catalog {
                     list.iter()
                         .filter_map(|a| a.cover.clone())
                         .collect::<Vec<_>>(),
+                    Use::SMALL,
+                    false,
                     cx,
                 );
                 this.albums = Some(list.into());
@@ -486,6 +502,8 @@ impl Catalog {
                         list.iter()
                             .filter_map(|a| a.cover.clone())
                             .collect::<Vec<_>>(),
+                        Use::SMALL,
+                        false,
                         cx,
                     );
                     this.artists = Some(list.into());
@@ -552,7 +570,7 @@ impl Catalog {
                     Page::Playlist { playlist, .. } => playlist.cover.clone().into_iter().collect(),
                     Page::Gone => vec![],
                 };
-                this.want_covers(covers, cx);
+                this.want_covers(covers, Use::TILE, true, cx);
                 // Only the pages on the way back are kept.
                 let kept: Vec<Place> = this.nav.places().to_vec();
                 this.pages.retain(|p, _| kept.contains(p));
@@ -562,9 +580,16 @@ impl Catalog {
     }
 
     /// Asks for the covers not asked yet (see `CoverCache`); `covers` is filled as they land.
-    pub fn want_covers(&mut self, ids: impl IntoIterator<Item = String>, cx: &mut Context<Self>) {
+    pub fn want_covers(
+        &mut self,
+        ids: impl IntoIterator<Item = String>,
+        usage: Use,
+        first: bool,
+        cx: &mut Context<Self>,
+    ) {
         let ids: Vec<String> = ids.into_iter().collect();
-        self.cover_cache.update(cx, |c, cx| c.want(ids, false, cx));
+        self.cover_cache
+            .update(cx, |c, cx| c.want(ids, usage, first, cx));
     }
 
     /// Runs `melodie` for an action; what it says is said in the window.

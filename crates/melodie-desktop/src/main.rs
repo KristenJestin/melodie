@@ -410,6 +410,12 @@ fn sign_in_follow(
 
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The window moved to a screen of another scale factor: the covers are asked again at
+        // the pixels it needs. Not while drawing: after this frame.
+        let (scale, covers) = (window.scale_factor(), self.shared.read(cx).covers.clone());
+        if (covers.read(cx).scale() - scale).abs() >= 0.01 {
+            cx.defer(move |cx| covers.update(cx, |c, cx| c.set_scale(scale, cx)));
+        }
         let (settings, notice) = {
             let s = self.shared.read(cx);
             (s.settings_open, s.notice())

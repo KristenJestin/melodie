@@ -2,7 +2,9 @@
 //! lancement détaché de `cover-fetch` et sa sous-commande cachée.
 
 use anyhow::{Context, Result};
-use melodie_core::cover::{BUDGET, LOCKED_EXIT, Local, apply_with, local, spawn_downloads};
+use melodie_core::cover::{
+    BUDGET, Disk, LOCKED_EXIT, Local, Tier, Want, apply_with, local, parse_wants, spawn_wants,
+};
 use melodie_core::db;
 use melodie_core::env::Env;
 use serde_json::Value;
@@ -57,9 +59,10 @@ fn spawn_background(ids: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Sous-commande cachée `cover-fetch` : télécharge les vignettes lues sur l'entrée
-/// standard. Un seul à la fois (verrou), sinon sortie immédiate avec `LOCKED_EXIT` : le
-/// lanceur redemande à la frappe suivante, la fenêtre un peu plus tard.
+/// Sous-commande cachée `cover-fetch` : télécharge les pochettes lues sur l'entrée
+/// standard, une par ligne : `<id>` (la vignette du lanceur, 128 px) ou `<id><tab><taille>` (300
+/// ou 512 px, pour la fenêtre). Un seul à la fois (verrou), sinon sortie immédiate avec
+/// `LOCKED_EXIT` : le lanceur redemande à la frappe suivante, la fenêtre un peu plus tard.
 pub fn fetch_cmd(env: &Env) -> Result<ExitCode> {
     let dir = db::cache_dir(env).join("covers");
     std::fs::create_dir_all(&dir).with_context(|| format!("création de {}", dir.display()))?;
@@ -75,14 +78,13 @@ pub fn fetch_cmd(env: &Env) -> Result<ExitCode> {
     }
     let mut input = String::new();
     std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)?;
-    let ids: Vec<String> = input
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .filter(|id| matches!(local(env, id), Local::Missing))
-        .map(String::from)
-        .collect();
-    if ids.is_empty() {
+    let mut wants: Vec<Want> = Vec::new();
+    for w in parse_wants(&input) {
+        if missing(env, &w) && !wants.contains(&w) {
+            wants.push(w);
+        }
+    }
+    if wants.is_empty() {
         return Ok(ExitCode::SUCCESS);
     }
     let client = match melodie_core::state::open_client(env) {
@@ -90,12 +92,24 @@ pub fn fetch_cmd(env: &Env) -> Result<ExitCode> {
         Err(_) => return Ok(ExitCode::SUCCESS),
     };
     let (tx, rx) = channel();
-    let n = ids.len();
-    spawn_downloads(env, client, ids, tx);
+    let n = wants.len();
+    spawn_wants(env, client, wants, tx);
     for _ in 0..n {
         if rx.recv_timeout(Duration::from_secs(30)).is_err() {
             break;
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Whether the cover is still to download: the thumbnail as the launcher sees it (no daemon cover
+/// either), the other tiers when their own file is not there.
+fn missing(env: &Env, w: &Want) -> bool {
+    match w.tier {
+        Tier::Thumb => matches!(local(env, &w.id), Local::Missing),
+        tier => {
+            let disk = Disk::read(env, &w.id);
+            disk.at(tier).is_none() && !disk.placeholder()
+        }
+    }
 }
