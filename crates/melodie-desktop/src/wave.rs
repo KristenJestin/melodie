@@ -4,6 +4,7 @@
 //! missing. The levels are computed by `melodie waveform-fetch`; the window only reads them.
 
 use crate::covers::Fetch;
+use crate::model::Player;
 use melodie_core::env::Env;
 use melodie_core::waveform;
 use std::collections::HashMap;
@@ -81,6 +82,21 @@ impl Waves {
             }
         }
     }
+}
+
+/// The tracks the player wants a waveform for: the current one and the next, whatever changed
+/// (the queue, or only the current track within it).
+pub fn wanted(player: &Player) -> Vec<String> {
+    let Some(current) = player.current else {
+        return Vec::new();
+    };
+    player
+        .tracks
+        .iter()
+        .skip(current)
+        .take(2)
+        .map(|t| t.id.clone())
+        .collect()
 }
 
 /// Reads `batch` on disk, has `fetch` compute what is missing, and reads again. Reads files and
@@ -168,8 +184,11 @@ pub fn look(has_levels: bool, shown: f32) -> Look {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Clock;
+    use melodie_core::proto::{Event, QueueEntry, QueueView};
     use melodie_core::waveform::LEVELS;
     use std::cell::Cell;
+    use std::time::Instant;
 
     fn ids(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
@@ -195,6 +214,54 @@ mod tests {
         assert!(!wait);
         // the next track became current: only what is still missing of what is wanted now
         assert_eq!(w.start(), Some(ids(&["t3"])));
+    }
+
+    #[test]
+    fn advancing_within_the_same_tracks_changes_the_wanted_waveforms() {
+        let tracks: Vec<QueueEntry> = (1..=10)
+            .map(|n| QueueEntry {
+                entry: n,
+                id: format!("t{n}"),
+                ..QueueEntry::default()
+            })
+            .collect();
+        let (mut p, mut c, at) = (Player::default(), Clock::default(), Instant::now());
+        assert_eq!(wanted(&p), Vec::<String>::new());
+        p.apply(
+            &Event::Queue {
+                queue: QueueView {
+                    current: Some(0),
+                    tracks: tracks.clone(),
+                },
+            },
+            &mut c,
+            at,
+        );
+        assert_eq!(wanted(&p), ids(&["t1", "t2"]));
+        let queue = p.tracks.clone();
+        // the album goes on, then a later track is clicked: the queue itself does not change
+        for (index, want) in [(2, ["t3", "t4"]), (6, ["t7", "t8"])] {
+            p.apply(
+                &Event::Track {
+                    index: Some(index),
+                    track: Some(tracks[index].clone()),
+                },
+                &mut c,
+                at,
+            );
+            assert!(Arc::ptr_eq(&queue, &p.tracks));
+            assert_eq!(wanted(&p), ids(&want));
+        }
+        // the last track: no next one
+        p.apply(
+            &Event::Track {
+                index: Some(9),
+                track: Some(tracks[9].clone()),
+            },
+            &mut c,
+            at,
+        );
+        assert_eq!(wanted(&p), ids(&["t10"]));
     }
 
     #[test]

@@ -16,6 +16,7 @@ use melodie_desktop::quick::Seen;
 use melodie_desktop::theme::{self, Active, Choice, Omarchy, Palette, Settings, Tint};
 use melodie_desktop::thumbs::{self, Thumbs};
 use melodie_desktop::tint;
+use melodie_desktop::wave;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -366,7 +367,6 @@ impl Shared {
                     s.thumbs = Arc::new(found);
                     // the player shows a thumbnail while the daemon fetches its own cover
                     s.follow_cover(cx);
-                    s.follow_waves(cx);
                     cx.notify();
                 }
             });
@@ -374,23 +374,13 @@ impl Shared {
         .detach();
     }
 
-    /// After the player changed: load the new cover if there is one.
     /// After the player changed: the waveforms of the current track and of the next one.
     fn follow_waves(&mut self, cx: &mut Context<Self>) {
-        let Some(current) = self.player.current else {
-            return;
-        };
-        let ids: Vec<String> = self
-            .player
-            .tracks
-            .iter()
-            .skip(current)
-            .take(2)
-            .map(|t| t.id.clone())
-            .collect();
+        let ids = wave::wanted(&self.player);
         self.waves.update(cx, |w, cx| w.want(ids, cx));
     }
 
+    /// After the player changed: load the new cover if there is one.
     fn follow_cover(&mut self, cx: &mut Context<Self>) {
         let cover = self
             .player
@@ -578,6 +568,7 @@ pub fn start(
                 if changed.player {
                     s.follow_thumbs(false, cx);
                     s.follow_cover(cx);
+                    s.follow_waves(cx);
                     cx.notify();
                 }
             });
