@@ -111,17 +111,32 @@ Screenshots and a recording of the animations, made with invented data, are in
   removes it; the button at the top removes what comes after the current track.
 - **The library**, in the sidebar: Home, Albums, Artists, Tracks, and the playlists. Everything is
   read from the local copy, away from the window's thread: browsing never touches the network.
-  - Home: the albums added last, the mixes (the personal mix, the rediscoveries), the albums played
-    most.
+  - Home: the albums added last, the mixes (the personal mix, the rediscoveries, and a mix for
+    each of the six genres `melodie mixes` offers, found by the same code), the albums played most.
   - Albums: a grid of covers, sorted by date added, name, artist or year (a second click on the
     sort turns it round). Artists and Tracks: long lists sorted by a click on a column.
-  - A page for an album (its tracks; play, shuffle, play next, add to the queue, add to one of the
-    user's playlists), an artist (its top tracks by plays, its albums; play, shuffle, instant mix)
-    and a playlist (its tracks, as the last synchronisation saw them; the same actions but adding to
-    a playlist). A click on a track plays it; on a row's hover, play it next or add it to the
-    queue. The back arrow (or Escape) goes back to where the page was opened from.
-  - Actions run `melodie` (`play`, `queue`, `mix`, `playlist add --json`): what needs the server
-    still goes through it. Covers come from `~/.cache/melodie/covers/` (the 128 px thumbnails
+  - A page for an album (its tracks; play, shuffle, play next, add to the queue, instant mix, add
+    to a playlist), an artist (its top tracks by plays, its albums; play, shuffle, instant mix)
+    and a playlist (its tracks, as the local copy holds them; play, shuffle, play next, add to the
+    queue). A click on a track plays it; on a row's hover, play it next, add it to the queue, add
+    it to a playlist, or start an instant mix from it. The back arrow (or Escape) goes back to where
+    the page was opened from.
+  - **Playlists**: the + beside "Playlists" in the sidebar creates one. The page of one of the
+    user's playlists (other people's are only read) also renames it, deletes it (after a
+    confirmation that says what goes), and finds its duplicates: they are listed (the exact ones,
+    which go, and the likely ones, which stay) before "Remove" removes the exact ones. On its rows,
+    a button removes the track; a row dragged onto another moves it there.
+  - **Picking rows**: Ctrl+click picks a track, Shift+click the tracks between the last one
+    picked and this one (in Tracks, an album, a playlist). A bar then adds them to a playlist, or
+    removes them from the user's playlist shown (after a confirmation naming them).
+  - **Adding to a playlist** (a track, the rows picked, an album, the current track from the
+    player): a dialog lists the user's playlists and "New playlist…". The playlist is read first
+    (`playlist add --dry-run`): when nothing is there yet, it is added at once; otherwise the window
+    asks, naming the tracks already there: skip them (add the others, or nothing when all are
+    there) or add them anyway.
+  - Actions run `melodie` (`play`, `queue`, `mix`, `playlist add|create|rename|delete|remove|move|
+    duplicates`): what needs the server still goes through it, and the window reads the local copy
+    again when it is done. Covers come from `~/.cache/melodie/covers/` (the 128 px thumbnails
     first); the missing ones are fetched by `melodie cover-fetch`, in the background.
   - At the bottom, what plays: play or pause, next; a click opens the player.
 - **The search**, first in the sidebar: one field, and as you type the artists, albums, tracks and
@@ -133,8 +148,9 @@ Screenshots and a recording of the animations, made with invented data, are in
   or an album). The local copy is read away from the window's thread, and the answer to an older
   keystroke is never shown over a newer one; the search never touches the network.
 - **Keys**: Ctrl+F, or / when not typing, opens the search and puts the cursor in its field;
-  Space plays or pauses (in the field, it is a space); Escape closes the queue, the settings or the
-  playlist choice, else empties the search field, else goes back.
+  Space plays or pauses (in the field, it is a space); Escape closes a dialog, else the queue or the
+  settings, else unpicks the rows picked, else empties the search field, else goes back. In a
+  dialog, Enter does what its main button does (Escape cancels).
 - **Colours**: the button at the top right chooses the theme. "Mélodie", the base theme, takes its
   colours from the cover and follows the desktop's dark or light setting. "Omarchy" is offered
   only on Omarchy (`ID=omarchy` in `/etc/os-release` and a readable

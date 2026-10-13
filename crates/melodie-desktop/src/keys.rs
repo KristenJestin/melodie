@@ -12,6 +12,7 @@ pub enum Key {
     Slash,
     Escape,
     Space,
+    Enter,
     Other,
 }
 
@@ -26,6 +27,8 @@ impl Key {
             Self::Escape
         } else if key == "space" {
             Self::Space
+        } else if key == "enter" {
+            Self::Enter
         } else {
             Self::Other
         }
@@ -40,7 +43,10 @@ pub struct Situation<'a> {
     pub field_focused: bool,
     /// The queue or the settings card is open.
     pub overlay_open: bool,
-    pub picker_open: bool,
+    /// A dialog (a playlist to choose, a name, a confirmation) is open: it is modal.
+    pub dialog_open: bool,
+    /// Rows of the current list are picked.
+    pub selection: bool,
     pub field_empty: bool,
 }
 
@@ -49,7 +55,10 @@ pub struct Situation<'a> {
 pub enum Act {
     OpenSearch,
     CloseOverlays,
-    ClosePicker,
+    CloseDialog,
+    /// What the dialog's main button does.
+    Confirm,
+    ClearSelection,
     ClearField,
     Back,
     PlayPause,
@@ -69,11 +78,18 @@ pub fn in_search(here: &Place) -> bool {
 
 pub fn act(key: Key, s: Situation) -> Act {
     let typing = typing(s.here, s.field_focused);
+    if s.dialog_open {
+        return match key {
+            Key::Escape => Act::CloseDialog,
+            Key::Enter => Act::Confirm,
+            _ => Act::Pass,
+        };
+    }
     match key {
         Key::Find => Act::OpenSearch,
         Key::Slash if !typing => Act::OpenSearch,
         Key::Escape if s.overlay_open => Act::CloseOverlays,
-        Key::Escape if s.picker_open => Act::ClosePicker,
+        Key::Escape if s.selection => Act::ClearSelection,
         // the field empties first, then the search is left
         Key::Escape if *s.here == Place::Search && !s.field_empty => Act::ClearField,
         Key::Escape => Act::Back,
@@ -92,7 +108,8 @@ mod tests {
             here,
             field_focused,
             overlay_open: false,
-            picker_open: false,
+            dialog_open: false,
+            selection: false,
             field_empty: true,
         }
     }
@@ -158,16 +175,48 @@ mod tests {
     fn escape_closes_what_is_open_before_anything_else() {
         let open = Situation {
             overlay_open: true,
-            picker_open: true,
+            dialog_open: true,
+            selection: true,
             field_empty: false,
             ..at(&Place::Search, true)
         };
-        assert_eq!(act(Key::Escape, open), Act::CloseOverlays);
-        let picker = Situation {
-            overlay_open: false,
+        assert_eq!(act(Key::Escape, open), Act::CloseDialog);
+        let overlay = Situation {
+            dialog_open: false,
             ..open
         };
-        assert_eq!(act(Key::Escape, picker), Act::ClosePicker);
+        assert_eq!(act(Key::Escape, overlay), Act::CloseOverlays);
+        let picked = Situation {
+            overlay_open: false,
+            ..overlay
+        };
+        assert_eq!(act(Key::Escape, picked), Act::ClearSelection);
+    }
+
+    #[test]
+    fn a_dialog_keeps_the_keys_to_itself() {
+        let page = Place::Playlist("p1".into());
+        let dialog = Situation {
+            dialog_open: true,
+            ..at(&page, false)
+        };
+        // Space and / are typed in its field, or do nothing behind it
+        assert_eq!(act(Key::Space, dialog), Act::Pass);
+        assert_eq!(act(Key::Slash, dialog), Act::Pass);
+        assert_eq!(act(Key::Find, dialog), Act::Pass);
+        assert_eq!(act(Key::Enter, dialog), Act::Confirm);
+        assert_eq!(act(Key::Enter, at(&Place::Home, false)), Act::Pass);
+    }
+
+    #[test]
+    fn escape_on_a_page_with_rows_picked_unpicks_them_before_going_back() {
+        let page = Place::Playlist("p1".into());
+        let picked = Situation {
+            selection: true,
+            ..at(&page, false)
+        };
+        assert_eq!(act(Key::Escape, picked), Act::ClearSelection);
+        assert_eq!(act(Key::Escape, at(&page, false)), Act::Back);
     }
 
     #[test]
@@ -177,5 +226,6 @@ mod tests {
         assert_eq!(Key::read(false, "/", Some("/")), Key::Slash);
         assert_eq!(Key::read(false, "escape", None), Key::Escape);
         assert_eq!(Key::read(false, "space", Some(" ")), Key::Space);
+        assert_eq!(Key::read(false, "enter", None), Key::Enter);
     }
 }

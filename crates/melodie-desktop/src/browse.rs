@@ -199,6 +199,7 @@ mod tests {
             ("sidebar.rs", include_str!("sidebar.rs")),
             ("mini.rs", include_str!("mini.rs")),
             ("search.rs", include_str!("search.rs")),
+            ("dialogs.rs", include_str!("dialogs.rs")),
         ];
         for (file, src) in views {
             for call in [

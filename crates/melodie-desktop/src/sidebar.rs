@@ -3,6 +3,7 @@
 
 use crate::app::Shared;
 use crate::catalog::Catalog;
+use crate::dialogs::{self, Dialog};
 use crate::motion;
 use crate::player::palette;
 use crate::widgets::{IconButton, follow_pointer, pointer};
@@ -158,16 +159,27 @@ impl Render for Sidebar {
                 "Tracks",
                 Place::Tracks,
             ))
-            .when(!compact && !playlists.is_empty(), |d| {
+            .when(!compact, |d| {
                 d.child(
-                    div()
-                        .px_3()
-                        .pt_4()
-                        .pb_1()
-                        .text_xs()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(pal.secondary)
-                        .child("PLAYLISTS"),
+                    h_flex()
+                        .pl_3()
+                        .pt_3()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(pal.secondary)
+                                .child("PLAYLISTS"),
+                        )
+                        .child(
+                            IconButton::new("nav-new-playlist", IconName::Plus, pal)
+                                .diameter(28.)
+                                .on_click(|_, window, cx| {
+                                    dialogs::open(Dialog::Create { with: None }, window, cx)
+                                }),
+                        ),
                 )
             })
             .child(

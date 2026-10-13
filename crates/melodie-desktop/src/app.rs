@@ -166,6 +166,15 @@ impl Shared {
             Job::Queue { .. } => "Could not add it to the queue",
             Job::Mix { .. } => "Could not make the mix",
             Job::AddToPlaylist { .. } => "Could not add to the playlist",
+            Job::MixGenre { .. } => "Could not make the mix",
+            // run by `run_then`, which says what they did
+            Job::CheckAdd { .. }
+            | Job::CreatePlaylist { .. }
+            | Job::RenamePlaylist { .. }
+            | Job::DeletePlaylist { .. }
+            | Job::RemoveFromPlaylist { .. }
+            | Job::MoveInPlaylist { .. }
+            | Job::Duplicates { .. } => "Could not change the playlist",
         };
         let adds = matches!(job, Job::AddToPlaylist { .. });
         let task = cx.background_spawn(async move {
@@ -197,6 +206,41 @@ impl Shared {
             let _ = this.update(cx, |s, cx| s.fail(msg, cx));
         })
         .detach();
+    }
+
+    /// Runs `melodie`, then `done` with what it printed, or the first line of its error.
+    pub fn run_then(
+        &self,
+        job: Job,
+        cx: &mut Context<Self>,
+        done: impl FnOnce(Result<String, String>, &mut App) + 'static,
+    ) {
+        let program = launch::program(std::env::current_exe().ok().as_deref());
+        let task = cx.background_spawn(async move {
+            let out = std::process::Command::new(&program)
+                .args(job.args())
+                .stdin(std::process::Stdio::null())
+                .output();
+            match out {
+                Ok(o) if o.status.success() => Ok(String::from_utf8_lossy(&o.stdout).into_owned()),
+                Ok(o) => Err(String::from_utf8_lossy(&o.stderr)
+                    .lines()
+                    .next()
+                    .unwrap_or("it failed")
+                    .to_string()),
+                Err(e) => Err(format!("{}: {}", program.display(), e.kind())),
+            }
+        });
+        cx.spawn(async move |_, cx| {
+            let r = task.await;
+            cx.update(|cx| done(r, cx));
+        })
+        .detach();
+    }
+
+    /// Says something at the bottom of the window for a few seconds.
+    pub fn say(&mut self, msg: impl Into<String>, cx: &mut Context<Self>) {
+        self.fail(msg.into(), cx);
     }
 
     /// Says something at the bottom of the window for a few seconds (a failure, or what an
