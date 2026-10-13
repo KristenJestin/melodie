@@ -53,8 +53,11 @@ pub struct QuickSearch {
     shown: Shown,
     /// The row chosen, counted across the groups.
     chosen: usize,
-    /// The genres of the copy, read again at each opening (a new copy may have come).
+    /// The genres of the copy, read with the recent list at each opening (a new copy may have
+    /// come); none until that answer is in.
     genres: Option<Arc<[Genre]>>,
+    /// Numbers the openings: what an earlier one is still reading is not wanted.
+    openings: Latest,
     recent: Recent,
     scroll: ScrollHandle,
     /// What had the focus before it opened: it gets it back.
@@ -79,7 +82,7 @@ impl QuickSearch {
             cx.subscribe(&input, |this, input, ev: &InputEvent, cx| {
                 if matches!(ev, InputEvent::Change) {
                     this.text = input.read(cx).value().to_string();
-                    this.ask(cx)
+                    this.ask(None, cx)
                 }
             }),
             // every page opened is remembered, wherever it was opened from
@@ -114,6 +117,7 @@ impl QuickSearch {
             shown: Shown::Rows(Arc::from([])),
             chosen: 0,
             genres: None,
+            openings: Latest::default(),
             recent: Recent::default(),
             scroll: ScrollHandle::new(),
             before: None,
@@ -133,18 +137,22 @@ impl QuickSearch {
         }
     }
 
-    /// Opens it empty, on what was seen lately.
+    /// Opens it empty, on what was seen lately. What the last opening left is gone: Enter has
+    /// nothing to run until this opening's own answer is in.
     fn show(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open = true;
         self.before = window.focused(cx);
         self.genres = None;
+        self.shown = Shown::Rows(Arc::from([]));
+        self.chosen = 0;
         self.text.clear();
         // no change event for this one
         self.input.update(cx, |i, cx| {
             i.set_value("", window, cx);
             i.focus(window, cx)
         });
-        self.ask(cx);
+        let opening = self.openings.ask();
+        self.ask(Some(opening), cx);
         cx.notify();
     }
 
@@ -159,23 +167,43 @@ impl QuickSearch {
         cx.notify();
     }
 
+    /// Whether what is shown answers the text of the field, in a palette that is open.
+    fn ready(&self) -> bool {
+        self.open && self.latest.is_ready()
+    }
+
     /// Reads the local copy for the text of the field, or what was seen lately when it is
-    /// empty, away from the window.
-    fn ask(&mut self, cx: &mut Context<Self>) {
+    /// empty, away from the window. An opening (`Some`: its number) reads the genres too, once.
+    fn ask(&mut self, opening: Option<u64>, cx: &mut Context<Self>) {
         let text = self.text.clone();
         let n = self.latest.ask();
         let env = self.env.clone();
         let seen = self.recent.list().to_vec();
-        let genres = self.genres.clone();
+        let known = self.genres.clone().unwrap_or_else(|| Arc::from([]));
         let started = Instant::now();
-        let task = cx.background_spawn(async move { read(&env, &text, &seen, genres) });
+        let task = cx.background_spawn(async move {
+            let genres = opening.map(|_| load_genres(&env));
+            (genres, read(&env, &text, &seen, &known))
+        });
         cx.spawn(async move |this, cx| {
             let (genres, shown) = task.await;
             let _ = this.update(cx, |this, cx| {
-                if genres.is_some() {
+                if let Some(opening) = opening {
+                    // an earlier opening's genres never replace this one's, whatever was typed
+                    // since
+                    if !this.openings.is_latest(opening) {
+                        return;
+                    }
                     this.genres = genres;
+                    if !this.latest.is_latest(n) {
+                        // typed before the genres were in: ask again with them
+                        if this.open {
+                            this.ask(None, cx);
+                        }
+                        return;
+                    }
                 }
-                if !this.latest.is_latest(n) {
+                if !this.latest.answered(n) {
                     return;
                 }
                 if let Shown::Rows(groups) = &shown {
@@ -218,8 +246,12 @@ impl QuickSearch {
         cx.notify();
     }
 
-    /// Runs what `how` does to the row chosen, after closing.
+    /// Runs what `how` does to the row chosen, after closing. Nothing while it fades out, nor
+    /// while the rows shown are not yet the answer to the text.
     pub fn run(&mut self, how: How, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.ready() {
+            return;
+        }
         let Some(item) = quick::nth(self.rows(), self.chosen).cloned() else {
             return;
         };
@@ -238,49 +270,48 @@ impl QuickSearch {
         }
     }
 
+    /// A click on a row: its main action.
+    fn pick(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.ready() {
+            self.chosen = ix;
+            self.run(How::Main, window, cx)
+        }
+    }
+
     fn choose(&mut self, ix: usize, cx: &mut Context<Self>) {
-        if self.chosen != ix {
+        if self.open && self.chosen != ix {
             self.chosen = ix;
             cx.notify();
         }
     }
 }
 
-/// What the palette shows for `text`, and the genres of the copy when they were read for it.
-/// Blocking.
-fn read(
-    env: &Env,
-    text: &str,
-    seen: &[Seen],
-    genres: Option<Arc<[Genre]>>,
-) -> (Option<Arc<[Genre]>>, Shown) {
+/// Every genre of the copy with its track count; none when there is no copy, nor when it cannot
+/// be read (the search says so). Blocking.
+fn load_genres(env: &Env) -> Arc<[Genre]> {
+    let read = db::open_existing(env).and_then(|c| match c {
+        Some(c) => Ok(core::genres(&c)?.into()),
+        None => Ok(Arc::from([])),
+    });
+    read.unwrap_or_else(|_| Arc::from([]))
+}
+
+/// What the palette shows for `text`, the genres being those read at the opening. Blocking.
+fn read(env: &Env, text: &str, seen: &[Seen], genres: &[Genre]) -> Shown {
     if text.trim().is_empty() {
         return match quick::recent(env, seen) {
-            Ok(Some(items)) if items.is_empty() => (None, Shown::Rows(Arc::from([]))),
-            Ok(Some(items)) => (
-                None,
-                Shown::Rows(Arc::from([Group {
-                    section: Section::Recent,
-                    items,
-                }])),
-            ),
-            Ok(None) => (None, Shown::NoCopy),
-            Err(_) => (None, Shown::Failed),
+            Ok(Some(items)) if items.is_empty() => Shown::Rows(Arc::from([])),
+            Ok(Some(items)) => Shown::Rows(Arc::from([Group {
+                section: Section::Recent,
+                items,
+            }])),
+            Ok(None) => Shown::NoCopy,
+            Err(_) => Shown::Failed,
         };
     }
-    let genres = match genres {
-        Some(g) => Ok(g),
-        None => db::open_existing(env).and_then(|c| match c {
-            Some(c) => Ok(core::genres(&c)?.into()),
-            None => Ok(Arc::from([])),
-        }),
-    };
-    let Ok(genres) = genres else {
-        return (None, Shown::Failed);
-    };
-    let shown = match find::answer(env, text, None) {
+    match find::answer(env, text, None) {
         Ok(Some(a)) => {
-            let matched = core::matching_genres(&genres, text, quick::GENRES);
+            let matched = core::matching_genres(genres, text, quick::GENRES);
             let groups = quick::groups(&a.groups, matched);
             if groups.is_empty() {
                 Shown::Nothing(text.to_string())
@@ -290,8 +321,7 @@ fn read(
         }
         Ok(None) => Shown::NoCopy,
         Err(_) => Shown::Failed,
-    };
-    (Some(genres), shown)
+    }
 }
 
 /// The child of the list a row is: each group has its title first.
@@ -392,12 +422,7 @@ fn row(
         .when(chosen, |d| d.bg(Hsla { a: 0.10, ..pal.fg }))
         // the pointer moving chooses, not a row scrolled under a pointer at rest
         .on_mouse_move(move |_, _, cx| hover.update(cx, |q, cx| q.choose(ix, cx)))
-        .on_click(move |_, window, cx| {
-            click.update(cx, |q, cx| {
-                q.chosen = ix;
-                q.run(How::Main, window, cx)
-            })
-        })
+        .on_click(move |_, window, cx| click.update(cx, |q, cx| q.pick(ix, window, cx)))
         .child(picture)
         .child(
             v_flex()
@@ -487,7 +512,7 @@ impl Render for QuickSearch {
                 .pb_2()
                 .children(children)
                 .into_any_element(),
-            Shown::Rows(_) if self.text.trim().is_empty() => {
+            Shown::Rows(_) if self.text.trim().is_empty() && self.latest.is_ready() => {
                 hint("Type to search the library", pal).into_any_element()
             }
             Shown::Rows(_) => div().into_any_element(),
