@@ -16,8 +16,30 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-/// The longest a track may take to decode: a stream that stalls is given up.
-const DECODE_MAX: Duration = Duration::from_secs(300);
+/// How long the decoded file may stop growing before the stream is given up: a long track on a
+/// slow link still finishes, a stream that stalls does not hold the lock for ever.
+const STALL: Duration = Duration::from_secs(30);
+
+/// The progress of a decoding: the size of its file, and since when it has not changed.
+struct Progress {
+    size: u64,
+    since: Instant,
+}
+
+impl Progress {
+    fn new(at: Instant) -> Self {
+        Self { size: 0, since: at }
+    }
+
+    /// Takes the file's `size` at `at` in; true once it has not grown for [`STALL`].
+    fn stalled(&mut self, size: u64, at: Instant) -> bool {
+        if size != self.size {
+            self.size = size;
+            self.since = at;
+        }
+        at.duration_since(self.since) > STALL
+    }
+}
 
 /// One at a time (a lock), else at once `LOCKED_EXIT`: the window asks again a little later.
 /// A waveform already kept is not computed again; one that fails is not kept.
@@ -103,14 +125,18 @@ fn decode(url: &SecretUrl, out: &Path) -> Result<()> {
     // the error of a command could hold its arguments: never said
     mpv.command("loadfile", &[url.expose()])
         .map_err(|_| anyhow!("the stream could not be opened"))?;
-    let start = Instant::now();
+    let mut progress = Progress::new(Instant::now());
     loop {
         match mpv.wait_event(1.0) {
             Some(Ok(Event::EndFile(mpv_end_file_reason::Eof))) => break,
             Some(Ok(Event::EndFile(_)) | Err(_)) => bail!("the stream could not be decoded"),
             Some(Ok(Event::Shutdown)) => bail!("libmpv stopped"),
-            _ if start.elapsed() > DECODE_MAX => bail!("the stream took too long"),
-            _ => {}
+            _ => {
+                let size = std::fs::metadata(out).map_or(0, |m| m.len());
+                if progress.stalled(size, Instant::now()) {
+                    bail!("the stream stalled");
+                }
+            }
         }
     }
     // the file is complete once the audio output is closed
@@ -121,6 +147,25 @@ fn decode(url: &SecretUrl, out: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_decoding_is_given_up_only_when_it_stops_making_progress() {
+        let t0 = Instant::now();
+        let at = |s: u64| t0 + Duration::from_secs(s);
+        let mut p = Progress::new(t0);
+        // slow but steady, far past any total cap
+        for s in 1..=1000 {
+            assert!(!p.stalled(s * 100, at(s * 20)));
+        }
+        let size = 100_001;
+        assert!(!p.stalled(size, at(20_001)));
+        assert!(!p.stalled(size, at(20_001 + STALL.as_secs())));
+        assert!(p.stalled(size, at(20_002 + STALL.as_secs())));
+        // nothing at all from the start
+        let mut p = Progress::new(t0);
+        assert!(!p.stalled(0, at(STALL.as_secs())));
+        assert!(p.stalled(0, at(STALL.as_secs() + 1)));
+    }
 
     #[test]
     fn the_waveform_decoder_makes_no_sound_and_loads_nothing() {
