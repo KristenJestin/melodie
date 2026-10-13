@@ -127,8 +127,10 @@ Screenshots and a recording of the animations, made with invented data, are in
   narrow main area (the queue docked counts) the parts go in this order: the volume, the times,
   the title and the artist, the heart; play/pause never. The colours follow the cover; the cover
   and the title cross-fade at each track, and play and pause turn into each other.
-- **The library**, in the sidebar: Home, Albums, Artists, Tracks, and the playlists. Everything is
-  read from the local copy, away from the window's thread: browsing never touches the network.
+- **The library**, in the sidebar: Home, Albums, Artists, Tracks, and the playlists, each with
+  its own picture (the one the server makes from its covers; an icon while it has none).
+  Everything is read from the local copy, away from the window's thread: browsing never touches
+  the network.
   - Home: a greeting by the time of day, then a large card for something worth playing now (the
     album added last, the personal mix, the album played last, the album played most), in the
     colours of its cover, browsed with its arrows or its dots. Under it, rows that scroll sideways
@@ -253,7 +255,9 @@ Screenshots and a recording of the animations, made with invented data, are in
   `~/.local/state/melodie/window.toml` (`theme = "base"` or `"omarchy"`), a file of the window's
   own, beside `queue = true` while the queue is shown.
 - **Animations**: every change of view, panel or state is short and interruptible, and follows
-  the desktop's reduced-motion setting. An unfocused window keeps animating at the screen's rate.
+  the desktop's reduced-motion setting. What shows under the pointer (the play button on a cover,
+  the buttons of a row) fades and slides in and out. An unfocused window keeps animating at the
+  screen's rate. Times and counts that change in place use tabular digits, so nothing shifts.
 - Measuring: built with the `frame-stats` feature and run with `MELODIE_DESKTOP_FRAME_STATS=<file>`,
   the window writes the time of each frame and how long it took to draw, and says on its error
   output how long each view took to read the local copy (for measurements only).

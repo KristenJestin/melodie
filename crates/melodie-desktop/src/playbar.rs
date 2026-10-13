@@ -134,7 +134,7 @@ impl Render for PlayBar {
         let small = parts.small;
         let has_track = track.is_some();
         let size = if small { 40. } else { 44. };
-        let (side_d, play_d) = if small { (32., 44.) } else { (36., 44.) };
+        let side_d = if small { 32. } else { 36. };
         let gap = if small { 4. } else { 8. };
         let pad = if small { 8. } else { 12. };
 
@@ -257,7 +257,7 @@ impl Render for PlayBar {
                 .w(px(parts.center))
                 .flex_none()
                 .items_center()
-                .gap_1()
+                .gap(px(bar::ROWS_GAP))
                 .child(
                     h_flex()
                         .gap(px(gap))
@@ -275,7 +275,7 @@ impl Render for PlayBar {
                             IconButton::new("bar-play", IconName::Play, pal)
                                 .morph(IconName::Pause, play)
                                 .tip(if playing { "Pause" } else { "Play" })
-                                .diameter(play_d)
+                                .diameter(bar::PLAY)
                                 .primary()
                                 .on_click(move |_, _, cx| {
                                     toggle.update(cx, |s, cx| s.play_or_pause(cx))

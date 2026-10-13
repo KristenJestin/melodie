@@ -4,9 +4,12 @@
 use crate::motion;
 use crate::tips::{self, Tip};
 use gpui_kit::assets::IconName;
+use gpui_kit::base::h_flex;
 use gpui_kit::component::Icon;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use melodie_desktop::figures::{self, Line};
+use melodie_desktop::reveal;
 use melodie_desktop::theme::{Palette, mix};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -116,6 +119,146 @@ pub fn follow_pointer_tip(
         })
     })
 }
+
+/// Whether the pointer is on an element that holds something shown only then, and how far that
+/// thing has come in. Make it with `hover`, wire it to the element with `track`, and give the
+/// thing its look with `Revealed::revealed`.
+#[derive(Clone)]
+pub struct Hover {
+    state: Entity<Revealing>,
+    pub look: reveal::Look,
+}
+
+#[derive(Default, Clone, Copy)]
+struct Revealing {
+    hovered: bool,
+    /// Whether the last change came from the pointer moving, not from the layout under it.
+    moved: bool,
+}
+
+/// The pointer's moves, window-wide: a row cannot tell alone whether it was the pointer that moved.
+#[derive(Default)]
+struct PointerMoves(reveal::Moves<Point<Pixels>>);
+
+impl Global for PointerMoves {}
+
+/// The hover of the element called `id`: the pointer's place, and the look of what it reveals,
+/// moving towards shown or hidden (a pointer that leaves turns it round where it is).
+pub fn hover(id: impl Into<ElementId>, window: &mut Window, cx: &mut App) -> Hover {
+    let id: ElementId = id.into();
+    let state = window.use_keyed_state((id.clone(), "reveal"), cx, |_, _| Revealing::default());
+    let Revealing { hovered, moved } = *state.read(cx);
+    let t = motion::to(
+        (id, "reveal"),
+        if hovered { 1.0f32 } else { 0.0 },
+        reveal::duration(hovered, moved),
+        window,
+        cx,
+    );
+    Hover {
+        state,
+        look: reveal::at(t),
+    }
+}
+
+impl Hover {
+    /// Makes `el` follow the pointer: the thing it reveals shows while the pointer is on it.
+    pub fn track(&self, el: Stateful<Div>) -> Stateful<Div> {
+        let state = self.state.clone();
+        el.on_hover(move |on, window, cx| {
+            let moved = cx
+                .default_global::<PointerMoves>()
+                .0
+                .seen(window.mouse_position());
+            if moved {
+                // once the other hovers of this move are told
+                window.defer(cx, |_, cx| cx.default_global::<PointerMoves>().0.settle());
+            }
+            state.update(cx, |s, cx| {
+                *s = Revealing {
+                    hovered: *on,
+                    moved,
+                };
+                cx.notify()
+            })
+        })
+    }
+}
+
+/// A page's title (2xl, bold) and, beside it, a count or a few words (sm) on the title's
+/// baseline. GPUI does not tell the flex layout where a text's baseline is, so `items_baseline`
+/// would bottom-align the two: the smaller text is raised by the difference instead, worked out
+/// from the font actually drawn.
+pub fn title_with_aside(
+    title: &'static str,
+    aside: Option<SharedString>,
+    pal: Palette,
+    window: &Window,
+) -> Div {
+    let style = window.text_style();
+    let rem = window.rem_size();
+    // the line box follows the font size (GPUI's default is the golden ratio, rounded)
+    let line = |em: f32| {
+        let size = em * rem.as_f32();
+        Line {
+            size,
+            height: style
+                .line_height
+                .to_pixels(px(size).into(), rem)
+                .round()
+                .as_f32(),
+        }
+    };
+    let text = window.text_system();
+    let font = text.resolve_font(&style.font());
+    // GPUI gives the descent below the baseline as a negative number
+    let em = |f: fn(&WindowTextSystem, FontId, Pixels) -> Pixels| {
+        f(text, font, px(1000.0)).as_f32().abs() / 1000.0
+    };
+    let lift = figures::baseline_lift(
+        line(1.5),
+        line(0.875),
+        em(|t, f, s| t.ascent(f, s)),
+        em(|t, f, s| t.descent(f, s)),
+    );
+    h_flex()
+        .gap_3()
+        .items_end()
+        .child(
+            div()
+                .text_2xl()
+                .font_weight(FontWeight::BOLD)
+                .text_color(pal.fg)
+                .child(title),
+        )
+        .when_some(aside, |d, text| {
+            d.child(
+                figures::count_text(text)
+                    .text_sm()
+                    .text_color(pal.secondary)
+                    .mb(px(lift)),
+            )
+        })
+}
+
+/// How a revealed thing is drawn: it fades in and slides into its place.
+pub trait Revealed: Styled + Sized {
+    /// Faded to `look`, and moved as far as it has still to go: down for a thing that rises,
+    /// to the right for one that slides in from the side. Hidden, it is not drawn at all.
+    fn revealed(self, look: reveal::Look, from_the_side: bool) -> Self {
+        if look.hidden() {
+            return self.invisible();
+        }
+        let moved = self.relative().opacity(look.opacity);
+        if from_the_side {
+            moved.left(px(look.offset))
+        } else {
+            moved.top(px(look.offset))
+        }
+    }
+}
+
+impl<T: Styled> Revealed for T {}
 
 impl IconButton {
     pub fn new(id: impl Into<ElementId>, icon: IconName, pal: Palette) -> Self {

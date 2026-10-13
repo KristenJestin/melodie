@@ -15,6 +15,7 @@ use melodie_desktop::browse::{Nav, Place};
 use melodie_desktop::covers::{Files, Use};
 use melodie_desktop::home::{self, Highlight, Home, Row};
 use melodie_desktop::launch::{self, Job};
+use melodie_desktop::playlists;
 use melodie_desktop::selection::{How, Selection};
 use melodie_desktop::table::{self, ColSort, Shown};
 use melodie_desktop::theme::Tint;
@@ -398,12 +399,9 @@ impl Catalog {
 
     fn load_playlists(&mut self, cx: &mut Context<Self>) {
         self.load("playlists", cx, lib::playlists, |this, list, cx| {
-            this.want_covers(
-                list.iter().filter_map(|p| p.cover.clone()),
-                Use::of(SQUARE),
-                true,
-                cx,
-            );
+            for (ids, usage) in playlists::cover_requests(&list, SQUARE) {
+                this.want_covers(ids, usage, true, cx);
+            }
             this.playlists = list.into();
             this.home_changed(cx);
         });

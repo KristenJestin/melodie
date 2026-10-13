@@ -8,7 +8,12 @@
 //! button; play/pause and the position bar never go.
 
 /// The bar's height: two lines in the middle (the buttons, the position), room around them.
-pub const HEIGHT: f32 = 80.0;
+pub const HEIGHT: f32 = 88.0;
+
+/// The play/pause button, the gap under it, and the row of the position bar and the times.
+pub const PLAY: f32 = 44.0;
+pub const ROWS_GAP: f32 = 10.0;
+pub const POSITION: f32 = 20.0;
 
 /// The widest the middle gets: past it, the room goes to the sides.
 pub const CENTER_MAX: f32 = 560.0;
@@ -142,6 +147,18 @@ mod tests {
 
     fn shown(p: Parts) -> [bool; 4] {
         [p.volume, p.times, p.text, p.like]
+    }
+
+    /// The least room above and below the middle column.
+    const MARGIN_MIN: f32 = 6.0;
+
+    #[test]
+    fn the_middle_column_fits_the_bar_with_room_around_it() {
+        let content = PLAY + ROWS_GAP + POSITION;
+        assert!(
+            content + 2.0 * MARGIN_MIN <= HEIGHT,
+            "{content} px of content in a bar of {HEIGHT}"
+        );
     }
 
     #[test]

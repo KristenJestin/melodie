@@ -1,6 +1,7 @@
 //! The long lists: artists and tracks, sortable by their columns, in virtual lists of fixed-height
-//! rows; and the track row the pages reuse. Nothing is animated inside a row, so that GPUI Fast
-//! keeps a list on its scroll layer (`docs/gui-toolkit.md`, "Lists").
+//! rows; and the track row the pages reuse. The buttons of a row fade in under the pointer: that
+//! is the one animation inside a row, and it runs only when the pointer itself moves to another
+//! row; rows scrolled under a still pointer change at once (`docs/gui-toolkit.md`, "Lists").
 
 use crate::albums::{PAD, content_width, cover_box, empty_state};
 use crate::app::Shared;
@@ -9,15 +10,16 @@ use crate::context_menu::{self, Menued as _};
 use crate::dialogs::{self, Dialog};
 use crate::player::palette;
 use crate::tips::Tipped as _;
+use crate::widgets::{Hover, Revealed as _, hover, title_with_aside};
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::Icon;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use melodie_core::library::{Artist, ArtistBy, Sort, Track};
-use melodie_core::track::clock;
 use melodie_desktop::browse::Place;
 use melodie_desktop::covers::Covers;
+use melodie_desktop::figures::{Figures as _, clock_text};
 use melodie_desktop::launch::{Adding, Job, Kind};
 use melodie_desktop::menu::{Item, Spot};
 use melodie_desktop::selection::{How, Selection};
@@ -96,7 +98,7 @@ pub fn track_header(
         .child(cell(Some(actions_width(edit)), 0.))
 }
 
-/// A small button inside a row: shown on the row's hover, never animated.
+/// A small button inside a row; the row shows and hides its buttons together (`Revealed`).
 pub fn row_button(
     id: ElementId,
     icon: IconName,
@@ -158,28 +160,47 @@ pub struct RowCtx {
     pub selected: bool,
     /// The playlist the row is in, when the user may edit it: remove the row, drag it elsewhere.
     pub playlist: Option<(String, String)>,
+    /// Whether the pointer is on the row, for its buttons to fade in (see `row_hover`).
+    pub hover: Hover,
 }
 
 impl RowCtx {
     /// A row at `rank` that only plays.
-    pub fn plain(rank: usize, sorted: bool) -> Self {
+    pub fn plain(rank: usize, sorted: bool, hover: Hover) -> Self {
         Self {
             rank,
             sorted,
             selectable: false,
             selected: false,
             playlist: None,
+            hover,
         }
     }
 
     /// The row shown at `ix` in the list at `here`, picked or not.
-    pub fn of(selection: &Selection, here: &Place, ix: usize, rank: usize, sorted: bool) -> Self {
+    pub fn of(
+        selection: &Selection,
+        here: &Place,
+        ix: usize,
+        rank: usize,
+        sorted: bool,
+        hover: Hover,
+    ) -> Self {
         Self {
             selectable: true,
             selected: selection.has(here, ix),
-            ..Self::plain(rank, sorted)
+            ..Self::plain(rank, sorted, hover)
         }
     }
+}
+
+/// The hover of the row `ix` of the list `list`: the pointer on the row, the buttons coming in.
+pub fn row_hover(list: &'static str, ix: usize, window: &mut Window, cx: &mut App) -> Hover {
+    hover(
+        ElementId::Name(format!("{list}-hover-{ix}").into()),
+        window,
+        cx,
+    )
 }
 
 /// A row of a playlist being dragged to another rank.
@@ -260,13 +281,13 @@ pub fn track_row(
     };
     let (select, selectable) = (catalog.clone(), row.selectable);
     let accent = pal.accent;
+    let look = row.hover.look;
     let spot = match row.playlist.clone() {
         Some((id, name)) => Spot::Playlist { id, name, rank },
         None => Spot::Library,
     };
-    h_flex()
-        .id(key("row"))
-        .group(list)
+    row.hover
+        .track(h_flex().id(key("row")))
         .menu(Item::track(t), spot)
         .h(px(TRACK_ROW))
         .flex_none()
@@ -291,7 +312,7 @@ pub fn track_row(
                 .children(cols.iter().map(|&col| {
                     let c = col_cell(col).text_color(pal.secondary);
                     match col {
-                        Col::Number => c.text_xs().child((rank + 1).to_string()),
+                        Col::Number => c.tabular().text_xs().child((rank + 1).to_string()),
                         Col::Title => c.truncate().text_color(pal.fg).child(t.title.clone()),
                         Col::Artist => c.child(link(
                             key("artist"),
@@ -312,8 +333,8 @@ pub fn track_row(
                         } else {
                             String::new()
                         }),
-                        Col::Plays => c.child(t.plays.to_string()),
-                        Col::Time => c.child(clock(t.duration as f64)),
+                        Col::Plays => c.tabular().child(t.plays.to_string()),
+                        Col::Time => c.child(clock_text(t.duration as f64)),
                     }
                 }))
                 .child(
@@ -321,8 +342,7 @@ pub fn track_row(
                         .w(px(actions_width(row.playlist.is_some())))
                         .flex_none()
                         .gap_1()
-                        .invisible()
-                        .group_hover(list, |s| s.visible())
+                        .revealed(look, true)
                         .child(row_button(
                             key("next"),
                             IconName::ListStart,
@@ -437,28 +457,11 @@ impl TrackList {
     }
 }
 
-fn title(text: &'static str, count: Option<usize>, pal: Palette) -> Div {
-    h_flex()
+fn title(text: &'static str, count: Option<usize>, pal: Palette, window: &Window) -> Div {
+    title_with_aside(text, count.map(|n| n.to_string().into()), pal, window)
         .px(px(PAD))
         .pt_5()
         .pb_3()
-        .gap_3()
-        .items_baseline()
-        .child(
-            div()
-                .text_2xl()
-                .font_weight(FontWeight::BOLD)
-                .text_color(pal.fg)
-                .child(text),
-        )
-        .when_some(count, |d, n| {
-            d.child(
-                div()
-                    .text_sm()
-                    .text_color(pal.secondary)
-                    .child(n.to_string()),
-            )
-        })
 }
 
 impl Render for TrackList {
@@ -503,7 +506,7 @@ impl Render for TrackList {
         };
         v_flex()
             .size_full()
-            .child(title("Tracks", shown.as_ref().map(Shown::len), pal))
+            .child(title("Tracks", shown.as_ref().map(Shown::len), pal, window))
             .child(header)
             .child(body)
     }
@@ -522,13 +525,14 @@ pub fn track_rows(
 ) -> UniformList {
     let catalog = catalog.clone();
     let sorted = shown.sort.is_some();
-    uniform_list(id, shown.len(), move |range, _, _| {
+    uniform_list(id, shown.len(), move |range, window, cx| {
         range
             .filter_map(|ix| {
                 let (rank, t) = shown.row(ix)?;
+                let hover = row_hover(id, ix, window, cx);
                 let row = RowCtx {
                     playlist: playlist.clone(),
-                    ..RowCtx::of(&selection, &here, ix, rank, sorted)
+                    ..RowCtx::of(&selection, &here, ix, rank, sorted, hover)
                 };
                 Some(track_row(id, ix, t, &cols, pal, &catalog, row))
             })
@@ -689,7 +693,12 @@ impl Render for ArtistList {
         };
         v_flex()
             .size_full()
-            .child(title("Artists", artists.as_ref().map(|a| a.len()), pal))
+            .child(title(
+                "Artists",
+                artists.as_ref().map(|a| a.len()),
+                pal,
+                window,
+            ))
             .child(artist_header(sort, pal, self.catalog.clone()))
             .child(body)
     }

@@ -7,7 +7,7 @@ use crate::context_menu;
 use crate::dialogs::{self, Dialog};
 use crate::motion;
 use crate::player::palette;
-use crate::tables::{RowCtx, TRACK_ROW, track_header, track_row, track_rows};
+use crate::tables::{RowCtx, TRACK_ROW, row_hover, track_header, track_row, track_rows};
 use crate::widgets::IconButton;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
@@ -17,6 +17,7 @@ use melodie_core::library::Album;
 use melodie_core::search::human_duration;
 use melodie_desktop::browse::{self, Place};
 use melodie_desktop::covers::Covers;
+use melodie_desktop::figures::Figures as _;
 use melodie_desktop::launch::{Adding, Job, Kind};
 use melodie_desktop::selection::Selection;
 use melodie_desktop::table::{Col, Shown, Table};
@@ -509,7 +510,7 @@ impl Render for PageView {
                                 &cols,
                                 pal,
                                 catalog,
-                                RowCtx::plain(rank, sorted),
+                                RowCtx::plain(rank, sorted, row_hover("top-track", ix, window, cx)),
                             ))
                         }))
                 })
@@ -616,6 +617,7 @@ impl Render for SelectionBar {
             .child(
                 div()
                     .px_2()
+                    .tabular()
                     .text_sm()
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(pal.fg)
