@@ -128,6 +128,12 @@ impl Render for Sidebar {
             .border_r_1()
             .border_color(Hsla { a: 0.08, ..pal.fg })
             .child(entry(
+                "nav-search",
+                IconName::Search,
+                "Search",
+                Place::Search,
+            ))
+            .child(entry(
                 "nav-player",
                 IconName::AudioLines,
                 "Now playing",

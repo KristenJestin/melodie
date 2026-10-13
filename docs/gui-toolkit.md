@@ -245,7 +245,7 @@ Nothing blocked the prototype. Gaps and traps found:
 - Reading the model in `render` and then calling `transition(..., cx)` is a borrow conflict: take a
   small snapshot (`Arc`s and copies) first.
 - **Not exercised**, so unknown: the slider (position drag, volume), dialogs and context menus,
-  text input for the search, keyboard navigation, accessibility, fractional scaling, the client-side
+  keyboard navigation, accessibility, fractional scaling, the client-side
   window decoration on Wayland, pointer drag of the scrollbar.
 
 ## Upgrading gpui-kit with GPUI Fast behind it
@@ -418,6 +418,14 @@ shipped, public themes.)
 - GPUI's wheel handling has no inertia (above). Fast's scroll layers decide "this frame is a
   scroll" from the wheel listener; a scroll made by setting the offset is not recognised as one.
 - gpui-kit's `application()` does not load icons; see above.
+- **A key listener on an ancestor runs before the text field gets the key** (#10): GPUI matches
+  the key bindings, then calls the `on_key_down` listeners from the root down and back up, and only
+  then hands the character to the focused field. A window-wide shortcut on Space or `/` that stops
+  the event swallows it from the field: check whether the field has the focus first.
+- **The text field** is `gpui_kit::component::input::{Input, InputState}`: `InputState::new(window,
+  cx).placeholder(..)` in an entity, `cx.subscribe_in(&state, window, ..)` for
+  `InputEvent::Change`; `set_value` emits no `Change`. Its caret blinks by notifying the field's
+  state: render the `Input` in a view of its own, or every blink rebuilds the view around it.
 
 ## What would make us regret the choice
 

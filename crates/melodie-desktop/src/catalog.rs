@@ -173,7 +173,7 @@ impl Catalog {
     /// Reads again what the current place shows; until it comes, the place shows what it had.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         match self.here().clone() {
-            Place::Player => {}
+            Place::Player | Place::Search | Place::Found(_) => {}
             Place::Home => self.load_home(cx),
             Place::Albums => self.load_albums(cx),
             Place::Artists => self.load_artists(cx),
@@ -354,7 +354,7 @@ impl Catalog {
 
     /// Looks up the covers not looked up yet; those with no file are fetched by `melodie
     /// cover-fetch` (the window never talks to the server), then looked up again.
-    fn want_covers(&mut self, ids: impl IntoIterator<Item = String>, cx: &mut Context<Self>) {
+    pub fn want_covers(&mut self, ids: impl IntoIterator<Item = String>, cx: &mut Context<Self>) {
         let new: Vec<String> = ids
             .into_iter()
             .filter(|id| self.asked.insert(id.clone()))

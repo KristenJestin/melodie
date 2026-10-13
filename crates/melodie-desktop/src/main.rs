@@ -9,6 +9,7 @@ mod motion;
 mod pages;
 mod player;
 mod queue;
+mod search;
 mod sidebar;
 #[cfg(feature = "frame-stats")]
 mod stats;
@@ -25,11 +26,13 @@ use gpui_kit::*;
 use melodie_core::env::Env;
 use melodie_core::proto::{self, Request};
 use melodie_desktop::browse::Place;
+use melodie_desktop::keys::{self, Act, Key, Situation};
 use melodie_desktop::theme::{self, Active, Choice, Palette};
 use mini::MiniPlayer;
 use pages::{HomeView, PageView};
 use player::{PlayerView, palette};
 use queue::QueuePanel;
+use search::SearchView;
 use sidebar::Sidebar;
 use std::process::ExitCode;
 use tables::{ArtistList, TrackList};
@@ -56,6 +59,7 @@ gpui_kit::assets::icon_assets!(
         Pause,
         Play,
         RotateCcw,
+        Search,
         Shuffle,
         SkipBack,
         SkipForward,
@@ -78,6 +82,7 @@ struct Views {
     artists: Entity<ArtistList>,
     tracks: Entity<TrackList>,
     page: Entity<PageView>,
+    search: Entity<SearchView>,
     mini: Entity<MiniPlayer>,
 }
 
@@ -111,6 +116,14 @@ impl Root {
                     cx.notify()
                 });
             }),
+            // the field stays focused when it is no longer drawn: the root takes the focus back,
+            // or Space and / would go on being ignored
+            cx.observe_in(&catalog, window, |this, catalog, window, cx| {
+                let left = !keys::in_search(catalog.read(cx).here());
+                if left && this.views.search.read(cx).has_focus(window, cx) {
+                    window.focus(&this.focus, cx);
+                }
+            }),
             cx.observe(&shared, move |this, shared, cx| {
                 let open = shared.read(cx).queue_open;
                 if open && !was_open {
@@ -129,35 +142,49 @@ impl Root {
         }
     }
 
-    fn on_key(&mut self, ev: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
-        match ev.keystroke.key.as_str() {
-            // what is open closes first; then a page goes back
-            "escape" => {
-                let open = {
-                    let s = self.shared.read(cx);
-                    s.queue_open || s.settings_open
-                };
-                if open {
-                    self.shared.update(cx, |s, cx| {
-                        s.queue_open = false;
-                        s.settings_open = false;
-                        cx.notify()
-                    })
-                } else if self.catalog.read(cx).picker_open {
-                    self.catalog.update(cx, |c, cx| {
-                        c.picker_open = false;
-                        cx.notify()
-                    })
-                } else {
-                    self.catalog.update(cx, |c, cx| c.back(cx))
-                }
+    fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let k = &ev.keystroke;
+        let key = Key::read(k.modifiers.control, &k.key, k.key_char.as_deref());
+        let situation = {
+            let (s, c, v) = (
+                self.shared.read(cx),
+                self.catalog.read(cx),
+                self.views.search.read(cx),
+            );
+            Situation {
+                here: c.here(),
+                field_focused: v.has_focus(window, cx),
+                overlay_open: s.queue_open || s.settings_open,
+                picker_open: c.picker_open,
+                field_empty: v.is_empty(),
             }
-            "space" => self.shared.update(cx, |s, cx| {
+        };
+        match keys::act(key, situation) {
+            Act::OpenSearch => {
+                self.catalog
+                    .update(cx, |c, cx| c.start_at(Place::Search, cx));
+                self.views.search.update(cx, |v, cx| v.focus(window, cx));
+            }
+            // what is open closes first; then a page goes back
+            Act::CloseOverlays => self.shared.update(cx, |s, cx| {
+                s.queue_open = false;
+                s.settings_open = false;
+                cx.notify()
+            }),
+            Act::ClosePicker => self.catalog.update(cx, |c, cx| {
+                c.picker_open = false;
+                cx.notify()
+            }),
+            Act::ClearField => {
+                self.views.search.update(cx, |v, cx| v.clear(window, cx));
+            }
+            Act::Back => self.catalog.update(cx, |c, cx| c.back(cx)),
+            Act::PlayPause => self.shared.update(cx, |s, cx| {
                 if s.player.current.is_some() {
                     s.send(Request::Toggle, cx)
                 }
             }),
-            _ => return,
+            Act::Pass => return,
         }
         cx.stop_propagation();
     }
@@ -271,6 +298,7 @@ impl Render for Root {
             Place::Artists => v.artists.clone().into(),
             Place::Tracks => v.tracks.clone().into(),
             Place::Album(_) | Place::Artist(_) | Place::Playlist(_) => v.page.clone().into(),
+            Place::Search | Place::Found(_) => v.search.clone().into(),
         };
         let (scrim, card_scrim) = (self.shared.clone(), self.shared.clone());
         // the notice stays above the mini player
@@ -436,6 +464,7 @@ fn main() -> ExitCode {
                 artists: cx.new(|_| ArtistList::new(s.clone(), c.clone())),
                 tracks: cx.new(|_| TrackList::new(s.clone(), c.clone())),
                 page: cx.new(|_| PageView::new(s.clone(), c.clone())),
+                search: cx.new(|cx| SearchView::new(s.clone(), c.clone(), env.clone(), window, cx)),
                 mini: cx.new(|_| MiniPlayer::new(s.clone(), c.clone())),
             };
             cx.new(|cx| Root::new(shared, catalog, views, window, cx))

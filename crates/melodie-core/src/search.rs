@@ -74,6 +74,10 @@ pub struct Hit {
     pub cover: Option<String>,
     /// Favori d'après la copie locale.
     pub starred: bool,
+    /// The album of a track.
+    pub album_id: Option<String>,
+    /// The artist of an album or a track.
+    pub artist_id: Option<String>,
 }
 
 /// Requête FTS5 à préfixes : « daf pun » donne `"daf"* "pun"*`.
@@ -91,20 +95,18 @@ fn hits(
     conn: &Connection,
     sql: &str,
     q: &str,
-    limit: usize,
+    limit: Option<usize>,
     map: impl Fn(&rusqlite::Row) -> rusqlite::Result<Hit>,
 ) -> Result<Vec<Hit>> {
     let mut st = conn.prepare_cached(sql)?;
-    let rows = st.query_map(params![q, limit as i64], |r| map(r))?;
+    // a negative limit is no limit in SQLite
+    let limit = limit.map_or(-1, |n| n as i64);
+    let rows = st.query_map(params![q, limit], |r| map(r))?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// Résultats du plus pertinent au moins pertinent (voir `relevance`) ; à
-/// pertinence égale : playlists, artistes, albums, morceaux.
-pub fn search(conn: &Connection, input: &str) -> Result<Vec<Hit>> {
-    let Some(q) = fts_query(input) else {
-        return Ok(Vec::new());
-    };
+/// The results of one kind for an FTS query, in the index's order; `limit` of them, or all.
+fn candidates(conn: &Connection, q: &str, kind: Kind, limit: Option<usize>) -> Result<Vec<Hit>> {
     let blank = |kind, id: String, name: String| Hit {
         kind,
         id,
@@ -116,73 +118,96 @@ pub fn search(conn: &Connection, input: &str) -> Result<Vec<Hit>> {
         duration: 0,
         cover: None,
         starred: false,
+        album_id: None,
+        artist_id: None,
     };
-    let mut out = hits(
-        conn,
-        "SELECT p.id, p.name, p.songCount, p.duration, p.coverArt
-         FROM fts_playlists f JOIN playlists p ON p.id = f.id
-         WHERE fts_playlists MATCH ?1 ORDER BY f.rank LIMIT ?2",
-        &q,
-        CANDIDATES,
-        |r| {
-            Ok(Hit {
-                count: r.get(2)?,
-                duration: r.get(3)?,
-                cover: r.get(4)?,
-                ..blank(Kind::Playlist, r.get(0)?, r.get(1)?)
-            })
-        },
-    )?;
-    out.extend(hits(
-        conn,
-        "SELECT a.id, a.name, a.albumCount, a.coverArt, a.starred IS NOT NULL
-         FROM fts_artists f JOIN artists a ON a.id = f.id
-         WHERE fts_artists MATCH ?1 ORDER BY f.rank LIMIT ?2",
-        &q,
-        CANDIDATES,
-        |r| {
-            Ok(Hit {
-                count: r.get(2)?,
-                cover: r.get(3)?,
-                starred: r.get(4)?,
-                ..blank(Kind::Artist, r.get(0)?, r.get(1)?)
-            })
-        },
-    )?);
-    out.extend(hits(
-        conn,
-        "SELECT a.id, a.name, a.artist, a.year, a.coverArt, a.starred IS NOT NULL
-         FROM fts_albums f JOIN albums a ON a.id = f.id
-         WHERE fts_albums MATCH ?1 ORDER BY f.rank LIMIT ?2",
-        &q,
-        CANDIDATES,
-        |r| {
-            Ok(Hit {
-                artist: r.get(2)?,
-                year: r.get(3)?,
-                cover: r.get(4)?,
-                starred: r.get(5)?,
-                ..blank(Kind::Album, r.get(0)?, r.get(1)?)
-            })
-        },
-    )?);
-    out.extend(hits(
-        conn,
-        "SELECT t.id, t.title, t.artist, t.album, t.coverArt, t.starred IS NOT NULL
-         FROM fts_tracks f JOIN tracks t ON t.id = f.id
-         WHERE fts_tracks MATCH ?1 ORDER BY f.rank, t.playCount DESC LIMIT ?2",
-        &q,
-        CANDIDATES,
-        |r| {
-            Ok(Hit {
-                artist: r.get(2)?,
-                album: r.get(3)?,
-                cover: r.get(4)?,
-                starred: r.get(5)?,
-                ..blank(Kind::Track, r.get(0)?, r.get(1)?)
-            })
-        },
-    )?);
+    match kind {
+        Kind::Playlist => hits(
+            conn,
+            "SELECT p.id, p.name, p.songCount, p.duration, p.coverArt
+             FROM fts_playlists f JOIN playlists p ON p.id = f.id
+             WHERE fts_playlists MATCH ?1 ORDER BY f.rank LIMIT ?2",
+            q,
+            limit,
+            |r| {
+                Ok(Hit {
+                    count: r.get(2)?,
+                    duration: r.get(3)?,
+                    cover: r.get(4)?,
+                    ..blank(Kind::Playlist, r.get(0)?, r.get(1)?)
+                })
+            },
+        ),
+        Kind::Artist => hits(
+            conn,
+            "SELECT a.id, a.name, a.albumCount, a.coverArt, a.starred IS NOT NULL
+             FROM fts_artists f JOIN artists a ON a.id = f.id
+             WHERE fts_artists MATCH ?1 ORDER BY f.rank LIMIT ?2",
+            q,
+            limit,
+            |r| {
+                Ok(Hit {
+                    count: r.get(2)?,
+                    cover: r.get(3)?,
+                    starred: r.get(4)?,
+                    ..blank(Kind::Artist, r.get(0)?, r.get(1)?)
+                })
+            },
+        ),
+        Kind::Album => hits(
+            conn,
+            "SELECT a.id, a.name, a.artist, a.year, a.coverArt, a.starred IS NOT NULL, a.artistId
+             FROM fts_albums f JOIN albums a ON a.id = f.id
+             WHERE fts_albums MATCH ?1 ORDER BY f.rank LIMIT ?2",
+            q,
+            limit,
+            |r| {
+                Ok(Hit {
+                    artist: r.get(2)?,
+                    year: r.get(3)?,
+                    cover: r.get(4)?,
+                    starred: r.get(5)?,
+                    artist_id: r.get(6)?,
+                    ..blank(Kind::Album, r.get(0)?, r.get(1)?)
+                })
+            },
+        ),
+        Kind::Track => hits(
+            conn,
+            "SELECT t.id, t.title, t.artist, t.album, t.coverArt, t.starred IS NOT NULL,
+                    t.duration, t.albumId, t.artistId
+             FROM fts_tracks f JOIN tracks t ON t.id = f.id
+             WHERE fts_tracks MATCH ?1 ORDER BY f.rank, t.playCount DESC LIMIT ?2",
+            q,
+            limit,
+            |r| {
+                Ok(Hit {
+                    artist: r.get(2)?,
+                    album: r.get(3)?,
+                    cover: r.get(4)?,
+                    starred: r.get(5)?,
+                    duration: r.get(6)?,
+                    album_id: r.get(7)?,
+                    artist_id: r.get(8)?,
+                    ..blank(Kind::Track, r.get(0)?, r.get(1)?)
+                })
+            },
+        ),
+    }
+}
+
+const KINDS: [Kind; 4] = [Kind::Playlist, Kind::Artist, Kind::Album, Kind::Track];
+
+/// Résultats du plus pertinent au moins pertinent (voir `relevance`) ; à
+/// pertinence égale : playlists, artistes, albums, morceaux.
+pub fn search(conn: &Connection, input: &str) -> Result<Vec<Hit>> {
+    let Some(q) = fts_query(input) else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for kind in KINDS {
+        out.extend(candidates(conn, &q, kind, Some(CANDIDATES))?);
+    }
     let query = words(input);
     let mut ranked: Vec<(u8, Hit)> = out
         .into_iter()
@@ -199,6 +224,74 @@ pub fn search(conn: &Connection, input: &str) -> Result<Vec<Hit>> {
     });
     ranked.sort_by_key(|(r, _)| *r);
     Ok(ranked.into_iter().map(|(_, h)| h).collect())
+}
+
+/// The results of one kind, as the window shows them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Group {
+    pub kind: Kind,
+    /// The best ones first.
+    pub hits: Vec<Hit>,
+    /// There are more than these (see `of_kind`).
+    pub more: bool,
+}
+
+/// Ranks hits of one kind, the most relevant first; at equal relevance, the index's order.
+fn ranked(input: &str, hits: Vec<Hit>) -> Vec<(u8, Hit)> {
+    let query = words(input);
+    let mut out: Vec<(u8, Hit)> = hits
+        .into_iter()
+        .map(|h| (relevance(&query, &h), h))
+        .collect();
+    out.sort_by_key(|(r, _)| *r);
+    out
+}
+
+/// The order of the kinds at equal relevance in the window.
+fn tie_rank(kind: Kind) -> u8 {
+    match kind {
+        Kind::Artist => 0,
+        Kind::Album => 1,
+        Kind::Track => 2,
+        Kind::Playlist => 3,
+    }
+}
+
+/// The results grouped by kind, `shown` of each, ranked as by `search`; the kind whose best
+/// result is the most relevant first, then artists, albums, tracks, playlists at equal
+/// relevance. Leaves `search`, which the launcher reads (playlists first), as it is.
+pub fn grouped(conn: &Connection, input: &str, shown: usize) -> Result<Vec<Group>> {
+    let Some(q) = fts_query(input) else {
+        return Ok(Vec::new());
+    };
+    let mut groups: Vec<(u8, Group)> = Vec::new();
+    for kind in KINDS {
+        let mut hits = ranked(input, candidates(conn, &q, kind, Some(CANDIDATES))?);
+        let Some(best) = hits.first().map(|(r, _)| *r) else {
+            continue;
+        };
+        let more = hits.len() > shown;
+        hits.truncate(shown);
+        groups.push((
+            best,
+            Group {
+                kind,
+                hits: hits.into_iter().map(|(_, h)| h).collect(),
+                more,
+            },
+        ));
+    }
+    groups.sort_by_key(|(best, g)| (*best, tie_rank(g.kind)));
+    Ok(groups.into_iter().map(|(_, g)| g).collect())
+}
+
+/// Every result of one kind, ranked as by `search`.
+pub fn of_kind(conn: &Connection, input: &str, kind: Kind) -> Result<Vec<Hit>> {
+    let Some(q) = fts_query(input) else {
+        return Ok(Vec::new());
+    };
+    let hits = ranked(input, candidates(conn, &q, kind, None)?);
+    Ok(hits.into_iter().map(|(_, h)| h).collect())
 }
 
 /// Minuscules sans accents, comme l'index (`remove_diacritics`).
@@ -279,6 +372,8 @@ pub fn playlists(conn: &Connection) -> Result<Vec<Hit>> {
             duration: r.get(3)?,
             cover: r.get(4)?,
             starred: false,
+            album_id: None,
+            artist_id: None,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -651,6 +746,157 @@ mod tests {
         assert_eq!(a["icon"], "󰋕");
         assert_eq!(a["action"]["command"], "melodie unlike track t1");
         assert!(!r.iter().find(|h| h.kind == Kind::Album).unwrap().starred);
+    }
+
+    /// A library where "night" names one artist exactly, albums and tracks that start with it,
+    /// and a playlist that only holds the word.
+    fn night_library() -> (tempfile::TempDir, Connection) {
+        let d = tempfile::tempdir().unwrap();
+        let mut conn = db::create(&d.path().join("l.db")).unwrap();
+        let tx = conn.transaction().unwrap();
+        db::insert_artist(&tx, &json!({"id":"ar1","name":"Night","albumCount":2})).unwrap();
+        db::insert_artist(
+            &tx,
+            &json!({"id":"ar2","name":"The Night Owls","albumCount":1}),
+        )
+        .unwrap();
+        db::insert_album(
+            &tx,
+            &json!({"id":"al1","name":"Nightfall","artist":"Night","artistId":"ar1","year":2001}),
+        )
+        .unwrap();
+        db::insert_album(
+            &tx,
+            &json!({"id":"al2","name":"Night","artist":"Night","artistId":"ar1","year":2003}),
+        )
+        .unwrap();
+        for n in 0..30 {
+            db::insert_track(
+                &tx,
+                &json!({"id":format!("t{n}"),"title":format!("Song {n}"),"artist":"Night",
+                        "artistId":"ar1","album":"Nightfall","albumId":"al1"}),
+            )
+            .unwrap();
+        }
+        db::insert_track(&tx, &json!({"id":"tn","title":"Night","artist":"Night","artistId":"ar1","album":"Night","albumId":"al2"})).unwrap();
+        db::replace_playlists(
+            &tx,
+            &[json!({"id":"p1","name":"Late night drive","songCount":3})],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        (d, conn)
+    }
+
+    #[test]
+    fn results_are_grouped_by_kind_the_best_kind_first() {
+        let (_d, conn) = night_library();
+        let groups = grouped(&conn, "night", 5).unwrap();
+        let kinds: Vec<_> = groups.iter().map(|g| g.kind).collect();
+        // Artist, album and track each have an exact name: the tie order of the kinds breaks
+        // it; the playlist only holds the word.
+        assert_eq!(
+            kinds,
+            [Kind::Artist, Kind::Album, Kind::Track, Kind::Playlist]
+        );
+        let names = |k: Kind| -> Vec<String> {
+            groups
+                .iter()
+                .find(|g| g.kind == k)
+                .unwrap()
+                .hits
+                .iter()
+                .map(|h| h.name.clone())
+                .collect()
+        };
+        assert_eq!(names(Kind::Artist), ["Night", "The Night Owls"]);
+        assert_eq!(names(Kind::Album), ["Night", "Nightfall"]);
+        assert_eq!(names(Kind::Track)[0], "Night", "the exact name first");
+        // A kind whose best result is weaker comes after.
+        let kinds: Vec<_> = grouped(&conn, "nightf", 5)
+            .unwrap()
+            .iter()
+            .map(|g| g.kind)
+            .collect();
+        assert_eq!(kinds, [Kind::Album, Kind::Track]);
+        assert!(grouped(&conn, "  ", 5).unwrap().is_empty());
+        assert!(grouped(&conn, "zzz", 5).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_tie_puts_artists_before_albums_tracks_and_playlists() {
+        let d = tempfile::tempdir().unwrap();
+        let mut conn = db::create(&d.path().join("l.db")).unwrap();
+        let tx = conn.transaction().unwrap();
+        db::insert_artist(&tx, &json!({"id":"ar1","name":"Dusk","albumCount":1})).unwrap();
+        db::insert_album(
+            &tx,
+            &json!({"id":"al1","name":"Dusk","artist":"Dusk","artistId":"ar1"}),
+        )
+        .unwrap();
+        db::insert_track(
+            &tx,
+            &json!({"id":"t1","title":"Dusk","artist":"Dusk","artistId":"ar1",
+                    "album":"Dusk","albumId":"al1"}),
+        )
+        .unwrap();
+        db::replace_playlists(&tx, &[json!({"id":"p1","name":"Dusk","songCount":1})]).unwrap();
+        tx.commit().unwrap();
+        let kinds: Vec<_> = grouped(&conn, "dusk", 5)
+            .unwrap()
+            .iter()
+            .map(|g| g.kind)
+            .collect();
+        assert_eq!(
+            kinds,
+            [Kind::Artist, Kind::Album, Kind::Track, Kind::Playlist]
+        );
+    }
+
+    #[test]
+    fn a_group_keeps_the_best_few_and_says_there_are_more() {
+        let (_d, conn) = night_library();
+        let groups = grouped(&conn, "night", 5).unwrap();
+        let tracks = groups.iter().find(|g| g.kind == Kind::Track).unwrap();
+        assert_eq!(tracks.hits.len(), 5);
+        assert!(tracks.more);
+        let artists = groups.iter().find(|g| g.kind == Kind::Artist).unwrap();
+        assert!(!artists.more);
+    }
+
+    #[test]
+    fn every_result_of_one_kind_can_be_seen() {
+        let (_d, conn) = night_library();
+        let all = of_kind(&conn, "night", Kind::Track).unwrap();
+        assert_eq!(all.len(), 31);
+        assert_eq!(all[0].name, "Night");
+        assert!(all.iter().all(|h| h.kind == Kind::Track));
+        // more than the launcher's candidates
+        let d = tempfile::tempdir().unwrap();
+        let mut conn = db::create(&d.path().join("l.db")).unwrap();
+        let tx = conn.transaction().unwrap();
+        for n in 0..(CANDIDATES + 50) {
+            db::insert_track(
+                &tx,
+                &json!({"id":format!("t{n}"),"title":format!("Rain {n}")}),
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+        assert_eq!(
+            of_kind(&conn, "rain", Kind::Track).unwrap().len(),
+            CANDIDATES + 50
+        );
+    }
+
+    #[test]
+    fn a_track_found_knows_its_album_and_artist() {
+        let (_d, conn) = night_library();
+        let all = of_kind(&conn, "night", Kind::Track).unwrap();
+        assert_eq!(all[0].album_id.as_deref(), Some("al2"));
+        assert_eq!(all[0].artist_id.as_deref(), Some("ar1"));
+        let albums = of_kind(&conn, "nightfall", Kind::Album).unwrap();
+        assert_eq!(albums[0].artist_id.as_deref(), Some("ar1"));
     }
 
     #[test]

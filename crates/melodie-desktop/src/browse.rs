@@ -17,6 +17,10 @@ pub enum Place {
     Album(String),
     Artist(String),
     Playlist(String),
+    /// The search.
+    Search,
+    /// Every result of one kind for the text searched.
+    Found(crate::launch::Kind),
 }
 
 impl Place {
@@ -24,7 +28,7 @@ impl Place {
     pub fn is_section(&self) -> bool {
         matches!(
             self,
-            Self::Player | Self::Home | Self::Albums | Self::Artists | Self::Tracks
+            Self::Player | Self::Home | Self::Albums | Self::Artists | Self::Tracks | Self::Search
         )
     }
 }
@@ -169,6 +173,20 @@ mod tests {
         assert_eq!(nav.section(), &Place::Playlist("p1".into()));
     }
 
+    #[test]
+    fn the_search_is_a_section_and_all_of_one_kind_goes_on_top() {
+        let mut nav = Nav::new(Place::Albums);
+        nav.go(Place::Album("al1".into()));
+        assert!(nav.go(Place::Search));
+        assert!(!nav.can_go_back(), "the search starts over");
+        nav.go(Place::Found(crate::launch::Kind::Track));
+        nav.go(Place::Album("al2".into()));
+        assert_eq!(nav.section(), &Place::Search);
+        nav.back();
+        nav.back();
+        assert_eq!(nav.here(), &Place::Search, "back to the groups");
+    }
+
     /// The views are drawn on every frame of a scroll or a fade: reading the local copy and
     /// looking for cover files belong to the catalog's background tasks. A guard on the source,
     /// as drawing cannot be observed without a window.
@@ -180,6 +198,7 @@ mod tests {
             ("pages.rs", include_str!("pages.rs")),
             ("sidebar.rs", include_str!("sidebar.rs")),
             ("mini.rs", include_str!("mini.rs")),
+            ("search.rs", include_str!("search.rs")),
         ];
         for (file, src) in views {
             for call in [

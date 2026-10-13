@@ -355,8 +355,15 @@ fn actions(kind: Kind, id: &str, picker: bool, pal: Palette, catalog: &Entity<Ca
         })
 }
 
-/// The user's playlists, to add the album to.
-fn picker(album: &str, t: f32, pal: Palette, catalog: &Entity<Catalog>, cx: &App) -> Div {
+/// The user's playlists, to add a track or an album to.
+pub fn picker(
+    kind: Kind,
+    id: &str,
+    t: f32,
+    pal: Palette,
+    catalog: &Entity<Catalog>,
+    cx: &App,
+) -> Div {
     let lists = catalog.read(cx).own_playlists();
     div()
         .absolute()
@@ -397,7 +404,7 @@ fn picker(album: &str, t: f32, pal: Palette, catalog: &Entity<Catalog>, cx: &App
                     )
                 })
                 .children(lists.into_iter().map(|p| {
-                    let (catalog, album, pid) = (catalog.clone(), album.to_string(), p.id.clone());
+                    let (catalog, id, pid) = (catalog.clone(), id.to_string(), p.id.clone());
                     h_flex()
                         .id(ElementId::Name(format!("pick-{}", p.id).into()))
                         .px_2()
@@ -415,8 +422,8 @@ fn picker(album: &str, t: f32, pal: Palette, catalog: &Entity<Catalog>, cx: &App
                                 c.run(
                                     Job::AddToPlaylist {
                                         playlist: pid.clone(),
-                                        kind: Kind::Album,
-                                        id: album.clone(),
+                                        kind,
+                                        id: id.clone(),
                                     },
                                     cx,
                                 );
@@ -576,13 +583,14 @@ impl Render for PageView {
                                         cx.notify()
                                     })
                                 })
-                                .child(
-                                    div()
-                                        .absolute()
-                                        .top(px(240.))
-                                        .left_0()
-                                        .child(picker(&album.id, pk, pal, catalog, cx)),
-                                ),
+                                .child(div().absolute().top(px(240.)).left_0().child(picker(
+                                    Kind::Album,
+                                    &album.id,
+                                    pk,
+                                    pal,
+                                    catalog,
+                                    cx,
+                                ))),
                         )
                     })
                     .into_any_element()
