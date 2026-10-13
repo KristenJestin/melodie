@@ -26,6 +26,9 @@ pub fn palette(shared: &Entity<Shared>, window: &mut Window, cx: &mut App) -> Pa
 /// How often the position moves while playing: often enough for the eye, cheap enough to
 /// leave the window open for hours (`docs/gui-toolkit.md`, "Frame times").
 const TICK: Duration = Duration::from_millis(250);
+/// Room for the buttons on each side of the three at the middle: the widest side holds two
+/// buttons of 40 px and the gap between them. Both sides get it, so play/pause stays centered.
+const SIDE: f32 = 2.0 * 40.0 + 12.0;
 /// The volume is sent at most this often while it is dragged.
 const VOLUME_EVERY: Duration = Duration::from_millis(60);
 
@@ -249,78 +252,92 @@ impl Render for PlayerView {
                 h_flex()
                     .gap_3()
                     .items_center()
-                    .child({
-                        let shared = shared.clone();
-                        IconButton::new("heart", IconName::Heart, pal)
-                            .tip(if starred { "Unlike" } else { "Like" })
-                            .selected(starred)
-                            .disabled(!has_track)
-                            .on_click(move |_, _, cx| {
-                                if let Some(id) = id.clone() {
-                                    shared.update(cx, |s, cx| {
-                                        s.run(
-                                            Job::Star {
-                                                id,
-                                                starred: !starred,
-                                            },
-                                            cx,
-                                        )
-                                    })
-                                }
-                            })
-                    })
-                    .child({
-                        let (id, title) = picked;
-                        IconButton::new("add-current", IconName::ListPlus, pal)
-                            .tip("Add to playlist")
-                            .disabled(!has_track)
-                            .on_click(move |_, window, cx| {
-                                // the id seen now, not "current": the track may change meanwhile
-                                if let Some(id) = id.clone() {
-                                    let dialog = Dialog::Pick {
-                                        what: Adding::Tracks(vec![id]),
-                                        about: title.to_string(),
-                                    };
-                                    dialogs::open(dialog, window, cx)
-                                }
-                            })
-                    })
-                    .child({
-                        let shared = shared.clone();
-                        IconButton::new("prev", IconName::SkipBack, pal)
-                            .tip("Previous")
-                            .diameter(48.)
-                            .disabled(!has_track)
-                            .on_click(move |_, _, cx| {
-                                shared.update(cx, |s, cx| s.send(Request::Prev, cx))
-                            })
-                    })
+                    // the same room on both sides of play/pause, whatever they hold, so that it
+                    // sits on the axis of the cover and the title
                     .child(
-                        IconButton::new(
-                            "play",
-                            if playing {
-                                IconName::Pause
-                            } else {
-                                IconName::Play
-                            },
-                            pal,
-                        )
-                        .tip(if playing { "Pause" } else { "Play" })
-                        .diameter(64.)
-                        .primary()
-                        .on_click(play),
-                    )
-                    .child({
-                        let shared = shared.clone();
-                        IconButton::new("next", IconName::SkipForward, pal)
-                            .tip("Next")
-                            .diameter(48.)
-                            .disabled(!has_track)
-                            .on_click(move |_, _, cx| {
-                                shared.update(cx, |s, cx| s.send(Request::Next, cx))
+                        h_flex()
+                            .w(px(SIDE))
+                            .flex_none()
+                            .gap_3()
+                            .justify_end()
+                            .child({
+                                let shared = shared.clone();
+                                IconButton::new("heart", IconName::Heart, pal)
+                                    .tip(if starred { "Unlike" } else { "Like" })
+                                    .selected(starred)
+                                    .disabled(!has_track)
+                                    .on_click(move |_, _, cx| {
+                                        if let Some(id) = id.clone() {
+                                            shared.update(cx, |s, cx| {
+                                                s.run(
+                                                    Job::Star {
+                                                        id,
+                                                        starred: !starred,
+                                                    },
+                                                    cx,
+                                                )
+                                            })
+                                        }
+                                    })
                             })
-                    })
-                    .child({
+                            .child({
+                                let (id, title) = picked;
+                                IconButton::new("add-current", IconName::ListPlus, pal)
+                                    .tip("Add to playlist")
+                                    .disabled(!has_track)
+                                    .on_click(move |_, window, cx| {
+                                        // the id seen now, not "current": the track may change meanwhile
+                                        if let Some(id) = id.clone() {
+                                            let dialog = Dialog::Pick {
+                                                what: Adding::Tracks(vec![id]),
+                                                about: title.to_string(),
+                                            };
+                                            dialogs::open(dialog, window, cx)
+                                        }
+                                    })
+                            }),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_3()
+                            .items_center()
+                            .child({
+                                let shared = shared.clone();
+                                IconButton::new("prev", IconName::SkipBack, pal)
+                                    .tip("Previous")
+                                    .diameter(48.)
+                                    .disabled(!has_track)
+                                    .on_click(move |_, _, cx| {
+                                        shared.update(cx, |s, cx| s.send(Request::Prev, cx))
+                                    })
+                            })
+                            .child(
+                                IconButton::new(
+                                    "play",
+                                    if playing {
+                                        IconName::Pause
+                                    } else {
+                                        IconName::Play
+                                    },
+                                    pal,
+                                )
+                                .tip(if playing { "Pause" } else { "Play" })
+                                .diameter(64.)
+                                .primary()
+                                .on_click(play),
+                            )
+                            .child({
+                                let shared = shared.clone();
+                                IconButton::new("next", IconName::SkipForward, pal)
+                                    .tip("Next")
+                                    .diameter(48.)
+                                    .disabled(!has_track)
+                                    .on_click(move |_, _, cx| {
+                                        shared.update(cx, |s, cx| s.send(Request::Next, cx))
+                                    })
+                            }),
+                    )
+                    .child(h_flex().w(px(SIDE)).flex_none().gap_3().child({
                         let shared = shared.clone();
                         IconButton::new("queue", IconName::ListMusic, pal)
                             .tip("Queue")
@@ -332,7 +349,7 @@ impl Render for PlayerView {
                                     cx.notify()
                                 })
                             })
-                    }),
+                    })),
             )
             .child(
                 h_flex()
