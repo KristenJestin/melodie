@@ -127,8 +127,8 @@ enum PlaylistCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Removes the track at <index> (counted from 0)
-    Remove { playlist_id: String, index: usize },
+    /// Removes the track at <rank> (counted from 1, like `duplicates` prints it)
+    Remove { playlist_id: String, rank: usize },
     /// Creates a playlist, optionally with a track, an album or the current track
     Create {
         /// <name>, then `current`, `track <id>` or `album <id>` (with --prompt: the target only)
@@ -477,8 +477,8 @@ fn playlist_cmd(env: &Env, cmd: PlaylistCmd) -> ExitCode {
                 remove,
                 json,
             } => playlists_cmd::duplicates_cmd(env, &playlist_id, remove, json),
-            PlaylistCmd::Remove { playlist_id, index } => {
-                playlists_cmd::remove_cmd(env, &playlist_id, index)
+            PlaylistCmd::Remove { playlist_id, rank } => {
+                playlists_cmd::remove_cmd(env, &playlist_id, rank)
             }
             PlaylistCmd::Create { args, prompt } => {
                 let (name, rest) = if prompt {
