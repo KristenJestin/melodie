@@ -23,7 +23,7 @@ use melodie_desktop::figures::{Figures as _, clock_text};
 use melodie_desktop::launch::{Adding, Job, Kind};
 use melodie_desktop::menu::{Item, Spot};
 use melodie_desktop::selection::{How, Selection};
-use melodie_desktop::table::{self, Col, ColSort, Shown, Table, Width};
+use melodie_desktop::table::{self, Col, ColSort, Cols, Shown, Table, Width};
 use melodie_desktop::theme::Palette;
 use std::sync::Arc;
 
@@ -54,7 +54,7 @@ fn col_cell(col: Col) -> Div {
 /// The header of a track table; a click on a column sorts by it (ascending, descending, then the
 /// list's own order). `edit`: the rows have the button that removes them.
 pub fn track_header(
-    cols: &[Col],
+    cols: &Cols,
     edit: bool,
     sort: Option<ColSort>,
     pal: Palette,
@@ -249,7 +249,7 @@ pub fn track_row(
     list: &'static str,
     ix: usize,
     t: &Track,
-    cols: &[Col],
+    cols: &Cols,
     pal: Palette,
     catalog: &Entity<Catalog>,
     row: RowCtx,
@@ -480,9 +480,7 @@ impl Render for TrackList {
             self.shown_sort = Some(shown.sort);
         }
         context_menu::list_is(&Place::Tracks, &self.scroll, TRACK_ROW, cx);
-        let cols: Arc<[Col]> = Table::Tracks
-            .cols(content_width(window, &self.shared, cx))
-            .into();
+        let cols = Arc::new(Table::Tracks.cols(content_width(window, &self.shared, cx)));
         let selection = self.catalog.read(cx).selection.clone();
         let catalog = self.catalog.clone();
         let sort = self.catalog.read(cx).sorts.get(&Place::Tracks);
@@ -517,7 +515,7 @@ impl Render for TrackList {
 pub fn track_rows(
     id: &'static str,
     shown: Shown,
-    cols: Arc<[Col]>,
+    cols: Arc<Cols>,
     pal: Palette,
     catalog: &Entity<Catalog>,
     (here, selection): (Place, Selection),

@@ -137,11 +137,25 @@ impl Table {
     }
 
     /// The columns shown in a content `width` pixels wide, in order.
-    pub fn cols(self, width: f32) -> Vec<Col> {
-        COLS.into_iter()
-            .filter(|c| !self.leaves_out(*c))
-            .filter(|c| width >= NARROW || !c.secondary())
-            .collect()
+    pub fn cols(self, width: f32) -> Cols {
+        Cols(
+            COLS.into_iter()
+                .filter(|c| !self.leaves_out(*c))
+                .filter(|c| width >= NARROW || !c.secondary())
+                .collect(),
+        )
+    }
+}
+
+/// The columns of a table, as only `Table::cols` makes them: what its header and its rows draw.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Cols(Vec<Col>);
+
+impl std::ops::Deref for Cols {
+    type Target = [Col];
+
+    fn deref(&self) -> &[Col] {
+        &self.0
     }
 }
 
@@ -341,6 +355,7 @@ pub fn track_of(hit: &Hit) -> Track {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scan::{Source, sources};
     use crate::selection::How;
 
     const WIDE: f32 = 1000.0;
@@ -396,23 +411,23 @@ mod tests {
             let cols = table.cols(WIDE);
             // the same columns in the same order: a part of the one list, nothing added
             let mut all = COLS.iter();
-            for c in &cols {
+            for c in cols.iter() {
                 assert!(all.any(|a| a == c), "{table:?}: {cols:?} out of order");
             }
             assert!(cols.contains(&Col::Title) && cols.contains(&Col::Time));
         }
         // what is left out makes no sense there
         assert_eq!(
-            Table::Album.cols(WIDE),
+            Table::Album.cols(WIDE)[..],
             [Col::Number, Col::Title, Col::Plays, Col::Time]
         );
         assert_eq!(
-            Table::Compilation.cols(WIDE),
+            Table::Compilation.cols(WIDE)[..],
             [Col::Number, Col::Title, Col::Artist, Col::Plays, Col::Time]
         );
-        assert_eq!(Table::Playlist.cols(WIDE), COLS);
+        assert_eq!(Table::Playlist.cols(WIDE)[..], COLS);
         assert_eq!(
-            Table::TopTracks.cols(WIDE),
+            Table::TopTracks.cols(WIDE)[..],
             [
                 Col::Number,
                 Col::Title,
@@ -423,7 +438,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            Table::Tracks.cols(WIDE),
+            Table::Tracks.cols(WIDE)[..],
             [
                 Col::Title,
                 Col::Artist,
@@ -434,7 +449,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            Table::Search.cols(WIDE),
+            Table::Search.cols(WIDE)[..],
             [Col::Title, Col::Artist, Col::Album, Col::Time]
         );
     }
@@ -546,6 +561,52 @@ mod tests {
         assert_eq!(sorts.get(&album), Some(BY_TITLE), "not a search");
     }
 
+    /// Where `s` makes a list of columns of its own: a type `[Col]` or `Vec<Col>`, or a list
+    /// starting with a column (`[Col::Title, …]`), however `Col` is named.
+    fn own_columns(s: &Source) -> Vec<String> {
+        let code = s.code();
+        let ident = |c: char| c.is_alphanumeric() || c == '_';
+        let path = |c: char| ident(c) || c == ':';
+        code.match_indices("Col")
+            .map(|(at, _)| at)
+            .filter(|&at| !code[..at].ends_with(ident))
+            .filter(|&at| {
+                let after = &code[at + 3..];
+                let before = code[..at].trim_end_matches(path);
+                after.starts_with(']')
+                    || (after.starts_with('>') && before.ends_with("Vec<"))
+                    || (after.starts_with("::") && before.ends_with('['))
+            })
+            .map(|at| format!("{}:{}", s.name, s.line(at)))
+            .collect()
+    }
+
+    #[test]
+    fn a_list_of_columns_made_outside_the_definition_is_found() {
+        for code in [
+            "fn track_header(cols: &[Col], edit: bool) {}",
+            "let cols: Arc<[Col]> = x.into();",
+            "fn track_list(\n    cols: Vec<Col>,\n) {}",
+            "let cols = vec![Col::Title, Col::Time];",
+            "track_row(ix, t, &[Col::Title], pal)",
+            "fn header(cols: &[track_table::Col]) {}",
+            "let cols: Vec<table::Col> = vec![];",
+            "let cols = [table::Col::Title];",
+        ] {
+            assert_eq!(own_columns(&Source::new("a.rs", code)).len(), 1, "{code}");
+        }
+        let fine = "let cols = Table::Album.cols(width); track_header(&cols, false); \
+                    let s: Option<ColSort> = None; match col { Col::Title => 1 }";
+        assert!(own_columns(&Source::new("a.rs", fine)).is_empty());
+    }
+
+    #[test]
+    fn every_track_table_takes_its_columns_from_the_one_definition() {
+        // the header and the rows take `Cols`, which only `Table::cols` makes
+        let found: Vec<String> = sources("table.rs").iter().flat_map(own_columns).collect();
+        assert!(found.is_empty(), "columns made by hand: {found:?}");
+    }
+
     #[test]
     fn the_widths_follow_one_rule() {
         for c in [Col::Number, Col::Year, Col::Plays, Col::Time] {
@@ -568,10 +629,11 @@ mod tests {
             }
             let kept: Vec<Col> = table
                 .cols(WIDE)
-                .into_iter()
+                .iter()
+                .copied()
                 .filter(|c| !matches!(c, Col::Album | Col::Year | Col::Plays))
                 .collect();
-            assert_eq!(narrow, kept, "{table:?}");
+            assert_eq!(narrow[..], kept, "{table:?}");
             assert_eq!(
                 table.cols(NARROW),
                 table.cols(WIDE),

@@ -24,7 +24,7 @@ use melodie_desktop::covers::{Covers, Use};
 use melodie_desktop::find::{self, Action, Answer, Latest};
 use melodie_desktop::launch::{Adding, Kind};
 use melodie_desktop::menu::{Item, Spot};
-use melodie_desktop::table::{self as track_table, ColSort, Shown, Sorts, Table};
+use melodie_desktop::table::{self as track_table, ColSort, Cols, Shown, Sorts, Table};
 use melodie_desktop::theme::Palette;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -215,13 +215,7 @@ impl SearchView {
     }
 
     /// The header of the tracks found at `place`.
-    fn header(
-        &self,
-        place: Place,
-        cols: &[track_table::Col],
-        pal: Palette,
-        cx: &Context<Self>,
-    ) -> Div {
+    fn header(&self, place: Place, cols: &Cols, pal: Palette, cx: &Context<Self>) -> Div {
         let sort = self.tables.get(&place).and_then(|s| s.sort);
         let this = cx.entity().downgrade();
         track_header(cols, false, sort, pal, move |s, cx| {

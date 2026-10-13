@@ -20,7 +20,7 @@ use melodie_desktop::covers::Covers;
 use melodie_desktop::figures::Figures as _;
 use melodie_desktop::launch::{Adding, Job, Kind};
 use melodie_desktop::selection::Selection;
-use melodie_desktop::table::{Col, ColSort, Shown, Table};
+use melodie_desktop::table::{ColSort, Cols, Shown, Table};
 use melodie_desktop::theme::Palette;
 use std::sync::Arc;
 
@@ -263,7 +263,7 @@ fn actions(kind: Kind, id: &str, extra: Extra, pal: Palette, catalog: &Entity<Ca
 fn track_list(
     id: &'static str,
     shown: Shown,
-    cols: Vec<Col>,
+    cols: Cols,
     pal: Palette,
     scroll: &UniformListScrollHandle,
     catalog: &Entity<Catalog>,
@@ -288,7 +288,7 @@ fn track_list(
             track_rows(
                 id,
                 shown,
-                cols.into(),
+                Arc::new(cols),
                 pal,
                 catalog,
                 (here, selection),
