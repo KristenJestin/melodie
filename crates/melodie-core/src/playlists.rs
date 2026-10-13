@@ -63,6 +63,11 @@ fn edit_local(
 ) -> Result<(), Failure> {
     db::atomically(conn, || {
         db::playlist_adjust(conn, pid, d_count, d_secs, &rfc3339(at))?;
+        // A copy that does not hold the tracks yet (made by an older version) would keep only
+        // this edit: the next sync reads the playlist whole.
+        if !db::playlist_is_synced(conn, pid)? {
+            return Ok(());
+        }
         let mut ids = db::playlist_track_ids(conn, pid)?;
         f(&mut ids);
         db::replace_playlist_tracks(conn, pid, &ids)
@@ -332,7 +337,8 @@ pub fn create(
         let ids: Vec<String> = tracks.iter().map(|t| t.id.clone()).collect();
         db::atomically(c, || {
             db::playlist_insert(c, &p)?;
-            db::replace_playlist_tracks(c, &id, &ids)
+            db::replace_playlist_tracks(c, &id, &ids)?;
+            db::mark_playlist_synced(c, &id, p["changed"].as_str())
         })?;
     }
     Ok(id)
@@ -670,6 +676,21 @@ mod tests {
         let before = (counts(&conn, "p1"), local_ids(&conn, "p1"));
         assert!(add(&client, Some(&conn), "p1", &[info("boom", 200)], 0).is_err());
         assert_eq!((counts(&conn, "p1"), local_ids(&conn, "p1")), before);
+    }
+
+    #[test]
+    fn an_edit_of_a_playlist_whose_tracks_are_not_held_yet_leaves_them_to_the_sync() {
+        let (_d, env, _fake, client) = setup();
+        let conn = db::open_existing(&env).unwrap().unwrap();
+        // The copy of an older version: it has the playlist, not its tracks.
+        conn.execute_batch("DELETE FROM playlist_tracks; DELETE FROM playlist_synced;")
+            .unwrap();
+        add(&client, Some(&conn), "p1", &[info("s1", 200)], 0).unwrap();
+        assert_eq!(counts(&conn, "p1"), (43, 7700));
+        assert!(
+            local_ids(&conn, "p1").is_empty(),
+            "one track is not the playlist"
+        );
     }
 
     // --- duplicates ---

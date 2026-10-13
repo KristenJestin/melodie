@@ -48,6 +48,7 @@ CREATE TABLE playlists (
 );
 CREATE TABLE playlist_tracks (playlist TEXT NOT NULL, pos INTEGER NOT NULL, track TEXT NOT NULL);
 CREATE INDEX playlist_tracks_playlist ON playlist_tracks(playlist);
+CREATE TABLE playlist_synced (playlist TEXT PRIMARY KEY, changed TEXT);
 CREATE VIRTUAL TABLE fts_playlists USING fts5(id UNINDEXED, name, tokenize='unicode61 remove_diacritics 2');
 CREATE VIRTUAL TABLE fts_artists USING fts5(id UNINDEXED, name, tokenize='unicode61 remove_diacritics 2');
 CREATE VIRTUAL TABLE fts_albums USING fts5(id UNINDEXED, name, artist, tokenize='unicode61 remove_diacritics 2');
@@ -72,7 +73,7 @@ pub fn create(path: &std::path::Path) -> Result<Connection> {
 #[cfg(any(test, feature = "fake"))]
 pub fn create_before_browsing(path: &std::path::Path) -> Result<Connection> {
     let conn = create(path)?;
-    conn.execute_batch("DROP TABLE playlist_tracks; ALTER TABLE albums DROP COLUMN created;")?;
+    conn.execute_batch("DROP TABLE playlist_tracks; DROP TABLE playlist_synced; ALTER TABLE albums DROP COLUMN created;")?;
     Ok(conn)
 }
 
@@ -118,18 +119,25 @@ pub fn carry_skips(old: &std::path::Path, new: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-/// What `upgrade` has to add: `(the created column, the playlist_tracks table)`. A copy without
-/// an `albums` table is no older copy: there is nothing to add a column to.
-fn upgrade_pending(conn: &Connection) -> Result<(bool, bool)> {
+/// What `upgrade` has to add: `(the created column, the playlist_tracks table, the
+/// playlist_synced table)`. A copy without an `albums` table is no older copy: there is nothing
+/// to add a column to.
+fn upgrade_pending(conn: &Connection) -> Result<(bool, bool, bool)> {
     let (columns, has_created): (i64, i64) = conn.query_row(
         "SELECT count(*), coalesce(sum(name = 'created'), 0) FROM pragma_table_info('albums')",
         [],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
-    let has_playlist_tracks = conn
-        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'playlist_tracks'")?
-        .exists([])?;
-    Ok((columns > 0 && has_created == 0, !has_playlist_tracks))
+    let has_table = |name: &str| -> Result<bool> {
+        Ok(conn
+            .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1")?
+            .exists([name])?)
+    };
+    Ok((
+        columns > 0 && has_created == 0,
+        !has_table("playlist_tracks")?,
+        !has_table("playlist_synced")?,
+    ))
 }
 
 /// Brings a copy made by an older version up to the schema: what was added since is created
@@ -140,11 +148,11 @@ fn upgrade_pending(conn: &Connection) -> Result<(bool, bool)> {
 /// is idempotent and safe in parallel: the work is checked again under the write lock, and a
 /// process that waited for the lock finds it done.
 pub fn upgrade(conn: &Connection) -> Result<()> {
-    if upgrade_pending(conn)? == (false, false) {
+    if upgrade_pending(conn)? == (false, false, false) {
         return Ok(());
     }
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    let (created, playlist_tracks) = upgrade_pending(&tx)?;
+    let (created, playlist_tracks, playlist_synced) = upgrade_pending(&tx)?;
     if created {
         tx.execute_batch("ALTER TABLE albums ADD COLUMN created TEXT")?;
     }
@@ -152,6 +160,11 @@ pub fn upgrade(conn: &Connection) -> Result<()> {
         tx.execute_batch(
             "CREATE TABLE playlist_tracks (playlist TEXT NOT NULL, pos INTEGER NOT NULL, track TEXT NOT NULL);
              CREATE INDEX playlist_tracks_playlist ON playlist_tracks(playlist);",
+        )?;
+    }
+    if playlist_synced {
+        tx.execute_batch(
+            "CREATE TABLE playlist_synced (playlist TEXT PRIMARY KEY, changed TEXT);",
         )?;
     }
     tx.commit()?;
@@ -594,6 +607,24 @@ pub fn replace_playlist_tracks(conn: &Connection, pid: &str, tracks: &[String]) 
     })
 }
 
+/// Notes that the copy holds the tracks of a playlist as the server had them at `changed`: an
+/// empty playlist has no row in `playlist_tracks`, and would be read again at every sync.
+pub fn mark_playlist_synced(conn: &Connection, pid: &str, changed: Option<&str>) -> Result<()> {
+    conn.execute(
+        "INSERT INTO playlist_synced(playlist, changed) VALUES (?1, ?2)
+         ON CONFLICT(playlist) DO UPDATE SET changed = ?2",
+        params![pid, changed],
+    )?;
+    Ok(())
+}
+
+/// Whether the copy holds the tracks of the playlist (see `mark_playlist_synced`).
+pub fn playlist_is_synced(conn: &Connection, pid: &str) -> Result<bool> {
+    Ok(conn
+        .prepare("SELECT 1 FROM playlist_synced WHERE playlist = ?1")?
+        .exists([pid])?)
+}
+
 /// The track ids of a playlist the copy holds, in order (empty when it holds none).
 pub fn playlist_track_ids(conn: &Connection, pid: &str) -> Result<Vec<String>> {
     let mut st =
@@ -605,6 +636,7 @@ pub fn playlist_track_ids(conn: &Connection, pid: &str) -> Result<Vec<String>> {
 pub fn playlist_delete(conn: &Connection, id: &str) -> Result<()> {
     atomically(conn, || {
         conn.execute("DELETE FROM playlist_tracks WHERE playlist = ?1", [id])?;
+        conn.execute("DELETE FROM playlist_synced WHERE playlist = ?1", [id])?;
         conn.execute("DELETE FROM playlists WHERE id = ?1", [id])?;
         conn.execute("DELETE FROM fts_playlists WHERE id = ?1", [id])?;
         Ok(())

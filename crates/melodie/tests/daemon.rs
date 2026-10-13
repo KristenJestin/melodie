@@ -621,8 +621,10 @@ fn playlist_edits_work_on_a_copy_made_before_the_library_browsing() {
     seed_playlist(&sb, &["t1"]);
     // The copy of an older version: no `playlist_tracks`, no `albums.created`.
     let c = rusqlite::Connection::open(sb.db()).unwrap();
-    c.execute_batch("DROP TABLE playlist_tracks; ALTER TABLE albums DROP COLUMN created;")
-        .unwrap();
+    c.execute_batch(
+        "DROP TABLE playlist_tracks; DROP TABLE playlist_synced; ALTER TABLE albums DROP COLUMN created;",
+    )
+    .unwrap();
     drop(c);
 
     // The server applies the edit; the command must not fail afterwards on the local copy.

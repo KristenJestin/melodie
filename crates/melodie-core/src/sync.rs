@@ -112,11 +112,9 @@ fn page_through(
     Ok(total)
 }
 
-/// The `changed` date of each playlist whose tracks the copy holds.
+/// The `changed` date each playlist had when the copy last read its tracks.
 fn held_playlists(tx: &Transaction) -> Result<HashMap<String, Option<String>>, Failure> {
-    let mut st = tx.prepare(
-        "SELECT id, changed FROM playlists WHERE id IN (SELECT playlist FROM playlist_tracks)",
-    )?;
+    let mut st = tx.prepare("SELECT playlist, changed FROM playlist_synced")?;
     let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
@@ -136,10 +134,12 @@ fn refresh_playlists_and_starred(
     let pl = call(client, "getPlaylists", &[])?;
     let lists = list(&pl, &["playlists", "playlist"]);
     db::replace_playlists(tx, &lists)?;
-    tx.execute(
-        "DELETE FROM playlist_tracks WHERE playlist NOT IN (SELECT id FROM playlists)",
-        [],
-    )?;
+    for table in ["playlist_tracks", "playlist_synced"] {
+        tx.execute(
+            &format!("DELETE FROM {table} WHERE playlist NOT IN (SELECT id FROM playlists)"),
+            [],
+        )?;
+    }
     for p in &lists {
         let Some(pid) = p["id"].as_str() else {
             continue;
@@ -156,6 +156,7 @@ fn refresh_playlists_and_starred(
         };
         let ids = db::entry_ids(&list(&r, &["playlist", "entry"]));
         db::replace_playlist_tracks(tx, pid, &ids)?;
+        db::mark_playlist_synced(tx, pid, changed.as_deref())?;
     }
     let st = call(client, "getStarred2", &[])?;
     db::apply_starred(tx, &st["starred2"])?;
@@ -389,6 +390,31 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_playlist_is_not_read_again_by_a_light_sync() {
+        let (_d, env, fake, client) = setup(3);
+        fake.state
+            .playlists
+            .lock()
+            .unwrap()
+            .insert("p1".into(), vec![]);
+        run(&env, &client, true).unwrap();
+        assert_eq!(fake.calls_of("getPlaylist"), 1);
+        fake.clear_calls();
+        assert_eq!(run(&env, &client, false).unwrap().kind, Kind::Light);
+        assert_eq!(fake.calls_of("getPlaylist"), 0, "empty and unchanged");
+
+        *fake.state.playlist_changed.lock().unwrap() = "2026-10-03T10:00:00Z".into();
+        fake.state
+            .playlists
+            .lock()
+            .unwrap()
+            .insert("p1".into(), vec![fake::song(1)]);
+        run(&env, &client, false).unwrap();
+        assert_eq!(fake.calls_of("getPlaylist"), 1);
+        assert_eq!(playlist_tracks(&env), ["s1"]);
+    }
+
+    #[test]
     fn a_playlist_deleted_during_the_sync_is_skipped() {
         let (_d, env, fake, client) = setup(3);
         fake.state.playlist_gone.store(true, Ordering::SeqCst);
@@ -409,7 +435,8 @@ mod tests {
         let (_d, env, fake, client) = setup(3);
         run(&env, &client, false).unwrap();
         let conn = db::open_existing(&env).unwrap().unwrap();
-        conn.execute_batch("DROP TABLE playlist_tracks").unwrap();
+        conn.execute_batch("DROP TABLE playlist_tracks; DROP TABLE playlist_synced")
+            .unwrap();
         drop(conn);
         assert_eq!(run(&env, &client, false).unwrap().kind, Kind::Light);
         assert_eq!(playlist_tracks(&env), ["s0", "s1", "s2"]);
