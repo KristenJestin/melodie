@@ -24,3 +24,4 @@ pub mod selection;
 pub mod theme;
 pub mod thumbs;
 pub mod tint;
+pub mod wave;

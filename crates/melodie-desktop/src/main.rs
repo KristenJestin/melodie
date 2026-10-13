@@ -23,6 +23,7 @@ mod tables;
 mod timing;
 mod tips;
 mod volume;
+mod wave_cache;
 mod widgets;
 
 use albums::AlbumGrid;

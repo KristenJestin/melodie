@@ -5,6 +5,7 @@ use crate::context_menu::Menued as _;
 use crate::dialogs::{self, Dialog};
 use crate::motion;
 use crate::volume::Volume;
+use crate::wave_cache::WaveCache;
 use crate::widgets::IconButton;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
@@ -20,6 +21,7 @@ use melodie_desktop::layout;
 use melodie_desktop::menu::{Item, Spot};
 use melodie_desktop::model::{Clock, PlayState};
 use melodie_desktop::theme::Palette;
+use melodie_desktop::wave::{self, Levels};
 use std::time::{Duration, Instant};
 
 /// The palette on screen now, moving towards the target of the model.
@@ -336,6 +338,7 @@ impl Render for PlayerView {
 pub struct Bar {
     shared: Entity<Shared>,
     clock: Entity<Clock>,
+    waves: Entity<WaveCache>,
     /// On one line, between the elapsed and the total time (the bar at the bottom of the
     /// window); else under the slider, as in the player.
     inline: bool,
@@ -347,6 +350,64 @@ pub struct Bar {
 }
 
 const BAR_STEPS: f32 = 1000.0;
+/// The tallest bar of the waveform: in the bottom bar it keeps to the row of the position.
+const WAVE_INLINE: f32 = bar::POSITION - 2.0;
+const WAVE: f32 = 24.0;
+
+/// The waveform under the slider: the bars played so far in the accent, the rest dimmed, the bar
+/// under the position cut where it is. Painted from the levels in hand: no allocation, no disk.
+fn waveform(
+    levels: Levels,
+    split: f32,
+    height: f32,
+    opacity: f32,
+    pal: Palette,
+) -> impl IntoElement {
+    let played = Hsla {
+        a: pal.accent.a * opacity,
+        ..pal.accent
+    };
+    let rest = Hsla {
+        a: 0.28 * opacity,
+        ..pal.fg
+    };
+    canvas(
+        |_, _, _| {},
+        move |bounds, (), window, _| {
+            let width = bounds.size.width.as_f32();
+            let n = wave::count(width);
+            // spread over the whole width, so the bars end where the slider ends
+            let step = width / n as f32;
+            let (left, middle) = (bounds.origin.x.as_f32(), bounds.center().y.as_f32());
+            let cut = left + width * split;
+            for i in 0..n {
+                let h = (wave::bar(&levels, i, n) * height).max(2.0);
+                let x = left + i as f32 * step;
+                let quad = |from: f32, to: f32, color: Hsla| {
+                    fill(
+                        Bounds::new(
+                            point(px(from), px(middle - h / 2.0)),
+                            size(px(to - from), px(h)),
+                        ),
+                        color,
+                    )
+                    .corner_radii(px(1.0))
+                };
+                let end = x + wave::BAR;
+                if end <= cut {
+                    window.paint_quad(quad(x, end, played));
+                } else if x >= cut {
+                    window.paint_quad(quad(x, end, rest));
+                } else {
+                    window.paint_quad(quad(x, cut, played));
+                    window.paint_quad(quad(cut, end, rest));
+                }
+            }
+        },
+    )
+    .absolute()
+    .inset_0()
+}
 
 impl Bar {
     pub fn new(
@@ -357,7 +418,7 @@ impl Bar {
         cx: &mut Context<Self>,
     ) -> Self {
         let slider = cx.new(|_| SliderState::new().min(0.).max(BAR_STEPS).step(1.));
-        let subs = vec![
+        let mut subs = vec![
             cx.subscribe_in(&slider, window, |this, _, ev: &SliderEvent, window, cx| {
                 match ev {
                     SliderEvent::Change(v) => this.held = Some(v.end()),
@@ -370,6 +431,8 @@ impl Bar {
             }),
             cx.observe_in(&clock, window, |this, _, window, cx| this.sync(window, cx)),
         ];
+        let waves = shared.read(cx).waves.clone();
+        subs.push(cx.observe(&waves, |_, _, cx| cx.notify()));
         let tick = cx.spawn_in(window, async move |this, cx| {
             loop {
                 cx.background_executor().timer(TICK).await;
@@ -386,6 +449,7 @@ impl Bar {
         Self {
             shared,
             clock,
+            waves,
             inline,
             slider,
             held: None,
@@ -418,7 +482,7 @@ impl Bar {
         let Some(entry) = self.shared.read(cx).player.track().map(|t| t.entry) else {
             return;
         };
-        let position = f64::from(v / BAR_STEPS) * self.clock.read(cx).duration;
+        let position = wave::time_at(v, BAR_STEPS, self.clock.read(cx).duration);
         // Moves at once; the daemon's next position confirms it.
         self.clock.update(cx, |c, cx| {
             c.position = position;
@@ -441,16 +505,45 @@ impl Bar {
 impl Render for Bar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let pal = palette(&self.shared, window, cx);
-        let has_track = self.shared.read(cx).player.track().is_some();
+        let id = self.shared.read(cx).player.track().map(|t| t.id.clone());
+        let has_track = id.is_some();
         let c = *self.clock.read(cx);
         let position = match self.held {
-            Some(v) => f64::from(v / BAR_STEPS) * c.duration,
+            Some(v) => wave::time_at(v, BAR_STEPS, c.duration),
             None => c.at(Instant::now()),
         };
+        // The waveform fades in over the plain bar when it lands; one already there shows at
+        // once (a transition adopts its first value), as a track change starts a new one.
+        let levels = id.as_deref().and_then(|id| self.waves.read(cx).get(id));
+        let shown = motion::flag(
+            format!("wave-{}-{}", self.inline, id.unwrap_or_default()),
+            levels.is_some(),
+            motion::ENTER,
+            window,
+            cx,
+        );
+        let look = wave::look(levels.is_some(), shown);
+        let split = if c.duration > 0.0 {
+            (position / c.duration).clamp(0.0, 1.0) as f32
+        } else {
+            0.0
+        };
+        // The slider stays on top for the click and the drag; its own bar fades out.
         let slider = Slider::new(&self.slider)
             .disabled(!has_track)
-            .bg(pal.accent)
+            .bg(Hsla {
+                a: pal.accent.a * look.plain,
+                ..pal.accent
+            })
             .text_color(pal.fg);
+        let height = if self.inline { WAVE_INLINE } else { WAVE };
+        let slider = div()
+            .relative()
+            .w_full()
+            .when_some(levels.filter(|_| look.wave > 0.0), |d, levels| {
+                d.child(waveform(levels, split, height, look.wave, pal))
+            })
+            .child(slider);
         if self.inline {
             let times = crate::playbar::parts(&self.shared, window, cx).times;
             // fixed widths: the slider does not shift when 9:59 becomes 10:00; the elapsed time

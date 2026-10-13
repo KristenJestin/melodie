@@ -2,6 +2,7 @@
 //! Omarchy's theme, the window's appearance.
 
 use crate::cover_cache::CoverCache;
+use crate::wave_cache::WaveCache;
 use futures::StreamExt as _;
 use gpui_kit::component::{Theme, ThemeMode};
 use gpui_kit::*;
@@ -90,6 +91,8 @@ pub struct Shared {
     /// The cover files of the whole window: the queue, the player and the library views ask
     /// it, and it fetches what is missing.
     pub covers: Entity<CoverCache>,
+    /// The waveforms of the progress bar: the current track's and the next one's.
+    pub waves: Entity<WaveCache>,
     pub theme: ThemeState,
     /// The desktop asks for dark colours.
     pub dark: bool,
@@ -363,6 +366,7 @@ impl Shared {
                     s.thumbs = Arc::new(found);
                     // the player shows a thumbnail while the daemon fetches its own cover
                     s.follow_cover(cx);
+                    s.follow_waves(cx);
                     cx.notify();
                 }
             });
@@ -371,6 +375,22 @@ impl Shared {
     }
 
     /// After the player changed: load the new cover if there is one.
+    /// After the player changed: the waveforms of the current track and of the next one.
+    fn follow_waves(&mut self, cx: &mut Context<Self>) {
+        let Some(current) = self.player.current else {
+            return;
+        };
+        let ids: Vec<String> = self
+            .player
+            .tracks
+            .iter()
+            .skip(current)
+            .take(2)
+            .map(|t| t.id.clone())
+            .collect();
+        self.waves.update(cx, |w, cx| w.want(ids, cx));
+    }
+
     fn follow_cover(&mut self, cx: &mut Context<Self>) {
         let cover = self
             .player
@@ -503,6 +523,10 @@ pub fn start(
         let scale = window.scale_factor();
         move |_| CoverCache::new(env, scale)
     });
+    let waves = cx.new({
+        let env = env.clone();
+        move |_| WaveCache::new(env)
+    });
     let shared = cx.new(|_| Shared {
         player: Player::default(),
         art: Art::default(),
@@ -510,6 +534,7 @@ pub fn start(
         thumbs_of: None,
         thumbs_gen: 0,
         covers: covers.clone(),
+        waves,
         theme,
         dark: is_dark(window.appearance()),
         queue_open: settings.queue,
