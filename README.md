@@ -385,7 +385,13 @@ result), `--size N` (50 by default).
 | --- | --- | --- | --- |
 | `no-login` | no secret or no configuration | "Pas connecté : lance `melodie login`", code 1 | entry "Se connecter à Navidrome" (`xdg-terminal-exec melodie login`), code 0 |
 | `auth-refused` | `status="failed"`, Subsonic code 40 to 44 | same (handled like `no-login`), code 1 | same |
-| `unreachable` | network, 8 s timeout, HTTP not 200, invalid JSON, other Subsonic error | "Serveur injoignable", code 2, never asks to log in again | entry "Navidrome injoignable" (subtitle: the address), code 0 |
+| `unreachable` | network, 8 s timeout, HTTP 502 to 504 (a proxy without its server), invalid JSON, other Subsonic error | "Serveur injoignable", code 2, never asks to log in again | entry "Navidrome injoignable" (subtitle: the address), code 0 |
+
+**An HTTP refusal is not a connection state either.** Any other HTTP answer than 200 (a 414
+from a proxy, a 500 from the server) means the server answered: it is reported as an error (code
+3, entry `error`), never as `unreachable`. The playlist writes that carry a list of tracks
+(`playlist add`, `remove`, `move`, `create`, `duplicates --remove`) post their parameters as a
+form (OpenSubsonic `formPost`), so a long playlist does not make a URL too long for a proxy.
 
 **Not found is not a connection state.** When the server answers Subsonic code 70 ("data not
 found", e.g. an album id it does not have), it is reachable and accepted the token: the item is

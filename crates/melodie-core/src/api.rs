@@ -88,6 +88,9 @@ pub enum ApiError {
     /// Panne réseau, délai dépassé, HTTP non 200, JSON invalide, ou autre erreur
     /// Subsonic sans rapport avec l'authentification.
     Unreachable(String),
+    /// The server (or a proxy before it) answered, but turned the request down over HTTP: asking
+    /// again will not help, and the server is not unreachable.
+    Http(String),
 }
 
 impl fmt::Display for ApiError {
@@ -96,6 +99,7 @@ impl fmt::Display for ApiError {
             ApiError::AuthRefused(m) => write!(f, "authentification refusée : {m}"),
             ApiError::NotFound(m) => write!(f, "introuvable sur le serveur : {m}"),
             ApiError::Unreachable(m) => write!(f, "serveur injoignable : {m}"),
+            ApiError::Http(m) => write!(f, "the server turned the request down: {m}"),
         }
     }
 }
@@ -236,18 +240,32 @@ impl Client {
         }
     }
 
-    /// Envoie une requête et renvoie la réponse HTTP (statut 200 vérifié).
-    fn send(&self, method: &str, extra: &[(&str, String)]) -> Result<ureq::Response, ApiError> {
+    /// Envoie une requête et renvoie la réponse HTTP (statut 200 vérifié). With `form`, the
+    /// parameters go in a posted form (OpenSubsonic `formPost`) rather than in the URL.
+    fn send(
+        &self,
+        method: &str,
+        extra: &[(&str, String)],
+        form: bool,
+    ) -> Result<ureq::Response, ApiError> {
         let req = self.request(method, extra);
-        let mut r = self.agent.get(&req.endpoint());
-        for (k, v) in req.params() {
-            r = r.query(k, v);
-        }
-        let resp = match r.call() {
-            Ok(resp) => resp,
-            Err(ureq::Error::Status(code, _)) => {
-                return Err(ApiError::Unreachable(format!("{method} : HTTP {code}")));
+        let sent = if form {
+            let pairs: Vec<(&str, &str)> = req
+                .params()
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect();
+            self.agent.post(&req.endpoint()).send_form(&pairs)
+        } else {
+            let mut r = self.agent.get(&req.endpoint());
+            for (k, v) in req.params() {
+                r = r.query(k, v);
             }
+            r.call()
+        };
+        let resp = match sent {
+            Ok(resp) => resp,
+            Err(ureq::Error::Status(code, _)) => return Err(http_failure(method, code)),
             Err(ureq::Error::Transport(t)) => {
                 // `Display` de `Transport` contient l'URL : on n'en garde que le genre.
                 let detail = format!("{method} : {}", t.kind());
@@ -255,10 +273,7 @@ impl Client {
             }
         };
         if resp.status() != 200 {
-            return Err(ApiError::Unreachable(format!(
-                "{method} : HTTP {}",
-                resp.status()
-            )));
+            return Err(http_failure(method, resp.status()));
         }
         Ok(resp)
     }
@@ -274,7 +289,22 @@ impl Client {
 
     /// Appelle une méthode et renvoie le contenu de `subsonic-response`.
     pub fn call(&self, method: &str, extra: &[(&str, String)]) -> Result<Value, ApiError> {
-        let resp = self.send(method, extra)?;
+        self.answer(method, extra, false)
+    }
+
+    /// `call`, the parameters in a posted form: for the calls that carry a list of ids, which in
+    /// a URL would grow past what a proxy accepts (HTTP 414).
+    pub fn post(&self, method: &str, extra: &[(&str, String)]) -> Result<Value, ApiError> {
+        self.answer(method, extra, true)
+    }
+
+    fn answer(
+        &self,
+        method: &str,
+        extra: &[(&str, String)],
+        form: bool,
+    ) -> Result<Value, ApiError> {
+        let resp = self.send(method, extra, form)?;
         let body = self.read_body(method, resp, MAX_BODY)?;
         let value: Value = serde_json::from_slice(&body)
             .map_err(|_| ApiError::Unreachable(format!("{method} : réponse JSON invalide")))?;
@@ -283,7 +313,7 @@ impl Client {
 
     /// Télécharge un contenu binaire (pochette). Une réponse JSON est une erreur Subsonic.
     pub fn fetch(&self, method: &str, extra: &[(&str, String)]) -> Result<Vec<u8>, ApiError> {
-        let resp = self.send(method, extra)?;
+        let resp = self.send(method, extra, false)?;
         let body = self.read_body(method, resp, MAX_IMAGE)?;
         if body.first() == Some(&b'{')
             && let Ok(v) = serde_json::from_slice::<Value>(&body)
@@ -313,6 +343,16 @@ impl Client {
     /// `ping.view` : vérifie l'adresse et les identifiants.
     pub fn ping(&self) -> Result<(), ApiError> {
         self.call("ping", &[]).map(|_| ())
+    }
+}
+
+/// An HTTP answer other than 200: the server answered, so it is not unreachable, unless a proxy
+/// says the server behind it is (502, 503, 504).
+fn http_failure(method: &str, code: u16) -> ApiError {
+    let detail = format!("{method} : HTTP {code}");
+    match code {
+        502..=504 => ApiError::Unreachable(detail),
+        _ => ApiError::Http(detail),
     }
 }
 

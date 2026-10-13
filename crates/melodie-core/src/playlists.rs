@@ -61,6 +61,13 @@ fn call(client: &Client, method: &str, extra: &[(&str, String)]) -> Result<Value
         .map_err(|e| state::from_api(e, client.url()))
 }
 
+/// `call` for the writes that carry a list of tracks: hundreds of ids do not fit in a URL.
+fn post(client: &Client, method: &str, extra: &[(&str, String)]) -> Result<Value, Failure> {
+    client
+        .post(method, extra)
+        .map_err(|e| state::from_api(e, client.url()))
+}
+
 /// Applies an edit to a playlist in the local copy, as the server just did it: its counts and
 /// its tracks, together, so a reader never sees one without the other.
 fn edit_local(
@@ -99,7 +106,7 @@ pub fn add(
 ) -> Result<(), Failure> {
     let mut params = vec![("playlistId", pid.to_string())];
     params.extend(tracks.iter().map(|t| ("songIdToAdd", t.id.clone())));
-    call(client, "updatePlaylist", &params)?;
+    post(client, "updatePlaylist", &params)?;
     if let Some(c) = conn {
         edit_local(c, pid, tracks.len() as i64, secs(tracks), at, |ids| {
             ids.extend(tracks.iter().map(|t| t.id.clone()))
@@ -272,7 +279,7 @@ pub fn remove_duplicates(
         gone.iter()
             .map(|d| ("songIndexToRemove", d.index.to_string())),
     );
-    call(client, "updatePlaylist", &params)?;
+    post(client, "updatePlaylist", &params)?;
     if let Some(c) = conn {
         let secs: i64 = gone.iter().map(|d| d.track.duration as i64).sum();
         edit_local(c, pid, -(gone.len() as i64), -secs, at, |ids| {
@@ -345,7 +352,7 @@ pub fn remove_many(
     }
     let mut params = vec![("playlistId", pid.to_string())];
     params.extend(indexes.iter().map(|i| ("songIndexToRemove", i.to_string())));
-    call(client, "updatePlaylist", &params)?;
+    post(client, "updatePlaylist", &params)?;
     if let Some(c) = conn {
         edit_local(c, pid, -(gone.len() as i64), -secs(&gone), at, |ids| {
             let mut i = 0;
@@ -385,7 +392,7 @@ pub fn move_track(
     ids.insert(to, id);
     let mut params = vec![("playlistId", pid.to_string())];
     params.extend(ids.iter().map(|i| ("songId", i.clone())));
-    call(client, "createPlaylist", &params)?;
+    post(client, "createPlaylist", &params)?;
     if let Some(c) = conn {
         edit_local(c, pid, 0, 0, at, |local| {
             if from < local.len() && to < local.len() {
@@ -408,7 +415,7 @@ pub fn create(
 ) -> Result<String, Failure> {
     let mut params = vec![("name", name.to_string())];
     params.extend(tracks.iter().map(|t| ("songId", t.id.clone())));
-    let r = call(client, "createPlaylist", &params)?;
+    let r = post(client, "createPlaylist", &params)?;
     let mut p = r["playlist"].clone();
     let Some(id) = p["id"].as_str().map(str::to_string) else {
         return Err(Failure::Internal(anyhow!(
@@ -1103,6 +1110,50 @@ mod tests {
         assert_eq!(counts(&conn, "p1"), (42, 7500), "same tracks, same counts");
         move_track(&client, Some(&conn), "p1", 3, 0, None, 0).unwrap();
         assert_eq!(server_ids(&fake, "p1"), ["s3", "s1", "s2", "s0"]);
+    }
+
+    #[test]
+    fn moving_a_track_in_a_playlist_of_500_tracks_works() {
+        let (_d, env, fake, client) = setup();
+        let conn = db::open_existing(&env).unwrap().unwrap();
+        // Navidrome's ids are 22 characters long: 500 of them in a URL make a proxy answer 414.
+        let long: Vec<String> = (0..500).map(|i| format!("{i:0>22}")).collect();
+        let list = long
+            .iter()
+            .map(|id| json!({"id": id, "title": id, "artist": "A", "duration": 200}))
+            .collect();
+        fake.state
+            .playlists
+            .lock()
+            .unwrap()
+            .insert("p1".into(), list);
+        let t = move_track(&client, Some(&conn), "p1", 0, 499, Some(&long[0]), 0).unwrap();
+        assert_eq!(t.id, long[0]);
+        let mut want = long[1..].to_vec();
+        want.push(long[0].clone());
+        assert_eq!(server_ids(&fake, "p1"), want);
+        assert_eq!(
+            fake.state.posted.lock().unwrap().as_slice(),
+            ["createPlaylist"],
+            "the ids go in a posted form, not in the URL"
+        );
+    }
+
+    #[test]
+    fn adding_and_removing_hundreds_of_tracks_posts_them() {
+        let (_d, _env, fake, client) = setup();
+        seed(&fake, "p1", &[]);
+        let many: Vec<TrackInfo> = (0..500).map(|i| info(&format!("{i:0>22}"), 200)).collect();
+        add(&client, None, "p1", &many, 0).unwrap();
+        assert_eq!(server_ids(&fake, "p1").len(), 500);
+        let picks: Vec<(usize, Option<&str>)> = (0..400).map(|i| (i, None)).collect();
+        remove_many(&client, None, "p1", &picks, 0).unwrap();
+        assert_eq!(server_ids(&fake, "p1").len(), 100);
+        create(&client, None, "alice", "Big", &many, 0).unwrap();
+        assert_eq!(
+            fake.state.posted.lock().unwrap().as_slice(),
+            ["updatePlaylist", "updatePlaylist", "createPlaylist"]
+        );
     }
 
     #[test]
