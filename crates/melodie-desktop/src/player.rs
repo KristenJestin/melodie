@@ -13,6 +13,7 @@ use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use melodie_core::proto::Request;
+use melodie_desktop::bar;
 use melodie_desktop::figures::clock_text;
 use melodie_desktop::launch::{Adding, Job, Kind};
 use melodie_desktop::layout;
@@ -457,6 +458,7 @@ impl Render for Bar {
             let time = |t: f64| div().w(px(40.)).flex_none().child(clock_text(t));
             return h_flex()
                 .w_full()
+                .h(px(bar::POSITION))
                 .gap_2()
                 .items_center()
                 .text_xs()

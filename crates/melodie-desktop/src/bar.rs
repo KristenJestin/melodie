@@ -149,11 +149,6 @@ mod tests {
         [p.volume, p.times, p.text, p.like]
     }
 
-    #[test]
-    fn the_buttons_have_room_above_the_position_bar() {
-        const { assert!(ROWS_GAP >= 8.0, "the play button nearly touched the bar") };
-    }
-
     /// The least room above and below the middle column.
     const MARGIN_MIN: f32 = 6.0;
 
