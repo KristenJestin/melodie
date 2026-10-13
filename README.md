@@ -124,7 +124,8 @@ Screenshots and a recording of the animations, made with invented data, are in
   - **Playlists**: the + beside "Playlists" in the sidebar creates one. The page of one of the
     user's playlists (other people's are only read) also renames it, deletes it (after a
     confirmation that says what goes), and finds its duplicates: they are listed (the exact ones,
-    which go, and the likely ones, which stay) before "Remove" removes the exact ones. On its rows,
+    which go, and the likely ones, which stay) before "Remove" removes the exact ones shown, by
+    rank, each checked to still hold the track shown (`playlist remove --expect`). On its rows,
     a button removes the track; a row dragged onto another moves it there.
   - **Picking rows**: Ctrl+click picks a track, Shift+click the tracks between the last one
     picked and this one (in Tracks, an album, a playlist). A bar then adds them to a playlist, or
@@ -136,7 +137,7 @@ Screenshots and a recording of the animations, made with invented data, are in
     there) or add them anyway.
   - Actions run `melodie` (`play`, `queue`, `mix`, `playlist add|create|rename|delete|remove|move|
     duplicates`): what needs the server still goes through it, and the window reads the local copy
-    again when it is done. Covers come from `~/.cache/melodie/covers/` (the 128 px thumbnails
+    again when it is done. The jobs of one playlist run one after the other, in the order asked. Covers come from `~/.cache/melodie/covers/` (the 128 px thumbnails
     first); the missing ones are fetched by `melodie cover-fetch`, in the background.
   - At the bottom, what plays: play or pause, next; a click opens the player.
 - **The search**, first in the sidebar: one field, and as you type the artists, albums, tracks and
@@ -316,7 +317,10 @@ connection states (see below), with a notification.
 - `melodie playlist move [--expect <id>] <playlistId> <from> <to>`: moves the track at rank
   `from` to rank `to` (from 1). Subsonic has no move: the whole order is written again by
   `createPlaylist` with the `playlistId` (Navidrome replaces the tracks and keeps the playlist,
-  its name and its owner). `--expect` as for `remove`.
+  its name and its owner). `--expect` as for `remove`. Nothing is written when the playlist changed
+  between the read the new order comes from and the write (it is read again just before), or when
+  the server lists fewer tracks than its `songCount` (Navidrome leaves out the tracks whose file is
+  missing, and rewriting the playlist would drop them).
 - `melodie playlist create <name> [current | track <id> | album <id>]`,
   `playlist rename <id> <name…>`, `playlist delete <id>` (no confirmation).
   `create --prompt [target]` asks for the name on the keyboard (for `xdg-terminal-exec`).
