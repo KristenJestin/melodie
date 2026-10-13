@@ -81,6 +81,9 @@ pub fn track_header(
                     .cursor_pointer()
                     .text_color(if on.is_some() { pal.fg } else { pal.secondary })
                     .hover(|st| st.text_color(pal.fg))
+                    // the window's root takes the focus from any press that reaches it: sorting
+                    // must not take it from the search field
+                    .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                     .on_click(move |_, _, cx| pick(table::clicked(sort, col), cx))
                     .child(col.label())
                     .when_some(on, |d, s| {
@@ -699,5 +702,82 @@ impl Render for ArtistList {
             ))
             .child(artist_header(sort, pal, self.catalog.clone()))
             .child(body)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // not `super::*`: it would bring the `test` macro of GPUI along
+    use super::track_header;
+    use crate::albums::PAD;
+    use gpui_kit::{
+        Context, Entity, FocusHandle, InteractiveElement as _, IntoElement, Modifiers,
+        ParentElement as _, Render, Styled as _, TestAppContext, Window, div, point, px,
+    };
+    use melodie_desktop::table::{Cols, Table};
+    use melodie_desktop::theme::Palette;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    const FIELD: f32 = 44.;
+
+    /// The search page's shape: the window's root, which takes the focus when it is clicked, a
+    /// field above, and the header of the tracks under it.
+    struct Page {
+        root: FocusHandle,
+        field: FocusHandle,
+        cols: Cols,
+        sorted: Rc<Cell<u32>>,
+    }
+
+    impl Render for Page {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let sorted = self.sorted.clone();
+            div()
+                .id("root")
+                .track_focus(&self.root)
+                .size_full()
+                .child(
+                    div()
+                        .id("field")
+                        .track_focus(&self.field)
+                        .h(px(FIELD))
+                        .w_full(),
+                )
+                .child(track_header(
+                    &self.cols,
+                    false,
+                    None,
+                    Palette::base(None, true),
+                    move |_, _| sorted.set(sorted.get() + 1),
+                ))
+        }
+    }
+
+    #[test]
+    fn sorting_the_tracks_keeps_the_fields_focus() {
+        let mut app = TestAppContext::single();
+        let sorted = Rc::new(Cell::new(0));
+        let (page, cx): (Entity<Page>, _) = app.add_window_view(|_, cx| Page {
+            root: cx.focus_handle(),
+            field: cx.focus_handle(),
+            cols: Table::Search.cols(1200.),
+            sorted: sorted.clone(),
+        });
+        let field = page.read_with(cx, |p, _| p.field.clone());
+        cx.update(|window, cx| window.focus(&field, cx));
+        cx.run_until_parked();
+        assert!(
+            cx.update(|window, _| field.is_focused(window)),
+            "the field starts with the focus"
+        );
+
+        // on the first column's title, in the header under the field
+        cx.simulate_click(point(px(PAD + 8. + 3.), px(FIELD + 16.)), Modifiers::none());
+        assert_eq!(sorted.get(), 1, "the click reached the header");
+        assert!(
+            cx.update(|window, _| field.is_focused(window)),
+            "the field lost the focus to the click"
+        );
     }
 }
