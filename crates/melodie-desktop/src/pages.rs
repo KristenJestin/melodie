@@ -145,7 +145,7 @@ impl Render for HomeView {
             let c = self.catalog.read(cx);
             (c.home.clone(), c.covers.clone(), c.empty)
         };
-        let width = content_width(window);
+        let width = content_width(window, &self.shared, cx);
         let catalog = &self.catalog;
         let Some(home) = home else {
             return div().size_full().child(empty_state(empty, "", pal));
@@ -477,7 +477,7 @@ impl Render for PageView {
             self.tracks.scroll_to_item(0, ScrollStrategy::Top);
             self.shown = Some(here.clone());
         }
-        let width = content_width(window);
+        let width = content_width(window, &self.shared, cx);
         let cols = |c: Cols| c.fit(width);
         let catalog = &self.catalog;
         let back = {

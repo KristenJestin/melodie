@@ -85,6 +85,8 @@ pub struct Shared {
     pub theme: ThemeState,
     /// The desktop asks for dark colours.
     pub dark: bool,
+    /// The queue is shown: a column beside the main area, or over it on a narrow window. Kept
+    /// between launches.
     pub queue_open: bool,
     pub settings_open: bool,
     /// A failed action, said for a few seconds.
@@ -290,13 +292,24 @@ impl Shared {
 
     pub fn choose(&mut self, choice: Choice, cx: &mut Context<Self>) {
         self.theme.stored = Some(choice);
-        let settings = Settings {
-            theme: Some(choice),
-        };
-        if let Err(e) = settings.save(&self.env) {
+        if let Err(e) = Settings::update(&self.env, |s| s.theme = Some(choice)) {
             self.fail(format!("Could not keep the choice: {e:#}"), cx);
         }
         apply_component_theme(self.target_palette(), cx);
+        cx.notify();
+    }
+
+    /// Shows or hides the queue: the one action behind its buttons and its key.
+    pub fn toggle_queue(&mut self, cx: &mut Context<Self>) {
+        self.settings_open = false;
+        self.show_queue(!self.queue_open, cx);
+    }
+
+    pub fn show_queue(&mut self, shown: bool, cx: &mut Context<Self>) {
+        self.queue_open = shown;
+        if let Err(e) = Settings::update(&self.env, |s| s.queue = shown) {
+            self.fail(format!("Could not keep the queue's place: {e:#}"), cx);
+        }
         cx.notify();
     }
 
@@ -450,8 +463,9 @@ pub fn start(
 ) -> (Entity<Shared>, Entity<Clock>) {
     let omarchy = Omarchy::system(&env);
     let detected = omarchy.detected();
+    let settings = Settings::load(&env);
     let theme = ThemeState {
-        stored: Settings::load(&env).theme,
+        stored: settings.theme,
         detected,
         palette: detected.then(|| omarchy.read().ok()).flatten(),
         omarchy,
@@ -464,7 +478,7 @@ pub fn start(
         thumbs_of: None,
         theme,
         dark: is_dark(window.appearance()),
-        queue_open: false,
+        queue_open: settings.queue,
         settings_open: false,
         failure: None,
         failures: 0,

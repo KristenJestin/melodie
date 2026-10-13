@@ -13,6 +13,8 @@ pub enum Key {
     Escape,
     Space,
     Enter,
+    /// The `q` character: shows or hides the queue.
+    Queue,
     Other,
 }
 
@@ -29,6 +31,8 @@ impl Key {
             Self::Space
         } else if key == "enter" {
             Self::Enter
+        } else if !ctrl && key_char == Some("q") {
+            Self::Queue
         } else {
             Self::Other
         }
@@ -41,7 +45,7 @@ pub struct Situation<'a> {
     pub here: &'a Place,
     /// The search field has the window focus.
     pub field_focused: bool,
-    /// The queue or the settings card is open.
+    /// The settings card is open, or the queue is shown over the main area (a narrow window).
     pub overlay_open: bool,
     /// A dialog (a playlist to choose, a name, a confirmation) is open: it is modal.
     pub dialog_open: bool,
@@ -66,6 +70,8 @@ pub enum Act {
     ClearField,
     Back,
     PlayPause,
+    /// Show or hide the queue.
+    ToggleQueue,
     /// Not ours: the key goes on (typed in the field).
     Pass,
 }
@@ -106,6 +112,7 @@ pub fn act(key: Key, s: Situation) -> Act {
         Key::Escape if *s.here == Place::Search && !s.field_empty => Act::ClearField,
         Key::Escape => Act::Back,
         Key::Space if !typing => Act::PlayPause,
+        Key::Queue if !typing => Act::ToggleQueue,
         _ => Act::Pass,
     }
 }
@@ -252,7 +259,37 @@ mod tests {
     }
 
     #[test]
+    fn q_shows_or_hides_the_queue_unless_it_is_typed() {
+        for here in [Place::Player, Place::Albums, Place::Search] {
+            assert_eq!(act(Key::Queue, at(&here, false)), Act::ToggleQueue);
+        }
+        // in the search field it is a letter
+        assert_eq!(act(Key::Queue, at(&Place::Search, true)), Act::Pass);
+        // the field kept the focus when a sidebar entry was clicked
+        assert_eq!(act(Key::Queue, at(&Place::Albums, true)), Act::ToggleQueue);
+        // shown over a narrow window, the same key hides it
+        let over = Situation {
+            overlay_open: true,
+            ..at(&Place::Home, false)
+        };
+        assert_eq!(act(Key::Queue, over), Act::ToggleQueue);
+        // a dialog and the sign-in screen keep it
+        let dialog = Situation {
+            dialog_open: true,
+            ..at(&Place::Home, false)
+        };
+        assert_eq!(act(Key::Queue, dialog), Act::Pass);
+        let covered = Situation {
+            sign_in: true,
+            ..at(&Place::Home, false)
+        };
+        assert_eq!(act(Key::Queue, covered), Act::Pass);
+    }
+
+    #[test]
     fn keys_are_read_from_the_keystroke() {
+        assert_eq!(Key::read(false, "q", Some("q")), Key::Queue);
+        assert_eq!(Key::read(true, "q", Some("q")), Key::Other);
         assert_eq!(Key::read(true, "f", Some("f")), Key::Find);
         assert_eq!(Key::read(false, "f", Some("f")), Key::Other);
         assert_eq!(Key::read(false, "/", Some("/")), Key::Slash);

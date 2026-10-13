@@ -566,7 +566,7 @@ impl Render for TrackList {
             plays: true,
             edit: false,
         }
-        .fit(content_width(window));
+        .fit(content_width(window, &self.shared, cx));
         let selection = self.catalog.read(cx).selection.clone();
         let catalog = self.catalog.clone();
         let header = track_header(cols, Some(sort), pal, move |s, cx| {
