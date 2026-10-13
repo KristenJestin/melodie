@@ -2,14 +2,14 @@
 //! kind on a page of its own. The local copy is read away from the window's thread, and the
 //! answer to an older keystroke is dropped (`find::Latest`).
 
-use crate::albums::{PAD, cover_box, empty_state};
+use crate::albums::{PAD, content_width, cover_box, empty_state};
 use crate::app::Shared;
 use crate::catalog::{Catalog, Empty};
 use crate::context_menu::Menued as _;
 use crate::dialogs::{self, Dialog};
 use crate::motion;
 use crate::player::palette;
-use crate::tables::row_button;
+use crate::tables::{RowCtx, row_button, track_header, track_row};
 use crate::widgets::IconButton;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
@@ -24,7 +24,9 @@ use melodie_desktop::covers::{Covers, Use};
 use melodie_desktop::find::{self, Action, Answer, Latest};
 use melodie_desktop::launch::{Adding, Kind};
 use melodie_desktop::menu::{Item, Spot};
+use melodie_desktop::table::{self as track_table, ColSort, Shown, Table};
 use melodie_desktop::theme::Palette;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -45,6 +47,10 @@ pub struct SearchView {
     empty: Empty,
     scroll: ScrollHandle,
     all: UniformListScrollHandle,
+    /// How the tracks found are sorted, in the groups (`Place::Search`) and on their own page.
+    sorts: HashMap<Place, ColSort>,
+    /// The tracks found as their tables show them, by place.
+    tables: HashMap<Place, Shown>,
     /// The step of the place last seen, to focus the field when the search is opened.
     step: u64,
     _subs: Vec<Subscription>,
@@ -106,6 +112,8 @@ impl SearchView {
             empty: Empty::Loading,
             scroll: ScrollHandle::new(),
             all: UniformListScrollHandle::new(),
+            sorts: HashMap::new(),
+            tables: HashMap::new(),
             step: 0,
             _subs: subs,
         }
@@ -161,6 +169,7 @@ impl SearchView {
                     Ok(Some(a)) => {
                         this.want_covers(&a, cx);
                         this.answer = Some(Arc::new(a));
+                        this.tabulate();
                         this.empty = Empty::Loading;
                     }
                     Ok(None) => this.empty = Empty::NoCopy,
@@ -173,6 +182,49 @@ impl SearchView {
             });
         })
         .detach();
+    }
+
+    /// The tracks of the answer as their tables show them.
+    fn tabulate(&mut self) {
+        self.tables.clear();
+        let Some(a) = &self.answer else { return };
+        let grouped = a.groups.iter().find(|g| g.kind == search::Kind::Track);
+        let all = a.all.as_ref().filter(|(k, _)| *k == Kind::Track);
+        let lists = [
+            (Place::Search, grouped.map(|g| &g.hits[..])),
+            (Place::Found(Kind::Track), all.map(|(_, hits)| &hits[..])),
+        ];
+        for (place, hits) in lists {
+            if let Some(hits) = hits {
+                let tracks = hits.iter().map(track_table::track_of).collect();
+                let shown = Shown::new(tracks, self.sorts.get(&place).copied());
+                self.tables.insert(place, shown);
+            }
+        }
+    }
+
+    fn sort(&mut self, place: Place, sort: Option<ColSort>, cx: &mut Context<Self>) {
+        match sort {
+            Some(s) => self.sorts.insert(place, s),
+            None => self.sorts.remove(&place),
+        };
+        self.tabulate();
+        cx.notify();
+    }
+
+    /// The header of the tracks found at `place`.
+    fn header(
+        &self,
+        place: Place,
+        cols: &[track_table::Col],
+        pal: Palette,
+        cx: &Context<Self>,
+    ) -> Div {
+        let sort = self.tables.get(&place).and_then(|s| s.sort);
+        let this = cx.entity().downgrade();
+        track_header(cols, false, sort, pal, move |s, cx| {
+            let _ = this.update(cx, |v, cx| v.sort(place.clone(), s, cx));
+        })
     }
 
     /// The covers of what is shown; of every track only those known already (there may be
@@ -347,6 +399,28 @@ fn result_row(
         )
 }
 
+/// The title of every result of one kind.
+fn found_title(kind: Kind, n: usize, text: &str, pal: Palette) -> Div {
+    h_flex()
+        .px(px(PAD))
+        .pb_2()
+        .gap_3()
+        .items_baseline()
+        .child(
+            div()
+                .text_2xl()
+                .font_weight(FontWeight::BOLD)
+                .text_color(pal.fg)
+                .child(kind_title(kind.into())),
+        )
+        .child(
+            div()
+                .text_sm()
+                .text_color(pal.secondary)
+                .child(format!("{n} for “{text}”")),
+        )
+}
+
 fn hint(id: &'static str, text: String, pal: Palette) -> AnyElement {
     div()
         .id(id)
@@ -389,6 +463,8 @@ impl Render for SearchView {
             })
             .child(div().flex_1().min_w_0().child(self.field.clone()));
         let answer = self.answer.clone().filter(|_| !text.trim().is_empty());
+        let cols = Table::Search.cols(content_width(window, &self.shared, cx));
+        let tracks = self.tables.get(&Place::Search);
         let body: AnyElement = match (&here, answer) {
             _ if text.trim().is_empty() => hint(
                 "search-hint",
@@ -396,6 +472,33 @@ impl Render for SearchView {
                 pal,
             ),
             (_, None) => empty_state(self.empty, "", pal).into_any_element(),
+            (Place::Found(Kind::Track), Some(a)) => match self.tables.get(&here).cloned() {
+                None => div().into_any_element(),
+                Some(shown) => {
+                    let c = catalog.clone();
+                    let sorted = shown.sort.is_some();
+                    let header = self.header(here.clone(), &cols, pal, cx);
+                    let rows = cols.clone();
+                    v_flex()
+                        .size_full()
+                        .child(found_title(Kind::Track, shown.len(), &a.text, pal))
+                        .child(header)
+                        .child(
+                            uniform_list("search-all", shown.len(), move |range, _, _| {
+                                range
+                                    .filter_map(|ix| {
+                                        let (rank, t) = shown.row(ix)?;
+                                        let row = RowCtx::plain(rank, sorted);
+                                        Some(track_row("search-all", ix, t, &rows, pal, &c, row))
+                                    })
+                                    .collect()
+                            })
+                            .track_scroll(&self.all)
+                            .flex_1(),
+                        )
+                        .into_any_element()
+                }
+            },
             (Place::Found(kind), Some(a)) => match a.all.as_ref().filter(|(k, _)| k == kind) {
                 None => div().into_any_element(),
                 Some((kind, hits)) => {
@@ -403,25 +506,7 @@ impl Render for SearchView {
                     let c = catalog.clone();
                     v_flex()
                         .size_full()
-                        .child(
-                            h_flex()
-                                .px(px(PAD))
-                                .pb_2()
-                                .gap_3()
-                                .items_baseline()
-                                .child(
-                                    div()
-                                        .text_2xl()
-                                        .font_weight(FontWeight::BOLD)
-                                        .text_color(pal.fg)
-                                        .child(kind_title((*kind).into())),
-                                )
-                                .child(div().text_sm().text_color(pal.secondary).child(format!(
-                                    "{} for “{}”",
-                                    hits.len(),
-                                    a.text
-                                ))),
-                        )
+                        .child(found_title(*kind, hits.len(), &a.text, pal))
                         .child(
                             uniform_list("search-all", hits.len(), move |range, _, _| {
                                 range
@@ -491,12 +576,24 @@ impl Render for SearchView {
                                     )
                                 }),
                         )
-                        .children(
-                            g.hits
-                                .iter()
-                                .enumerate()
-                                .map(|(ix, h)| result_row(list, ix, h, &covers, pal, catalog)),
-                        )
+                        .map(|d| match tracks.filter(|_| g.kind == search::Kind::Track) {
+                            // the tracks are a track table, as everywhere
+                            Some(shown) => {
+                                let sorted = shown.sort.is_some();
+                                d.child(self.header(Place::Search, &cols, pal, cx))
+                                    .children((0..shown.len()).filter_map(|ix| {
+                                        let (rank, t) = shown.row(ix)?;
+                                        let row = RowCtx::plain(rank, sorted);
+                                        Some(track_row(list, ix, t, &cols, pal, catalog, row))
+                                    }))
+                            }
+                            None => d.children(
+                                g.hits
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(ix, h)| result_row(list, ix, h, &covers, pal, catalog)),
+                            ),
+                        })
                 }))
                 .with_animation("search-groups", motion::enter(), |el, t| el.opacity(t))
                 .into_any_element(),

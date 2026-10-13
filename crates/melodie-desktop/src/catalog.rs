@@ -8,9 +8,7 @@ use crate::home_page::{CIRCLE, SQUARE};
 use gpui_kit::*;
 use melodie_core::db;
 use melodie_core::env::Env;
-use melodie_core::library::{
-    self as lib, Album, AlbumBy, Artist, ArtistBy, Playlist, Sort, Track, TrackBy,
-};
+use melodie_core::library::{self as lib, Album, AlbumBy, Artist, ArtistBy, Playlist, Sort, Track};
 use melodie_core::store;
 use melodie_core::time::now_secs;
 use melodie_desktop::browse::{Nav, Place};
@@ -18,6 +16,7 @@ use melodie_desktop::covers::{Files, Use};
 use melodie_desktop::home::{self, Highlight, Home, Row};
 use melodie_desktop::launch::{self, Job};
 use melodie_desktop::selection::{How, Selection};
+use melodie_desktop::table::{self, ColSort, Shown};
 use melodie_desktop::theme::Tint;
 use melodie_desktop::tint;
 use rusqlite::Connection;
@@ -70,8 +69,12 @@ pub struct Catalog {
     pub album_sort: Sort<AlbumBy>,
     pub artists: Option<Arc<[Artist]>>,
     pub artist_sort: Sort<ArtistBy>,
-    pub tracks: Option<Arc<[Track]>>,
-    pub track_sort: Sort<TrackBy>,
+    /// The library's tracks are sorted as the local copy is read.
+    pub track_sort: Option<ColSort>,
+    /// How each list of tracks is sorted for the view, by place, while it is on the way back.
+    sorts: HashMap<Place, ColSort>,
+    /// Each list of tracks as its table shows it, by place.
+    pub views: HashMap<Place, Shown>,
     home: Option<Home>,
     /// What the home shows, from what it read and the playlists.
     pub home_view: Option<Arc<home::View>>,
@@ -113,8 +116,9 @@ impl Catalog {
             album_sort: Sort::desc(AlbumBy::Added),
             artists: None,
             artist_sort: Sort::asc(ArtistBy::Name),
-            tracks: None,
-            track_sort: Sort::asc(TrackBy::Artist),
+            track_sort: None,
+            sorts: HashMap::new(),
+            views: HashMap::new(),
             home: None,
             home_view: None,
             tints: Arc::default(),
@@ -203,11 +207,34 @@ impl Catalog {
         cx.notify();
     }
 
-    pub fn sort_tracks(&mut self, sort: Sort<TrackBy>, cx: &mut Context<Self>) {
-        self.track_sort = sort;
+    /// Sorts the view of the list of tracks at `place`; the list itself never changes.
+    pub fn sort_tracks(&mut self, place: Place, sort: Option<ColSort>, cx: &mut Context<Self>) {
         self.selection.clear();
-        self.load_tracks(cx);
+        if place == Place::Tracks {
+            self.track_sort = sort;
+            self.load_tracks(cx);
+        } else {
+            match sort {
+                Some(s) => self.sorts.insert(place.clone(), s),
+                None => self.sorts.remove(&place),
+            };
+            self.show(&place);
+        }
         cx.notify();
+    }
+
+    /// The view of the tracks of the page at `place`, sorted as asked.
+    fn show(&mut self, place: &Place) {
+        let tracks = match self.pages.get(place).map(Arc::as_ref) {
+            Some(Page::Album { tracks, .. } | Page::Playlist { tracks, .. }) => tracks.clone(),
+            Some(Page::Artist { top, .. }) => top.clone(),
+            _ => {
+                self.views.remove(place);
+                return;
+            }
+        };
+        let shown = Shown::new(tracks, self.sorts.get(place).copied());
+        self.views.insert(place.clone(), shown);
     }
 
     /// The playlists the user may add to.
@@ -245,17 +272,9 @@ impl Catalog {
         cx.notify();
     }
 
-    /// The tracks of the list shown at the current place.
-    pub fn shown_tracks(&self) -> Option<Arc<[Track]>> {
-        match self.here() {
-            Place::Tracks => self.tracks.clone(),
-            here => match self.pages.get(here).map(Arc::as_ref) {
-                Some(Page::Album { tracks, .. } | Page::Playlist { tracks, .. }) => {
-                    Some(tracks.clone())
-                }
-                _ => None,
-            },
-        }
+    /// The list of tracks shown at the current place, as its table shows it.
+    pub fn shown(&self) -> Option<&Shown> {
+        self.views.get(self.here())
     }
 
     /// Runs `melodie` to change a playlist, then reads the playlists and the current place again
@@ -322,7 +341,8 @@ impl Catalog {
             to,
             track,
         };
-        self.pages.insert(here, Arc::new(page));
+        self.pages.insert(here.clone(), Arc::new(page));
+        self.show(&here);
         self.selection.clear();
         cx.notify();
         self.edit(job, Some(String::new()), cx);
@@ -517,10 +537,11 @@ impl Catalog {
         self.load(
             "tracks",
             cx,
-            move |c| lib::tracks(c, sort),
+            move |c| lib::tracks(c, table::library_sort(sort)),
             move |this, list, _| {
                 if this.track_sort == sort {
-                    this.tracks = Some(list.into());
+                    let shown = Shown::read_sorted(list.into(), sort);
+                    this.views.insert(Place::Tracks, shown);
                 }
             },
         );
@@ -574,7 +595,11 @@ impl Catalog {
                 // Only the pages on the way back are kept.
                 let kept: Vec<Place> = this.nav.places().to_vec();
                 this.pages.retain(|p, _| kept.contains(p));
-                this.pages.insert(key, Arc::new(page));
+                this.sorts.retain(|p, _| kept.contains(p));
+                this.views
+                    .retain(|p, _| *p == Place::Tracks || kept.contains(p));
+                this.pages.insert(key.clone(), Arc::new(page));
+                this.show(&key);
             },
         );
     }
