@@ -17,6 +17,7 @@ use gpui_kit::*;
 use melodie_core::db::{self, StarKind};
 use melodie_core::env::Env;
 use melodie_desktop::browse::Place;
+use melodie_desktop::keys::Key;
 use melodie_desktop::launch::{Adding, Kind};
 use melodie_desktop::menu::{
     self, Action, Asks, Chosen, Effect, Focus, Item, ListView, MenuKey, Source, Spot, Target,
@@ -292,6 +293,10 @@ impl ContextMenu {
         cx.notify();
     }
 
+    pub fn is_open(&self) -> bool {
+        self.open.is_some()
+    }
+
     /// Escape, a click or another page while the menu is being looked up: it opens nothing.
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
         if self.asks.pending() {
@@ -314,6 +319,11 @@ impl ContextMenu {
     }
 
     fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // the palette takes the menu's place: the window closes the menu and opens it
+        let m = ev.keystroke.modifiers;
+        if Key::read(m.control, m.shift, &ev.keystroke.key, None) == Key::Palette {
+            return;
+        }
         // the menu keeps the keys while it is open: nothing plays or goes back behind it
         cx.stop_propagation();
         let Some(open) = &self.open else { return };

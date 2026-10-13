@@ -219,6 +219,7 @@ impl Root {
         judge(Situation {
             here: c.here(),
             palette_open: self.views.quick.read(cx).open,
+            menu_open: self.views.menu.read(cx).is_open(),
             field_focused: v.has_focus(window, cx),
             overlay_open: self.queue_place(window, cx).covers() || s.settings_open,
             dialog_open: self.views.dialogs.read(cx).is_open(),
@@ -289,6 +290,12 @@ impl Root {
                     s.send(Request::Toggle, cx)
                 }
             }),
+            Act::CloseMenu => self.views.menu.update(cx, |m, cx| m.close(window, cx)),
+            // the menu first, so that the palette keeps the focus the menu gives back
+            Act::MenuToPalette => {
+                self.views.menu.update(cx, |m, cx| m.close(window, cx));
+                self.views.quick.update(cx, |q, cx| q.toggle(window, cx));
+            }
             Act::TogglePalette => self.views.quick.update(cx, |q, cx| q.toggle(window, cx)),
             Act::PaletteUp => self.views.quick.update(cx, |q, cx| q.step(false, cx)),
             Act::PaletteDown => self.views.quick.update(cx, |q, cx| q.step(true, cx)),

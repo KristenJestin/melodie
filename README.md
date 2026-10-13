@@ -198,6 +198,9 @@ Screenshots and a recording of the animations, made with invented data, are in
   inside the window; the arrows, Enter, Right and Left (the playlists) and Escape work in it; a
   click beside it closes it and goes no further. The menu key or Shift+F10 opens it on the row
   picked (the one clicked last), at the pointer.
+  Ctrl+K with a menu open closes it and opens the search palette; in the palette, a right click
+  opens no menu (beside its card, it closes it, as a left click does), and the menu key does
+  nothing. Escape closes the topmost of the two.
 - **The search palette**: Ctrl+K, from any place, opens a search over the current page (dimmed
   behind), the cursor in its field; Ctrl+K again, Escape, the mouse's back button or a click
   beside it closes it and gives the focus back where it was. It is the search page's search,
