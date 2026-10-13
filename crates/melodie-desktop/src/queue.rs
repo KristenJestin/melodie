@@ -92,12 +92,7 @@ impl Render for QueuePanel {
                             }),
                     )
                     .child(IconButton::new("close-queue", IconName::X, pal).on_click(
-                        move |_, _, cx| {
-                            close.update(cx, |s, cx| {
-                                s.queue_open = false;
-                                cx.notify()
-                            })
-                        },
+                        move |_, _, cx| close.update(cx, |s, cx| s.show_queue(false, cx)),
                     )),
             )
             .child(self.list.clone())
