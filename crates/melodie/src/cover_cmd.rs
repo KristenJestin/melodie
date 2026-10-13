@@ -2,14 +2,14 @@
 //! lancement détaché de `cover-fetch` et sa sous-commande cachée.
 
 use anyhow::{Context, Result};
-use melodie_core::cover::{BUDGET, Local, apply_with, local, spawn_downloads};
+use melodie_core::cover::{BUDGET, LOCKED_EXIT, Local, apply_with, local, spawn_downloads};
 use melodie_core::db;
 use melodie_core::env::Env;
 use serde_json::Value;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::CommandExt;
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitCode, Stdio};
 use std::sync::Arc;
 use std::sync::mpsc::channel;
 use std::time::Duration;
@@ -58,9 +58,9 @@ fn spawn_background(ids: &[String]) -> Result<()> {
 }
 
 /// Sous-commande cachée `cover-fetch` : télécharge les vignettes lues sur l'entrée
-/// standard. Un seul à la fois (verrou), sinon sortie immédiate : les pochettes
-/// manquantes seront redemandées à la frappe suivante.
-pub fn fetch_cmd(env: &Env) -> Result<()> {
+/// standard. Un seul à la fois (verrou), sinon sortie immédiate avec `LOCKED_EXIT` : le
+/// lanceur redemande à la frappe suivante, la fenêtre un peu plus tard.
+pub fn fetch_cmd(env: &Env) -> Result<ExitCode> {
     let dir = db::cache_dir(env).join("covers");
     std::fs::create_dir_all(&dir).with_context(|| format!("création de {}", dir.display()))?;
     let lock = std::fs::OpenOptions::new()
@@ -71,7 +71,7 @@ pub fn fetch_cmd(env: &Env) -> Result<()> {
         .open(dir.join(".fetch.lock"))?;
     // SAFETY : descripteur valide, détenu par `lock`.
     if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        return Ok(());
+        return Ok(ExitCode::from(LOCKED_EXIT));
     }
     let mut input = String::new();
     std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)?;
@@ -83,11 +83,11 @@ pub fn fetch_cmd(env: &Env) -> Result<()> {
         .map(String::from)
         .collect();
     if ids.is_empty() {
-        return Ok(());
+        return Ok(ExitCode::SUCCESS);
     }
     let client = match melodie_core::state::open_client(env) {
         Ok(c) => Arc::new(c),
-        Err(_) => return Ok(()),
+        Err(_) => return Ok(ExitCode::SUCCESS),
     };
     let (tx, rx) = channel();
     let n = ids.len();
@@ -97,5 +97,5 @@ pub fn fetch_cmd(env: &Env) -> Result<()> {
             break;
         }
     }
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }

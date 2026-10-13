@@ -3,6 +3,7 @@
 //! it had while the new answer comes.
 
 use crate::app::Shared;
+use crate::cover_cache::CoverCache;
 use gpui_kit::*;
 use melodie_core::db;
 use melodie_core::env::Env;
@@ -12,12 +13,11 @@ use melodie_core::library::{
 use melodie_core::mix;
 use melodie_core::store;
 use melodie_core::time::now_secs;
-use melodie_desktop::browse::{self, Nav, Place};
+use melodie_desktop::browse::{Nav, Place};
 use melodie_desktop::launch::{self, Job};
 use melodie_desktop::selection::{How, Selection};
 use rusqlite::Connection;
-use std::collections::{HashMap, HashSet};
-use std::io::Write as _;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -75,10 +75,10 @@ pub struct Catalog {
     pub home: Option<Arc<Home>>,
     pub playlists: Arc<[Playlist]>,
     pub pages: HashMap<Place, Arc<Page>>,
-    /// Cover files by cover id, as far as they were looked up.
+    /// Cover files by cover id, as far as they were looked up (a copy of the cache's, which
+    /// the views read without a lock).
     pub covers: Arc<HashMap<String, PathBuf>>,
-    /// Cover ids looked up already (found, fetched or not to be fetched).
-    asked: HashSet<String>,
+    cover_cache: Entity<CoverCache>,
     /// The last read of the local copy failed this way.
     pub empty: Empty,
     /// The user logged in: the playlists that are theirs can be added to.
@@ -93,6 +93,13 @@ impl Catalog {
         let user = store::Settings::load(&env)
             .ok()
             .and_then(|s| s.login().map(|(_, u)| u.to_string()));
+        let cover_cache = shared.read(cx).covers.clone();
+        // a file that lands shows in every view of the catalog, without a restart
+        cx.observe(&cover_cache, |this, cache, cx| {
+            this.covers = cache.read(cx).files.clone();
+            cx.notify();
+        })
+        .detach();
         let mut this = Self {
             env,
             nav: Nav::new(Place::Home),
@@ -106,7 +113,7 @@ impl Catalog {
             playlists: Arc::from([]),
             pages: HashMap::new(),
             covers: Arc::default(),
-            asked: HashSet::new(),
+            cover_cache,
             empty: Empty::Loading,
             user,
             selection: Selection::default(),
@@ -472,69 +479,14 @@ impl Catalog {
         );
     }
 
-    /// Looks up the covers not looked up yet; those with no file are fetched by `melodie
-    /// cover-fetch` (the window never talks to the server), then looked up again.
+    /// Asks for the covers not asked yet (see `CoverCache`); `covers` is filled as they land.
     pub fn want_covers(&mut self, ids: impl IntoIterator<Item = String>, cx: &mut Context<Self>) {
-        let new: Vec<String> = ids
-            .into_iter()
-            .filter(|id| self.asked.insert(id.clone()))
-            .collect();
-        if new.is_empty() {
-            return;
-        }
-        let env = self.env.clone();
-        let task = cx.background_spawn(async move {
-            browse::resolve_covers(&env, new.iter().map(String::as_str))
-        });
-        let env = self.env.clone();
-        cx.spawn(async move |this, cx| {
-            let (found, missing) = task.await;
-            let _ = this.update(cx, |this, cx| this.add_covers(found, cx));
-            if missing.is_empty() {
-                return;
-            }
-            let fetched = cx
-                .background_spawn(async move {
-                    if !fetch_covers(&missing) {
-                        return HashMap::new();
-                    }
-                    browse::resolve_covers(&env, missing.iter().map(String::as_str)).0
-                })
-                .await;
-            let _ = this.update(cx, |this, cx| this.add_covers(fetched, cx));
-        })
-        .detach();
-    }
-
-    fn add_covers(&mut self, found: HashMap<String, PathBuf>, cx: &mut Context<Self>) {
-        if found.is_empty() {
-            return;
-        }
-        let mut map = (*self.covers).clone();
-        map.extend(found);
-        self.covers = Arc::new(map);
-        cx.notify();
+        let ids: Vec<String> = ids.into_iter().collect();
+        self.cover_cache.update(cx, |c, cx| c.want(ids, false, cx));
     }
 
     /// Runs `melodie` for an action; what it says is said in the window.
     pub fn run(&self, job: launch::Job, cx: &mut App) {
         self.shared.update(cx, |s, cx| s.run(job, cx));
     }
-}
-
-/// `melodie cover-fetch` with the ids on its standard input; waits for it. Blocking: run it away
-/// from the window.
-fn fetch_covers(ids: &[String]) -> bool {
-    let program = launch::program(std::env::current_exe().ok().as_deref());
-    let child = std::process::Command::new(program)
-        .arg("cover-fetch")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
-    let Ok(mut child) = child else { return false };
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(ids.join("\n").as_bytes());
-    }
-    child.wait().is_ok_and(|s| s.success())
 }
