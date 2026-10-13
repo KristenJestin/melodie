@@ -15,6 +15,8 @@ pub enum Key {
     Enter,
     /// The `q` character: shows or hides the queue.
     Queue,
+    /// The menu key, or Shift+F10: the menu of the row picked.
+    Menu,
     Other,
 }
 
@@ -36,6 +38,13 @@ impl Key {
         } else {
             Self::Other
         }
+    }
+}
+
+impl Key {
+    /// The keys that open the menu of a row, as a right click does.
+    pub fn opens_menu(shift: bool, key: &str) -> bool {
+        key == "menu" || (shift && key == "f10")
     }
 }
 
@@ -81,6 +90,8 @@ pub enum Act {
     PlayPause,
     /// Show or hide the queue.
     ToggleQueue,
+    /// The menu of the row picked.
+    OpenMenu,
     /// Not ours: the key goes on (typed in the field).
     Pass,
 }
@@ -122,6 +133,7 @@ pub fn act(key: Key, s: Situation) -> Act {
         Key::Escape => Act::Back,
         Key::Space if !typing => Act::PlayPause,
         Key::Queue if !typing => Act::ToggleQueue,
+        Key::Menu if s.selection => Act::OpenMenu,
         _ => Act::Pass,
     }
 }
@@ -364,6 +376,26 @@ mod tests {
             ..at(&Place::Home, false)
         };
         assert_eq!(act(Key::Queue, covered), Act::Pass);
+    }
+
+    #[test]
+    fn the_menu_key_or_shift_f10_opens_the_menu_of_the_row_picked() {
+        assert!(Key::opens_menu(false, "menu"));
+        assert!(Key::opens_menu(true, "f10"));
+        assert!(!Key::opens_menu(false, "f10"));
+        let picked = Situation {
+            selection: true,
+            ..at(&Place::Tracks, false)
+        };
+        assert_eq!(act(Key::Menu, picked), Act::OpenMenu);
+        // nothing picked: nothing to open it on
+        assert_eq!(act(Key::Menu, at(&Place::Tracks, false)), Act::Pass);
+        // a dialog keeps it
+        let dialog = Situation {
+            dialog_open: true,
+            ..picked
+        };
+        assert_eq!(act(Key::Menu, dialog), Act::Pass);
     }
 
     #[test]

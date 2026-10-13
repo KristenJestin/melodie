@@ -5,6 +5,7 @@
 use crate::albums::{GAP, PAD, album_cell, content_width, cover_box, empty_state};
 use crate::app::Shared;
 use crate::catalog::Catalog;
+use crate::context_menu::Menued as _;
 use crate::motion;
 use crate::pages::plural;
 use crate::player::palette;
@@ -18,6 +19,7 @@ use melodie_core::library::{Album, Artist, Playlist};
 use melodie_desktop::browse::Place;
 use melodie_desktop::home::{self, Highlight, Kind, Mix, Row, SeeAll, Why};
 use melodie_desktop::launch::{Job, Kind as Of};
+use melodie_desktop::menu::{Item, Spot};
 use melodie_desktop::theme::{Palette, Tint, mix};
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -201,6 +203,7 @@ fn artist_cell(
     let (catalog, id) = (catalog.clone(), a.id.clone());
     v_flex()
         .id(ElementId::Name(format!("home-artist-{}", a.id).into()))
+        .menu(Item::artist(a), Spot::Library)
         .group("home-artist")
         .w(px(CIRCLE))
         .flex_none()
@@ -248,6 +251,7 @@ fn playlist_cell(
     let (catalog, id) = (catalog.clone(), p.id.clone());
     v_flex()
         .id(ElementId::Name(format!("home-playlist-{}", p.id).into()))
+        .menu(Item::playlist(p), Spot::Library)
         .group("home-playlist")
         .w(px(SQUARE))
         .flex_none()
@@ -295,6 +299,7 @@ fn mix_cell(m: &Mix, pal: Palette, catalog: &Entity<Catalog>) -> Stateful<Div> {
     };
     v_flex()
         .id(ElementId::Name(id.into()))
+        .menu(Item::Mix(m.clone()), Spot::Library)
         .w(px(MIX_W))
         .h(px(MIX_H))
         .flex_none()
@@ -667,8 +672,13 @@ fn highlight_card(
             }
         };
     let (player, opener) = (catalog.clone(), catalog.clone());
+    let item = match &h {
+        Highlight::Album { album, .. } => Item::album(album),
+        Highlight::Mix => Item::Mix(Mix::Mine),
+    };
     h_flex()
         .id("home-card")
+        .menu(item, Spot::Library)
         .h(px(CARD))
         .flex_none()
         .p(px((CARD - CARD_COVER) / 2.0))

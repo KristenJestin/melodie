@@ -2,6 +2,7 @@
 //! reorder, remove, clear what comes next.
 
 use crate::app::Shared;
+use crate::context_menu::Menued as _;
 use crate::player::palette;
 use crate::tips::Tipped as _;
 use crate::widgets::IconButton;
@@ -12,6 +13,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use melodie_core::proto::Request;
 use melodie_core::track::clock;
+use melodie_desktop::menu::{Item, Spot};
 use melodie_desktop::model::Row;
 use melodie_desktop::theme::Palette;
 use std::path::PathBuf;
@@ -178,6 +180,7 @@ impl Render for QueueList {
                     let accent = pal.accent;
                     h_flex()
                         .id(("queue-row", t.entry))
+                        .menu_starred(Item::entry(t), Spot::Queue { ix, entry }, Some(t.starred))
                         .group("queue-row")
                         .h(px(ROW))
                         .w_full()

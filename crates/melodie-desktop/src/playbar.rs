@@ -4,6 +4,7 @@
 
 use crate::app::{Shared, Shown};
 use crate::catalog::{Catalog, Facet};
+use crate::context_menu::Menued as _;
 use crate::motion;
 use crate::player::{Bar, palette};
 use crate::sidebar;
@@ -20,6 +21,7 @@ use melodie_desktop::bar;
 use melodie_desktop::browse::Place;
 use melodie_desktop::launch::{Job, Kind};
 use melodie_desktop::layout;
+use melodie_desktop::menu::{Item, Spot};
 use melodie_desktop::model::PlayState;
 use melodie_desktop::theme::{Palette, mix};
 
@@ -141,6 +143,7 @@ impl Render for PlayBar {
             None => (false, None),
         };
 
+        let menu = track.as_ref().map(|t| (Item::entry(t), t.starred));
         let left = {
             let cover = div()
                 .relative()
@@ -239,6 +242,9 @@ impl Render for PlayBar {
                 .child(cover)
                 .children(text)
                 .children(like)
+                .when_some(menu, |d, (item, starred)| {
+                    d.menu_starred(item, Spot::Player, Some(starred))
+                })
         };
 
         let middle = {

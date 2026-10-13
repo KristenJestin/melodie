@@ -4,6 +4,7 @@
 mod albums;
 mod app;
 mod catalog;
+mod context_menu;
 mod cover_cache;
 mod dialogs;
 mod home_page;
@@ -26,6 +27,7 @@ mod widgets;
 use albums::AlbumGrid;
 use app::Shared;
 use catalog::Catalog;
+use context_menu::{ContextMenu, MenuHandle};
 use dialogs::{Dialogs, DialogsHandle};
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -116,6 +118,7 @@ struct Views {
     sign_in: Entity<SignInView>,
     dialogs: Entity<Dialogs>,
     picked: Entity<SelectionBar>,
+    menu: Entity<ContextMenu>,
 }
 
 struct Root {
@@ -216,7 +219,11 @@ impl Root {
 
     fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let k = &ev.keystroke;
-        let key = Key::read(k.modifiers.control, &k.key, k.key_char.as_deref());
+        let key = if Key::opens_menu(k.modifiers.shift, &k.key) {
+            Key::Menu
+        } else {
+            Key::read(k.modifiers.control, &k.key, k.key_char.as_deref())
+        };
         let act = self.situation(window, cx, |s| keys::act(key, s));
         self.run(act, window, cx);
     }
@@ -246,6 +253,7 @@ impl Root {
                 cx.notify()
             }),
             Act::ToggleQueue => self.shared.update(cx, |s, cx| s.toggle_queue(cx)),
+            Act::OpenMenu => context_menu::open_on_picked(&self.catalog, window, cx),
             Act::CloseDialog => self.views.dialogs.update(cx, |d, cx| d.close(cx)),
             // Enter in the name field is the field's own: it confirms once, through its event
             Act::Confirm if self.views.dialogs.read(cx).field_focused(window, cx) => return,
@@ -587,6 +595,7 @@ impl Render for Root {
                 )
             })
             .child(self.views.dialogs.clone())
+            .child(self.views.menu.clone())
             // over everything, the notices included; clicks stay on it
             .when(si > 0.0, |d| {
                 d.child(
@@ -672,8 +681,10 @@ fn main() -> ExitCode {
                 sign_in: cx.new(|cx| SignInView::new(s.clone(), account.clone(), window, cx)),
                 dialogs: cx.new(|cx| Dialogs::new(s.clone(), c.clone(), window, cx)),
                 picked: cx.new(|_| SelectionBar::new(s.clone(), c.clone())),
+                menu: cx.new(|cx| ContextMenu::new(env.clone(), s.clone(), c.clone(), cx)),
             };
             cx.set_global(DialogsHandle(views.dialogs.clone()));
+            cx.set_global(MenuHandle(views.menu.clone()));
             tips::install(cx);
             cx.new(|cx| Root::new(shared, catalog, account, views, window, cx))
         });
