@@ -176,22 +176,37 @@ fn tracks_in(r: &Value) -> Vec<TrackInfo> {
         .unwrap_or_default()
 }
 
+/// What a write that trusts the list it read would do wrong if the server hid some tracks.
+#[derive(Clone, Copy)]
+enum Risk {
+    /// The whole playlist is written again from the list.
+    Rewrite,
+    /// Ranks counted in the list are sent as positions.
+    Ranks,
+}
+
 /// The tracks of a playlist, in the server's order, checked to be all of them: Navidrome leaves
 /// out of `getPlaylist` the tracks whose file is missing, though it counts them in `songCount`
-/// and keeps them in the playlist. Rewriting the playlist from such a list would drop them.
-fn whole_entries(client: &Client, pid: &str) -> Result<Vec<TrackInfo>, Failure> {
+/// and keeps them in the playlist. Rewriting the playlist from such a list would drop them, and
+/// the positions of `songIndexToRemove` count them, so a rank read in the list would hit another
+/// track.
+fn whole_entries(client: &Client, pid: &str, risk: Risk) -> Result<Vec<TrackInfo>, Failure> {
     let r = call(client, "getPlaylist", &[("id", pid.to_string())])?;
     let list = tracks_in(&r);
+    let left = match risk {
+        Risk::Rewrite => "the playlist was left as it is, rather than lose them",
+        Risk::Ranks => {
+            "the playlist was left as it is, as removing by rank would hit the wrong one"
+        }
+    };
     match r["playlist"]["songCount"].as_u64() {
         Some(n) if n == list.len() as u64 => Ok(list),
         Some(n) => Err(Failure::Internal(anyhow!(
-            "the server shows {} of its {n} tracks (the others may be missing files): the \
-             playlist was left as it is, rather than lose them",
+            "the server shows {} of its {n} tracks (the others may be missing files): {left}",
             list.len()
         ))),
         None => Err(Failure::Internal(anyhow!(
-            "the server did not say how many tracks the playlist holds: it was left as it is, \
-             rather than lose some"
+            "the server did not say how many tracks the playlist holds: {left}"
         ))),
     }
 }
@@ -291,7 +306,7 @@ pub fn remove_duplicates(
     pid: &str,
     at: u64,
 ) -> Result<Duplicates, Failure> {
-    let list = entries(client, pid)?;
+    let list = whole_entries(client, pid, Risk::Ranks)?;
     let found = find_duplicates(&list);
     let gone = &found.exact;
     if gone.is_empty() {
@@ -371,7 +386,7 @@ pub fn remove_many(
     picks: &[(usize, Option<&str>)],
     at: u64,
 ) -> Result<Vec<TrackInfo>, Failure> {
-    let list = entries(client, pid)?;
+    let list = whole_entries(client, pid, Risk::Ranks)?;
     let mut indexes: Vec<usize> = Vec::new();
     let mut gone = Vec::new();
     for &(index, expect) in picks {
@@ -406,7 +421,7 @@ pub fn move_track(
     expect: Option<&str>,
     at: u64,
 ) -> Result<TrackInfo, Failure> {
-    let list = whole_entries(client, pid)?;
+    let list = whole_entries(client, pid, Risk::Rewrite)?;
     let track = entry_at(&list, from, expect)?;
     if to >= list.len() {
         return Err(Failure::Internal(anyhow!(
@@ -422,7 +437,7 @@ pub fn move_track(
     // The write replaces the whole playlist: what another client (or the window's own previous
     // edit) wrote since the read would be lost. Subsonic has no compare-and-set, so the window is
     // made as short as it can be: read again, right before writing.
-    let now: Vec<String> = whole_entries(client, pid)?
+    let now: Vec<String> = whole_entries(client, pid, Risk::Rewrite)?
         .into_iter()
         .map(|t| t.id)
         .collect();
@@ -1269,6 +1284,71 @@ mod tests {
         assert_eq!(fake.calls_of("createPlaylist"), 0, "nothing written");
         assert_eq!(server_ids(&fake, "p1"), ["s0", "s1"]);
         assert_eq!(local_ids(&conn, "p1"), before);
+    }
+
+    #[test]
+    fn a_remove_by_rank_refuses_when_the_server_hides_some_entries() {
+        let (_d, env, fake, client) = setup();
+        let conn = db::open_existing(&env).unwrap().unwrap();
+        seed(&fake, "p1", &[("s0", "A", "X"), ("s1", "B", "X")]);
+        fake.state.hidden_entries.store(1, Ordering::SeqCst);
+        let before = (local_ids(&conn, "p1"), counts(&conn, "p1"));
+        let r = remove_many(&client, Some(&conn), "p1", &[(1, Some("s1"))], 0);
+        let Err(Failure::Internal(e)) = r else {
+            panic!("{r:?}")
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("2 of its 3 tracks"), "{msg}");
+        assert!(msg.contains("wrong one"), "{msg}");
+        assert_eq!(writes(&fake), 0, "nothing written");
+        assert_eq!(server_ids(&fake, "p1"), ["s0", "s1"]);
+        assert_eq!((local_ids(&conn, "p1"), counts(&conn, "p1")), before);
+    }
+
+    #[test]
+    fn removing_duplicates_refuses_when_the_server_hides_some_entries() {
+        let (_d, env, fake, client) = setup();
+        let conn = db::open_existing(&env).unwrap().unwrap();
+        seed(
+            &fake,
+            "p1",
+            &[("s0", "A", "X"), ("s1", "B", "X"), ("s0", "A", "X")],
+        );
+        fake.state.hidden_entries.store(1, Ordering::SeqCst);
+        let before = (local_ids(&conn, "p1"), counts(&conn, "p1"));
+        let r = remove_duplicates(&client, Some(&conn), "p1", 0);
+        let Err(Failure::Internal(e)) = r else {
+            panic!("{r:?}")
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("3 of its 4 tracks"), "{msg}");
+        assert!(msg.contains("wrong one"), "{msg}");
+        assert_eq!(writes(&fake), 0, "nothing written");
+        assert_eq!(server_ids(&fake, "p1"), ["s0", "s1", "s0"]);
+        assert_eq!((local_ids(&conn, "p1"), counts(&conn, "p1")), before);
+    }
+
+    #[test]
+    fn listing_duplicates_still_works_when_the_server_hides_some_entries() {
+        let (_d, _env, fake, client) = setup();
+        seed(&fake, "p1", &[("s0", "A", "X"), ("s0", "A", "X")]);
+        fake.state.hidden_entries.store(1, Ordering::SeqCst);
+        assert_eq!(duplicates(&client, "p1").unwrap().exact.len(), 1);
+    }
+
+    #[test]
+    fn a_remove_and_a_duplicates_removal_are_unaffected_when_nothing_is_hidden() {
+        let (_d, _env, fake, client) = setup();
+        seed(
+            &fake,
+            "p1",
+            &[("s0", "A", "X"), ("s1", "B", "X"), ("s0", "A", "X")],
+        );
+        remove_many(&client, None, "p1", &[(1, Some("s1"))], 0).unwrap();
+        assert_eq!(server_ids(&fake, "p1"), ["s0", "s0"]);
+        remove_duplicates(&client, None, "p1", 0).unwrap();
+        assert_eq!(server_ids(&fake, "p1"), ["s0"]);
+        assert_eq!(writes(&fake), 2);
     }
 
     #[test]
