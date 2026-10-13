@@ -1082,6 +1082,107 @@ fn favoris_et_mixes_selon_l_etat_de_connexion() {
     assert!(!sb.home().join(".cache/melodie/auth-refused").exists());
 }
 
+// ---- login with the password on stdin (the window's way) ----
+
+const PASSWORD: &str = "correct horse battery";
+
+/// `melodie login --password-stdin`, the password written on its standard input.
+fn login_stdin(sb: &Sandbox, server: &str, password: &str) -> Output {
+    let mut child = sb
+        .cmd(&[
+            "login",
+            "--password-stdin",
+            &format!("--server={server}"),
+            "--user=alice",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(format!("{password}\n").as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
+
+/// Every file under `dir` holding `needle`.
+fn files_holding(dir: &Path, needle: &str) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            found.extend(files_holding(&p, needle));
+        } else if std::fs::read(&p).is_ok_and(|b| String::from_utf8_lossy(&b).contains(needle)) {
+            found.push(p);
+        }
+    }
+    found
+}
+
+#[test]
+fn login_with_the_password_on_stdin_keeps_the_token_and_forgets_the_password() {
+    let sb = Sandbox::new(false);
+    *sb.fake.state.password.lock().unwrap() = Some(PASSWORD.into());
+    let o = login_stdin(&sb, &sb.fake.url, PASSWORD);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let secret: Value = serde_json::from_slice(&std::fs::read(sb.secret_file()).unwrap()).unwrap();
+    assert_eq!(secret["u"], "alice");
+    let salt = secret["s"].as_str().unwrap();
+    assert_eq!(
+        secret["t"].as_str().unwrap(),
+        melodie_core::api::token(PASSWORD, salt)
+    );
+    let conf = std::fs::read_to_string(sb.home().join(".config/melodie/config.toml")).unwrap();
+    assert!(
+        conf.contains(&sb.fake.url) && conf.contains("alice"),
+        "{conf}"
+    );
+    // the first copy starts on its own, as after an interactive login
+    wait_until(30, "the first copy", || {
+        rusqlite::Connection::open_with_flags(sb.db(), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .and_then(|c| {
+                c.query_row("SELECT value FROM meta WHERE key='synced_at'", [], |r| {
+                    r.get::<_, String>(0)
+                })
+            })
+            .is_ok()
+    });
+    assert!(files_holding(sb.dir.path(), PASSWORD).is_empty());
+    for out in [&o.stdout, &o.stderr] {
+        assert!(!String::from_utf8_lossy(out).contains(PASSWORD));
+    }
+}
+
+#[test]
+fn login_with_a_wrong_password_on_stdin_is_refused_and_keeps_nothing() {
+    let sb = Sandbox::new(false);
+    *sb.fake.state.password.lock().unwrap() = Some(PASSWORD.into());
+    let o = login_stdin(&sb, &sb.fake.url, "wrong");
+    assert_eq!(o.status.code(), Some(1));
+    assert!(!sb.secret_file().exists());
+    assert!(!sb.home().join(".config/melodie/config.toml").exists());
+    assert!(!String::from_utf8_lossy(&o.stderr).contains("wrong"));
+}
+
+#[test]
+fn login_on_stdin_to_an_unreachable_server_says_so_and_keeps_nothing() {
+    let sb = Sandbox::new(false);
+    *sb.fake.state.raw.lock().unwrap() = Some((503, "x".into()));
+    let o = login_stdin(&sb, &sb.fake.url, PASSWORD);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(!sb.secret_file().exists());
+    assert!(!String::from_utf8_lossy(&o.stderr).contains("melodie login"));
+}
+
 // ---- synchronisation automatique de la copie ----
 
 fn set_synced_at(sb: &Sandbox, t: u64) {

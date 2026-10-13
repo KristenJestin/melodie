@@ -157,7 +157,18 @@ enum PlaylistCmd {
 #[derive(Subcommand)]
 enum Cmd {
     /// Logs in to a Navidrome server (the password is not kept)
-    Login,
+    Login {
+        /// Reads the password from the standard input instead of asking for it (the window's
+        /// way: never on the command line); needs --server and --user
+        #[arg(long, requires_all = ["server", "user"])]
+        password_stdin: bool,
+        /// The server's address, with --password-stdin
+        #[arg(long, requires = "password_stdin")]
+        server: Option<String>,
+        /// The user, with --password-stdin
+        #[arg(long, requires = "password_stdin")]
+        user: Option<String>,
+    },
     /// Removes the secret from the keyring
     Logout,
     /// Server, user, connection state, local copy
@@ -329,7 +340,7 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> Result<ExitCode> {
     let env = Env::from_process()?;
     match cli.command {
-        Cmd::Login => login(&env),
+        Cmd::Login { server, user, .. } => login(&env, server.zip(user)),
         Cmd::Logout => logout(&env),
         Cmd::Status => status(&env),
         Cmd::Sync { full, background } => {
@@ -642,19 +653,41 @@ fn ask(label: &str, default: Option<&str>) -> Result<String> {
     })
 }
 
-fn login(env: &Env) -> Result<ExitCode> {
+/// The password written on the standard input, without its line end.
+fn password_from_stdin() -> Result<String> {
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line)?;
+    let len = line.trim_end_matches(['\n', '\r']).len();
+    line.truncate(len);
+    Ok(line)
+}
+
+/// `given`: the server and the user of `--password-stdin`, the password then read from the
+/// standard input; otherwise all three are asked.
+fn login(env: &Env, given: Option<(String, String)>) -> Result<ExitCode> {
     let settings = store::Settings::load(env)?;
-    let url = api::normalize_url(&ask("Adresse du serveur", settings.url.as_deref())?);
-    if !(url.starts_with("http://") || url.starts_with("https://")) {
-        bail!("l'adresse doit commencer par http:// ou https://");
-    }
-    let user = ask("Utilisateur", settings.user.as_deref())?;
+    let typed = match &given {
+        Some((server, _)) => server.clone(),
+        None => ask("Adresse du serveur", settings.url.as_deref())?,
+    };
+    let Some(url) = api::server_address(&typed) else {
+        bail!("the address must start with http:// or https://");
+    };
+    let from_stdin = given.is_some();
+    let user = match given {
+        Some((_, user)) => user,
+        None => ask("Utilisateur", settings.user.as_deref())?,
+    };
     if user.is_empty() {
         bail!("utilisateur vide");
     }
     // Le mot de passe ne vit que le temps du calcul du jeton.
     let creds = {
-        let password = rpassword::prompt_password("Mot de passe : ")?;
+        let password = if from_stdin {
+            password_from_stdin()?
+        } else {
+            rpassword::prompt_password("Mot de passe : ")?
+        };
         api::Creds::from_password(&user, &password)?
     };
     let client = api::Client::new(&url, creds.clone());
@@ -795,6 +828,45 @@ mod tests {
             };
             assert!(matches!(kind, Some(StarArg::Track)));
             assert_eq!(id.as_deref(), Some("-7f3a"));
+        }
+    }
+
+    /// The window signs in with `login --password-stdin --server=… --user=…`; a plain `login`
+    /// still asks for everything.
+    #[test]
+    fn login_asks_everything_unless_the_password_comes_on_stdin() {
+        let parse = |a: &[&str]| Cli::try_parse_from([&["melodie", "login"][..], a].concat());
+        match parse(&[]).unwrap().command {
+            Cmd::Login {
+                password_stdin,
+                server,
+                user,
+            } => assert_eq!((password_stdin, server, user), (false, None, None)),
+            _ => panic!("not a login"),
+        }
+        let window = [
+            "--password-stdin",
+            "--server=https://music.example.org",
+            "--user=-alice",
+        ];
+        match parse(&window).unwrap().command {
+            Cmd::Login {
+                password_stdin,
+                server,
+                user,
+            } => {
+                assert!(password_stdin);
+                assert_eq!(server.as_deref(), Some("https://music.example.org"));
+                assert_eq!(user.as_deref(), Some("-alice"));
+            }
+            _ => panic!("not a login"),
+        }
+        for half in [
+            &["--password-stdin"][..],
+            &["--password-stdin", "--user=alice"],
+            &["--server=https://music.example.org", "--user=alice"],
+        ] {
+            assert!(parse(half).is_err(), "{half:?}");
         }
     }
 
