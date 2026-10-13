@@ -24,8 +24,8 @@ repository and lives here on its own.
 - **A window** (to come) is one more client of the same daemon and the same local copy:
   closing it never stops the music.
 
-Mélodie is used alone. The maintainer's desktop integrates it (launcher entries, the player
-card, keys) from its own repository; nothing of that desktop lives here.
+Mélodie is used alone. The maintainer's desktop integration (launcher entries, the player
+card, keys) lives in its own repository; nothing of it lives here.
 
 ## Commands
 
@@ -79,8 +79,8 @@ git config core.hooksPath .githooks     # once per clone: the commit-msg and pre
 
 - Rust 2024, `cargo fmt`, `cargo clippy -- -D warnings` clean.
 - Code, identifiers, comments, docs, issues and commits are in English. The code brought over
-  from the desktop repository has French comments and messages: translate what you touch, not
-  the rest.
+  from the maintainer's desktop repository has French comments and messages: translate what you
+  touch, not the rest.
 - No tokio, no libdbus: D-Bus and the Secret Service go through `zbus` (pure Rust).
 - A comment says why, not what.
 
