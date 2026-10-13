@@ -379,14 +379,9 @@ impl Catalog {
 
     fn load_playlists(&mut self, cx: &mut Context<Self>) {
         self.load("playlists", cx, lib::playlists, |this, list, cx| {
-            this.want_covers(playlists::wanted_covers(&list), Use::of(SQUARE), true, cx);
-            // and the sidebar's, much smaller
-            this.want_covers(
-                playlists::wanted_covers(&list),
-                Use::of(playlists::PICTURE),
-                true,
-                cx,
-            );
+            for (ids, usage) in playlists::cover_requests(&list, SQUARE) {
+                this.want_covers(ids, usage, true, cx);
+            }
             this.playlists = list.into();
             this.home_changed(cx);
         });

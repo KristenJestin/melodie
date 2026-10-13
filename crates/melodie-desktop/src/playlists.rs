@@ -1,7 +1,7 @@
 //! What the sidebar shows of each playlist: the picture the server makes for it (a mosaic of its
 //! covers), else the same icon as every other playlist.
 
-use crate::covers::{Cover, Covers};
+use crate::covers::{Cover, Covers, Use};
 use melodie_core::library::Playlist;
 
 /// The side, in logical pixels, of a playlist's picture in the sidebar.
@@ -16,6 +16,13 @@ pub fn wanted_covers(playlists: &[Playlist]) -> Vec<String> {
         }
     }
     ids
+}
+
+/// What the playlists ask the shared cover queue for: their covers at the side of the page's
+/// squares (`square`), and again at the sidebar's.
+pub fn cover_requests(playlists: &[Playlist], square: f32) -> [(Vec<String>, Use); 2] {
+    let ids = wanted_covers(playlists);
+    [(ids.clone(), Use::of(square)), (ids, Use::of(PICTURE))]
 }
 
 /// The picture of a playlist, if it has a cover and the cover is on disk (at the size the
@@ -61,6 +68,18 @@ mod tests {
     fn a_cover_shared_by_two_playlists_is_asked_once() {
         let list = [playlist("p1", Some("pl-a")), playlist("p2", Some("pl-a"))];
         assert_eq!(wanted_covers(&list), ["pl-a"]);
+    }
+
+    #[test]
+    fn the_sidebar_asks_the_shared_queue_at_its_own_size() {
+        let list = [playlist("p1", Some("pl-p1")), playlist("p2", None)];
+        let asked = cover_requests(&list, 180.0);
+        let ids = vec!["pl-p1".to_string()];
+        assert!(
+            asked.contains(&(ids.clone(), Use::of(PICTURE))),
+            "{asked:?}"
+        );
+        assert!(asked.contains(&(ids, Use::of(180.0))), "{asked:?}");
     }
 
     /// The covers known after the cover queue found `ids` at the sidebar's size on disk.
