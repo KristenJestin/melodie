@@ -2,8 +2,7 @@
 
 A music player for a Navidrome server (Subsonic / OpenSubsonic API, tried on Navidrome 0.63) on
 Linux (Wayland), written in Rust: a background daemon, a command line, a local copy of the library
-and mixes computed locally. A window is to come; it will be one more client of the same daemon and
-the same local copy.
+and mixes computed locally, and a window (`melodie-gui`), one more client of the same daemon.
 
 Agents read `AGENTS.md`. Work in progress: see the issues.
 
@@ -21,6 +20,10 @@ A Cargo workspace under `crates/`:
   preferences. Its `fake` feature exposes the fake local server the tests talk to.
 - `melodie`: the program: command line, daemon (libmpv), MPRIS, desktop notifications and the
   background synchronisation launcher.
+- `melodie-gui`: the window (gpui-kit on GPUI Fast, see [docs/gui-toolkit.md](docs/gui-toolkit.md)).
+  A program of its own, so that the command line stays small and quick to start and does not pay
+  for the window's build. Its first build is long (several minutes); without the default
+  `gpui-fast` feature it builds on upstream GPUI from the same source.
 
 The tests never touch a real server, real sound, the session bus, the keyring or the real
 configuration (see `AGENTS.md`). The daemon integration test starts its own private
@@ -82,6 +85,43 @@ configuration (see `AGENTS.md`). The daemon integration test starts its own priv
 `no-login`, `auth-refused` and `unreachable` give a clear message (code 1, 1 or 2) and a
 `notify-send -a "Mélodie"` notification, without starting the daemon. An id the server does not
 have is "not found" (code 5, see "Connection states"), also without starting the daemon.
+
+## The window
+
+`melodie-gui` opens the player and its queue. It needs a Wayland or X11 session with a Vulkan
+driver, and the `melodie` program beside it (same folder, as a build leaves them) or on the
+`PATH`.
+
+Screenshots and a recording of the animations, made with invented data, are in
+[docs/window](docs/window).
+
+- **A client, nothing more.** It follows the daemon through the event stream
+  ([docs/events.md](docs/events.md)) and sends its requests on the socket; it never plays sound,
+  never reads the keyring and never holds a token or a stream address. Closing it never stops the
+  music; opening it shows the current state at once (the snapshot). Without a daemon it says
+  "Nothing playing" and looks for one every half second.
+- **The player**: the cover, large; title, artist, album; the quality of the stream; a position
+  bar to drag; play/pause, previous, next; the volume; the heart. Play without a daemon starts the
+  personal mix (`melodie mix me`, which starts the daemon); the heart runs `melodie like track
+  <id>` or `unlike`: what needs the server goes through `melodie`. A failure is said at the
+  bottom of the window for a few seconds, and so are the connection states (`unreachable`,
+  `auth-refused`).
+- **The queue**, opened from the player: past tracks greyed, the current one marked, the next
+  ones. A click plays a track; drag a track onto another to move it there; the cross on a row
+  removes it; the button at the top removes what comes after the current track.
+- **Keys**: Space plays or pauses, Escape closes the queue and the settings.
+- **Colours**: the button at the top right chooses the theme. "Mélodie", the base theme, takes its
+  colours from the cover and follows the desktop's dark or light setting. "Omarchy" is offered
+  only on Omarchy (`ID=omarchy` in `/etc/os-release` and a readable
+  `$XDG_STATE_HOME/omarchy/current/theme/colors.toml`); it follows a theme change live, and falls
+  back to the base theme, saying so, while the theme file is missing. Before any choice, the
+  window uses Omarchy when it is offered, else the base theme. The choice is kept in
+  `~/.local/state/melodie/window.toml` (`theme = "base"` or `"omarchy"`), a file of the window's
+  own.
+- **Animations**: every change of view, panel or state is short and interruptible, and follows
+  the desktop's reduced-motion setting. An unfocused window keeps animating at the screen's rate.
+- Measuring: built with the `frame-stats` feature and run with `MELODIE_GUI_FRAME_STATS=<file>`,
+  the window writes the time of each frame and how long it took to draw (for measurements only).
 
 ## Addresses
 
@@ -280,6 +320,7 @@ result), `--size N` (50 by default).
 - `~/.cache/melodie/covers/`: local covers (512 px, daemon); `covers/thumbs/`: 128 px thumbnails
   for the launcher; `<id>.img.none`: Navidrome's default image (set aside).
 - `~/.cache/melodie/auth-refused`: marker of the last refusal by the server (see below).
+- `~/.local/state/melodie/window.toml`: the window's theme choice.
 - `~/.local/state/melodie/state.toml`: remembered volume; `melodie.log`: the daemon's log;
   `sync.log`: the log of background synchronisations. `XDG_STATE_HOME` honoured.
 - `$XDG_RUNTIME_DIR/melodie/melodie.sock`, `melodie.lock`: the daemon's socket and lock;

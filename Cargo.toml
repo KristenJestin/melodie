@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/melodie-core", "crates/melodie"]
+members = ["crates/melodie-core", "crates/melodie", "crates/melodie-gui"]
 
 [workspace.package]
 version = "0.0.0"

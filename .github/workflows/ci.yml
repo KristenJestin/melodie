@@ -38,8 +38,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # `dbus` provides the `dbus-daemon` the daemon test starts privately; without it the MPRIS checks are skipped.
-      - run: sudo apt-get update && sudo apt-get install -y libmpv-dev dbus
+      # The rest is what the window (GPUI) links against: fonts, keyboard maps, Wayland and X11.
+      - run: >-
+          sudo apt-get update && sudo apt-get install -y libmpv-dev dbus
+          libfontconfig-dev libfreetype-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev
+          libx11-xcb-dev libvulkan-dev
       - run: rustup component add rustfmt clippy
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
+      # The window builds on upstream GPUI too, from the same source (docs/gui-toolkit.md).
+      - run: cargo check -p melodie-gui --no-default-features --locked

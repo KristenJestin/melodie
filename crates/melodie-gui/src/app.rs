@@ -1,0 +1,436 @@
+//! The state every view reads, and what keeps it in step: the daemon's stream, the covers,
+//! Omarchy's theme, the window's appearance.
+
+use futures::StreamExt as _;
+use gpui_kit::component::{Theme, ThemeMode};
+use gpui_kit::*;
+use melodie_core::env::Env;
+use melodie_core::proto::{QueueEntry, Request};
+use melodie_gui::launch::{self, Job};
+use melodie_gui::link::{self, Msg};
+use melodie_gui::model::{Clock, Connection, Player};
+use melodie_gui::theme::{self, Active, Choice, Omarchy, Palette, Settings, Tint};
+use melodie_gui::thumbs::{self, Thumbs};
+use melodie_gui::tint;
+use std::collections::VecDeque;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::time::{Duration, Instant};
+
+/// How long a failed action is said at the bottom of the window.
+const NOTICE: Duration = Duration::from_secs(6);
+/// Covers kept decoded for the cross-fade; older ones leave the GPU too.
+const KEEP_COVERS: usize = 3;
+
+/// A cover on screen, with the colour it gives the base theme.
+#[derive(Clone)]
+pub struct Shown {
+    pub image: Option<Arc<RenderImage>>,
+    pub tint: Option<Tint>,
+}
+
+/// The covers of the last few tracks. `step` grows each time another one is shown: the player
+/// cross-fades towards it, through the ones in between.
+#[derive(Default)]
+pub struct Art {
+    pub step: u64,
+    shown: VecDeque<(u64, Shown)>,
+    /// The track (its change count) and the cover file being loaded.
+    want: Option<(u64, Option<String>)>,
+    /// What the base theme is tinted by: the colour of the cover shown last.
+    tint: Option<Tint>,
+}
+
+impl Art {
+    pub fn at(&self, step: u64) -> Option<&Shown> {
+        self.shown.iter().find(|(s, _)| *s == step).map(|(_, a)| a)
+    }
+
+    pub fn tint(&self) -> Option<Tint> {
+        self.tint
+    }
+}
+
+/// What the theme depends on.
+pub struct ThemeState {
+    pub omarchy: Omarchy,
+    pub stored: Option<Choice>,
+    pub detected: bool,
+    /// The current Omarchy palette, while its file reads.
+    pub palette: Option<Palette>,
+}
+
+impl ThemeState {
+    pub fn active(&self) -> Active {
+        theme::active(self.stored, self.detected, self.palette)
+    }
+
+    /// The choice the settings show as selected: before any is made, the one in use.
+    pub fn selected(&self) -> Choice {
+        match self.active() {
+            Active::Base => Choice::Base,
+            Active::Omarchy(_) | Active::BaseOmarchyGone => Choice::Omarchy,
+        }
+    }
+}
+
+pub struct Shared {
+    pub player: Player,
+    pub art: Art,
+    /// The picture of each row of the queue, by entry; kept up to date away from the render path.
+    pub thumbs: Arc<Thumbs>,
+    /// The tracks `thumbs` is being (or was) computed for.
+    thumbs_of: Option<Arc<[QueueEntry]>>,
+    pub theme: ThemeState,
+    /// The desktop asks for dark colours.
+    pub dark: bool,
+    pub queue_open: bool,
+    pub settings_open: bool,
+    /// A failed action, said for a few seconds.
+    failure: Option<(u64, SharedString)>,
+    failures: u64,
+    socket: PathBuf,
+    env: Env,
+    _watch: Option<notify::RecommendedWatcher>,
+}
+
+impl Shared {
+    /// The colours the window is heading to.
+    pub fn target_palette(&self) -> Palette {
+        match self.theme.active() {
+            Active::Omarchy(p) => p,
+            Active::Base | Active::BaseOmarchyGone => Palette::base(self.art.tint(), self.dark),
+        }
+    }
+
+    /// What the bottom of the window says, the most important first.
+    pub fn notice(&self) -> Option<SharedString> {
+        if let Some((_, f)) = &self.failure {
+            return Some(f.clone());
+        }
+        match self.player.connection {
+            Connection::AuthRefused => {
+                return Some("Navidrome refused the login: run melodie login".into());
+            }
+            Connection::Unreachable => return Some("Navidrome is unreachable".into()),
+            Connection::Ok => {}
+        }
+        (self.theme.active() == Active::BaseOmarchyGone)
+            .then(|| "Omarchy theme files are gone: using the base theme".into())
+    }
+
+    /// Sends a request to the daemon; a refusal is said in the window.
+    pub fn send(&self, req: Request, cx: &mut Context<Self>) {
+        let socket = self.socket.clone();
+        let task = cx.background_spawn(async move { link::request(&socket, &req) });
+        cx.spawn(async move |this, cx| {
+            if let Err(e) = task.await {
+                let _ = this.update(cx, |s, cx| s.fail(format!("The player said no: {e}"), cx));
+            }
+        })
+        .detach();
+    }
+
+    /// Sends an action on a row of the queue, unless that row no longer holds the entry the user
+    /// clicked: another client (or the user's own earlier click) changed the queue since, and a
+    /// position alone would act on a neighbour.
+    pub fn send_for_row(&self, ix: usize, entry: u64, req: Request, cx: &mut Context<Self>) {
+        if self.player.holds(ix, entry) {
+            self.send(req, cx);
+        }
+    }
+
+    /// Runs `melodie` for what needs the server; its first error line is said in the window.
+    pub fn run(&self, job: Job, cx: &mut Context<Self>) {
+        let program = launch::program(std::env::current_exe().ok().as_deref());
+        let what = match &job {
+            Job::PlayMix => "Could not start your mix",
+            Job::Star { .. } => "Could not change the favourite",
+        };
+        let task = cx.background_spawn(async move {
+            let out = std::process::Command::new(&program)
+                .args(job.args())
+                .stdin(std::process::Stdio::null())
+                .output();
+            match out {
+                Ok(o) if o.status.success() => None,
+                Ok(o) => Some(
+                    String::from_utf8_lossy(&o.stderr)
+                        .lines()
+                        .next()
+                        .unwrap_or("")
+                        .to_string(),
+                ),
+                Err(e) => Some(format!("{}: {}", program.display(), e.kind())),
+            }
+        });
+        cx.spawn(async move |this, cx| {
+            if let Some(why) = task.await {
+                let msg = if why.is_empty() {
+                    what.to_string()
+                } else {
+                    format!("{what}: {why}")
+                };
+                let _ = this.update(cx, |s, cx| s.fail(msg, cx));
+            }
+        })
+        .detach();
+    }
+
+    fn fail(&mut self, msg: String, cx: &mut Context<Self>) {
+        self.failures += 1;
+        let n = self.failures;
+        self.failure = Some((n, msg.into()));
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(NOTICE).await;
+            let _ = this.update(cx, |s, cx| {
+                if s.failure.as_ref().is_some_and(|(m, _)| *m == n) {
+                    s.failure = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub fn choose(&mut self, choice: Choice, cx: &mut Context<Self>) {
+        self.theme.stored = Some(choice);
+        let settings = Settings {
+            theme: Some(choice),
+        };
+        if let Err(e) = settings.save(&self.env) {
+            self.fail(format!("Could not keep the choice: {e:#}"), cx);
+        }
+        apply_component_theme(self.target_palette(), cx);
+        cx.notify();
+    }
+
+    /// After the player changed: look up the pictures of the rows if the tracks are new. The
+    /// rows keep what they had meanwhile (entries are kept when they move).
+    fn follow_thumbs(&mut self, cx: &mut Context<Self>) {
+        let tracks = self.player.tracks.clone();
+        if self
+            .thumbs_of
+            .as_ref()
+            .is_some_and(|t| Arc::ptr_eq(t, &tracks))
+        {
+            return;
+        }
+        self.thumbs_of = Some(tracks.clone());
+        let env = self.env.clone();
+        let task = cx.background_spawn({
+            let tracks = tracks.clone();
+            async move { thumbs::resolve(&env, &tracks) }
+        });
+        cx.spawn(async move |this, cx| {
+            let found = task.await;
+            let _ = this.update(cx, |s, cx| {
+                // Another queue came meanwhile: its own lookup will say.
+                if s.thumbs_of
+                    .as_ref()
+                    .is_some_and(|t| Arc::ptr_eq(t, &tracks))
+                {
+                    s.thumbs = Arc::new(found);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// After the player changed: load the new cover if there is one.
+    fn follow_cover(&mut self, cx: &mut Context<Self>) {
+        let cover = self.player.track().and_then(|t| t.cover.clone());
+        let key = (self.player.track_change, cover.clone());
+        if self.art.want.as_ref() == Some(&key) {
+            return;
+        }
+        self.art.want = Some(key.clone());
+        let Some(path) = cover else {
+            self.show(
+                key,
+                Shown {
+                    image: None,
+                    tint: None,
+                },
+                cx,
+            );
+            return;
+        };
+        // Decoded away from the window, and shown only once ready: the cross-fade never fades
+        // towards an empty frame.
+        let task = cx.background_spawn(async move { load_cover(&PathBuf::from(path)) });
+        cx.spawn(async move |this, cx| {
+            let shown = task.await;
+            let _ = this.update(cx, |s, cx| s.show(key, shown, cx));
+        })
+        .detach();
+    }
+
+    fn show(&mut self, key: (u64, Option<String>), shown: Shown, cx: &mut Context<Self>) {
+        if self.art.want.as_ref() != Some(&key) {
+            return; // another track came meanwhile
+        }
+        self.art.tint = shown.tint;
+        // The base theme follows the cover: gpui-kit's own colours (ring, primary, popover) must
+        // follow too, or they keep the previous tint.
+        if self.theme.active().follows_cover() {
+            apply_component_theme(self.target_palette(), cx);
+        }
+        self.art.step += 1;
+        self.art.shown.push_back((self.art.step, shown));
+        while self.art.shown.len() > KEEP_COVERS {
+            if let Some((_, Shown { image: Some(i), .. })) = self.art.shown.pop_front() {
+                cx.drop_image(i, None);
+            }
+        }
+        cx.notify();
+    }
+}
+
+/// Reads a cover file into an image ready for the GPU, and its colour.
+fn load_cover(path: &std::path::Path) -> Shown {
+    let decoded = std::fs::read(path)
+        .ok()
+        .and_then(|b| image::load_from_memory(&b).ok());
+    let Some(img) = decoded else {
+        return Shown {
+            image: None,
+            tint: None,
+        };
+    };
+    let tint = tint::of_image(&img);
+    let mut buf = img.into_rgba8();
+    // GPUI draws BGRA.
+    for p in buf.pixels_mut() {
+        p.0.swap(0, 2);
+    }
+    Shown {
+        image: Some(Arc::new(RenderImage::new([image::Frame::new(buf)]))),
+        tint,
+    }
+}
+
+/// gpui-kit's own components (the sliders) take their colours from its theme: written once per
+/// change of theme, never per frame.
+pub fn apply_component_theme(p: Palette, cx: &mut App) {
+    Theme::change(
+        if p.dark {
+            ThemeMode::Dark
+        } else {
+            ThemeMode::Light
+        },
+        None,
+        cx,
+    );
+    let clear = hsla(0., 0., 0., 0.);
+    Theme::update(cx, |t| {
+        let c = &mut t.colors;
+        c.background = clear;
+        c.foreground = p.fg;
+        c.muted_foreground = p.secondary;
+        c.border = Hsla { a: 0.12, ..p.fg };
+        c.ring = p.accent;
+        c.primary = p.accent;
+        c.primary_foreground = p.on_accent;
+        c.popover = p.surface;
+        c.popover_foreground = p.fg;
+        c.list = clear;
+        c.scrollbar = clear;
+        c.scrollbar_thumb = Hsla { a: 0.3, ..p.fg };
+        c.scrollbar_thumb_hover = Hsla { a: 0.5, ..p.fg };
+    });
+}
+
+pub fn is_dark(a: WindowAppearance) -> bool {
+    matches!(a, WindowAppearance::Dark | WindowAppearance::VibrantDark)
+}
+
+/// Builds the state and starts following the daemon and the theme.
+pub fn start(
+    env: Env,
+    socket: PathBuf,
+    window: &mut Window,
+    cx: &mut App,
+) -> (Entity<Shared>, Entity<Clock>) {
+    let omarchy = Omarchy::system(&env);
+    let detected = omarchy.detected();
+    let theme = ThemeState {
+        stored: Settings::load(&env).theme,
+        detected,
+        palette: detected.then(|| omarchy.read().ok()).flatten(),
+        omarchy,
+    };
+    let clock = cx.new(|_| Clock::default());
+    let shared = cx.new(|_| Shared {
+        player: Player::default(),
+        art: Art::default(),
+        thumbs: Arc::default(),
+        thumbs_of: None,
+        theme,
+        dark: is_dark(window.appearance()),
+        queue_open: false,
+        settings_open: false,
+        failure: None,
+        failures: 0,
+        socket: socket.clone(),
+        env,
+        _watch: None,
+    });
+    apply_component_theme(shared.read(cx).target_palette(), cx);
+    shared.update(cx, |s, cx| s.follow_cover(cx));
+
+    // The daemon: its thread never touches the window, it hands lines over.
+    let (tx, mut rx) = futures::channel::mpsc::unbounded();
+    link::follow(socket, Arc::new(AtomicBool::new(false)), move |m| {
+        tx.unbounded_send(m).is_ok()
+    });
+    let (s, c) = (shared.clone(), clock.clone());
+    cx.spawn(async move |cx| {
+        while let Some(msg) = rx.next().await {
+            let at = Instant::now();
+            s.update(cx, |s, cx| {
+                let changed = c.update(cx, |clock, cx| {
+                    let ch = match &msg {
+                        Msg::Event(e) => s.player.apply(e, clock, at),
+                        Msg::Gone => s.player.gone(clock),
+                    };
+                    if ch.clock {
+                        cx.notify();
+                    }
+                    ch
+                });
+                if changed.player {
+                    s.follow_thumbs(cx);
+                    s.follow_cover(cx);
+                    cx.notify();
+                }
+            });
+        }
+    })
+    .detach();
+
+    // Omarchy's theme, live.
+    if detected {
+        let (tx, mut rx) = futures::channel::mpsc::unbounded();
+        let omarchy = shared.read(cx).theme.omarchy.clone();
+        let watcher = theme::watch(omarchy, theme::SETTLE, move |p| {
+            tx.unbounded_send(p).is_ok()
+        });
+        shared.update(cx, |s, _| s._watch = watcher);
+        let s = shared.clone();
+        cx.spawn(async move |cx| {
+            while let Some(p) = rx.next().await {
+                s.update(cx, |s, cx| {
+                    s.theme.palette = p;
+                    apply_component_theme(s.target_palette(), cx);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+    (shared, clock)
+}

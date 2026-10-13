@@ -783,6 +783,21 @@ mod tests {
     use super::*;
     use clap::CommandFactory;
 
+    /// The window runs `melodie like track -- <id>`: the id must come out whole even when it
+    /// starts with a dash.
+    #[test]
+    fn an_id_after_double_dash_is_not_read_as_an_option() {
+        for verb in ["like", "unlike"] {
+            let cli = Cli::try_parse_from(["melodie", verb, "track", "--", "-7f3a"]).unwrap();
+            let (kind, id) = match cli.command {
+                Cmd::Like { kind, id, .. } | Cmd::Unlike { kind, id } => (kind, id),
+                _ => panic!("{verb} is not a like"),
+            };
+            assert!(matches!(kind, Some(StarArg::Track)));
+            assert_eq!(id.as_deref(), Some("-7f3a"));
+        }
+    }
+
     /// Words that exist in French and not in English; the help must hold none of them.
     const FRENCH_WORDS: &[&str] = &[
         "le", "la", "les", "un", "une", "des", "du", "ou", "et", "avec", "sans", "pour", "dans",
