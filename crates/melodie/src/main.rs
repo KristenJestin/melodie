@@ -798,6 +798,55 @@ mod tests {
         }
     }
 
+    /// What the window's library runs (`melodie_gui::launch::Job`): each line must parse, with
+    /// the id whole.
+    #[test]
+    fn the_library_commands_of_the_window_parse() {
+        let parse = |a: &[&str]| {
+            let mut v = vec!["melodie"];
+            v.extend(a);
+            Cli::try_parse_from(v).unwrap_or_else(|e| panic!("{a:?}: {e}"))
+        };
+        match parse(&["play", "album", "--shuffle", "--", "-al1"]).command {
+            Cmd::Play { id, shuffle, .. } => assert_eq!((id.as_str(), shuffle), ("-al1", true)),
+            _ => panic!("not a play"),
+        }
+        match parse(&["queue", "playlist", "--next", "--", "-p1"]).command {
+            Cmd::Queue { id, next, .. } => assert_eq!((id.as_deref(), next), (Some("-p1"), true)),
+            _ => panic!("not a queue"),
+        }
+        match parse(&["mix", "artist", "--", "-ar1"]).command {
+            Cmd::Mix {
+                what: MixWhat::Artist { id },
+                ..
+            } => assert_eq!(id, ["-ar1"]),
+            _ => panic!("not an artist mix"),
+        }
+        assert!(matches!(
+            parse(&["mix", "rediscover"]).command,
+            Cmd::Mix {
+                what: MixWhat::Rediscover,
+                ..
+            }
+        ));
+        match parse(&["playlist", "add", "--json", "--", "-p1", "album", "-al1"]).command {
+            Cmd::Playlist {
+                cmd:
+                    PlaylistCmd::Add {
+                        playlist_id,
+                        target,
+                        json,
+                        ..
+                    },
+            } => {
+                assert_eq!(playlist_id, "-p1");
+                assert_eq!(target, ["album", "-al1"]);
+                assert!(json);
+            }
+            _ => panic!("not a playlist add"),
+        }
+    }
+
     /// Words that exist in French and not in English; the help must hold none of them.
     const FRENCH_WORDS: &[&str] = &[
         "le", "la", "les", "un", "une", "des", "du", "ou", "et", "avec", "sans", "pour", "dans",
