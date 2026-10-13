@@ -20,6 +20,8 @@ const ICON_PLAYLIST: &str = "\u{f0cb8}";
 pub enum Target {
     Current,
     Track(String),
+    /// Several tracks at once (a selection), in this order.
+    Tracks(Vec<String>),
     Album(String),
 }
 
@@ -31,7 +33,8 @@ impl Target {
             [w] if w == "current" => Ok(Target::Current),
             [k, id] if k == "track" => Ok(Target::Track(id.clone())),
             [k, id] if k == "album" => Ok(Target::Album(id.clone())),
-            _ => Err("cible attendue : current, track <id> ou album <id>".into()),
+            [k, ids @ ..] if k == "track" && ids.len() > 1 => Ok(Target::Tracks(ids.to_vec())),
+            _ => Err("cible attendue : current, track <id>… ou album <id>".into()),
         }
     }
 
@@ -40,6 +43,13 @@ impl Target {
         match self {
             Target::Current => "current".into(),
             Target::Track(id) => format!("track {}", shell_word(id)),
+            Target::Tracks(ids) => format!(
+                "track {}",
+                ids.iter()
+                    .map(|i| shell_word(i))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
             Target::Album(id) => format!("album {}", shell_word(id)),
         }
     }
@@ -116,22 +126,32 @@ pub fn add_checked(
     allow_duplicates: bool,
     at: u64,
 ) -> Result<AddOutcome, Failure> {
-    let mut out = AddOutcome::default();
-    if allow_duplicates {
-        out.added = tracks.to_vec();
-    } else {
-        // Read from the server: the local copy holds only the counts, and would be stale anyway.
-        let mut seen: HashSet<String> = entries(client, pid)?.into_iter().map(|t| t.id).collect();
-        for t in tracks {
-            if seen.insert(t.id.clone()) {
-                out.added.push(t.clone());
-            } else {
-                out.already.push(t.clone());
-            }
+    let out = if allow_duplicates {
+        AddOutcome {
+            added: tracks.to_vec(),
+            already: Vec::new(),
         }
-    }
+    } else {
+        check_add(client, pid, tracks)?
+    };
     if !out.added.is_empty() {
         add(client, conn, pid, &out.added, at)?;
+    }
+    Ok(out)
+}
+
+/// What `add_checked` would do without duplicates, without writing anything: the tracks not in
+/// the playlist yet, and those already there (or repeated in `tracks`).
+pub fn check_add(client: &Client, pid: &str, tracks: &[TrackInfo]) -> Result<AddOutcome, Failure> {
+    // Read from the server: the local copy may be stale.
+    let mut seen: HashSet<String> = entries(client, pid)?.into_iter().map(|t| t.id).collect();
+    let mut out = AddOutcome::default();
+    for t in tracks {
+        if seen.insert(t.id.clone()) {
+            out.added.push(t.clone());
+        } else {
+            out.already.push(t.clone());
+        }
     }
     Ok(out)
 }
@@ -275,30 +295,102 @@ pub fn remove(
     index: usize,
     at: u64,
 ) -> Result<TrackInfo, Failure> {
-    let r = call(client, "getPlaylist", &[("id", pid.to_string())])?;
-    let entries = r["playlist"]["entry"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
-    let Some(track) = entries.get(index).and_then(TrackInfo::from_api) else {
+    let mut gone = remove_many(client, conn, pid, &[(index, None)], at)?;
+    Ok(gone.remove(0))
+}
+
+/// The track at `index` (from 0) of `entries`, checked to be `expect` when it is given: a
+/// window shows the playlist as it last read it, and another client may have changed it since.
+fn entry_at(
+    entries: &[TrackInfo],
+    index: usize,
+    expect: Option<&str>,
+) -> Result<TrackInfo, Failure> {
+    let Some(track) = entries.get(index) else {
         return Err(Failure::Internal(anyhow!(
             "the playlist has no track at rank {} (it has {} tracks, ranks counted from 1)",
             index + 1,
             entries.len()
         )));
     };
-    call(
-        client,
-        "updatePlaylist",
-        &[
-            ("playlistId", pid.to_string()),
-            ("songIndexToRemove", index.to_string()),
-        ],
-    )?;
+    if expect.is_some_and(|id| id != track.id) {
+        return Err(Failure::Internal(anyhow!(
+            "the track at rank {} is no longer the one expected: the playlist changed, read it again",
+            index + 1
+        )));
+    }
+    Ok(track.clone())
+}
+
+/// Removes the tracks at these ranks (from 0, each with the id it should hold, when known) in
+/// one `updatePlaylist`, whose indexes all refer to the order before the call (Navidrome's
+/// reading). Every rank is checked on the server's playlist first: one wrong rank writes
+/// nothing. Returns the tracks removed, in the order asked.
+pub fn remove_many(
+    client: &Client,
+    conn: Option<&Connection>,
+    pid: &str,
+    picks: &[(usize, Option<&str>)],
+    at: u64,
+) -> Result<Vec<TrackInfo>, Failure> {
+    let list = entries(client, pid)?;
+    let mut indexes: Vec<usize> = Vec::new();
+    let mut gone = Vec::new();
+    for &(index, expect) in picks {
+        let track = entry_at(&list, index, expect)?;
+        if !indexes.contains(&index) {
+            indexes.push(index);
+            gone.push(track);
+        }
+    }
+    let mut params = vec![("playlistId", pid.to_string())];
+    params.extend(indexes.iter().map(|i| ("songIndexToRemove", i.to_string())));
+    call(client, "updatePlaylist", &params)?;
     if let Some(c) = conn {
-        edit_local(c, pid, -1, -(track.duration as i64), at, |ids| {
-            if index < ids.len() {
-                ids.remove(index);
+        edit_local(c, pid, -(gone.len() as i64), -secs(&gone), at, |ids| {
+            let mut i = 0;
+            ids.retain(|_| {
+                i += 1;
+                !indexes.contains(&(i - 1))
+            })
+        })?;
+    }
+    Ok(gone)
+}
+
+/// Moves the track at `from` to `to` (both from 0, `to` counted in the playlist as it is before
+/// the move). Subsonic has no move: the whole order is written again with `createPlaylist` and
+/// the `playlistId`, which Navidrome reads as "replace the tracks, keep the playlist". Returns
+/// the track moved.
+pub fn move_track(
+    client: &Client,
+    conn: Option<&Connection>,
+    pid: &str,
+    from: usize,
+    to: usize,
+    expect: Option<&str>,
+    at: u64,
+) -> Result<TrackInfo, Failure> {
+    let list = entries(client, pid)?;
+    let track = entry_at(&list, from, expect)?;
+    if to >= list.len() {
+        return Err(Failure::Internal(anyhow!(
+            "the playlist has no rank {} (it has {} tracks, ranks counted from 1)",
+            to + 1,
+            list.len()
+        )));
+    }
+    let mut ids: Vec<String> = list.into_iter().map(|t| t.id).collect();
+    let id = ids.remove(from);
+    ids.insert(to, id);
+    let mut params = vec![("playlistId", pid.to_string())];
+    params.extend(ids.iter().map(|i| ("songId", i.clone())));
+    call(client, "createPlaylist", &params)?;
+    if let Some(c) = conn {
+        edit_local(c, pid, 0, 0, at, |local| {
+            if from < local.len() && to < local.len() {
+                let id = local.remove(from);
+                local.insert(to, id);
             }
         })?;
     }
@@ -480,6 +572,21 @@ mod tests {
         assert_eq!(w(&["album", "a b"]).unwrap().words(), "album 'a b'");
         assert!(w(&["playlist", "x"]).is_err());
         assert!(w(&["track"]).is_err());
+    }
+
+    #[test]
+    fn several_tracks_are_one_target() {
+        let w = |a: &[&str]| Target::parse(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(
+            w(&["track", "t1", "t2"]),
+            Ok(Target::Tracks(vec!["t1".into(), "t2".into()]))
+        );
+        assert_eq!(w(&["track", "t1"]), Ok(Target::Track("t1".into())));
+        assert_eq!(
+            w(&["track", "t1", "a b"]).unwrap().words(),
+            "track t1 'a b'"
+        );
+        assert!(w(&["album", "a1", "a2"]).is_err());
     }
 
     #[test]
@@ -915,5 +1022,96 @@ mod tests {
         let found = remove_duplicates(&client, None, "p1", 0).unwrap();
         assert!(found.exact.is_empty());
         assert_eq!(writes(&fake), 0);
+    }
+
+    #[test]
+    fn checking_an_add_reads_the_playlist_and_writes_nothing() {
+        let (_d, _env, fake, client) = setup();
+        seed(&fake, "p1", &[("s1", "T1", "A")]);
+        let r = check_add(&client, "p1", &[info("s1", 200), info("s2", 200)]).unwrap();
+        assert_eq!(ids(&r.added), ["s2"]);
+        assert_eq!(ids(&r.already), ["s1"]);
+        assert_eq!(writes(&fake), 0);
+        assert_eq!(server_ids(&fake, "p1"), ["s1"]);
+    }
+
+    #[test]
+    fn removing_several_ranks_is_one_call_on_the_order_before_it() {
+        let (_d, env, fake, client) = setup();
+        let conn = db::open_existing(&env).unwrap().unwrap();
+        seed(
+            &fake,
+            "p1",
+            &[
+                ("s0", "A", "X"),
+                ("s1", "B", "X"),
+                ("s2", "C", "X"),
+                ("s3", "D", "X"),
+            ],
+        );
+        let gone =
+            remove_many(&client, Some(&conn), "p1", &[(3, None), (1, Some("s1"))], 0).unwrap();
+        assert_eq!(ids(&gone), ["s3", "s1"]);
+        assert_eq!(writes(&fake), 1);
+        assert_eq!(server_ids(&fake, "p1"), ["s0", "s2"]);
+        assert_eq!(local_ids(&conn, "p1"), ["s0", "s2"]);
+        assert_eq!(counts(&conn, "p1"), (40, 7500 - 400));
+    }
+
+    #[test]
+    fn removing_a_rank_that_no_longer_holds_the_track_seen_writes_nothing() {
+        let (_d, _env, fake, client) = setup();
+        seed(&fake, "p1", &[("s0", "A", "X"), ("s1", "B", "X")]);
+        let r = remove_many(&client, None, "p1", &[(0, Some("s0")), (1, Some("s9"))], 0);
+        let Err(Failure::Internal(e)) = r else {
+            panic!("{r:?}")
+        };
+        assert!(e.to_string().contains("rank 2"), "{e}");
+        assert_eq!(writes(&fake), 0);
+        assert_eq!(server_ids(&fake, "p1"), ["s0", "s1"]);
+    }
+
+    #[test]
+    fn moving_a_track_rewrites_the_order_and_keeps_the_rest() {
+        let (_d, env, fake, client) = setup();
+        let conn = db::open_existing(&env).unwrap().unwrap();
+        seed(
+            &fake,
+            "p1",
+            &[
+                ("s0", "A", "X"),
+                ("s1", "B", "X"),
+                ("s2", "C", "X"),
+                ("s3", "D", "X"),
+            ],
+        );
+        db::replace_playlist_tracks(
+            &conn,
+            "p1",
+            &["s0".into(), "s1".into(), "s2".into(), "s3".into()],
+        )
+        .unwrap();
+        let t = move_track(&client, Some(&conn), "p1", 0, 2, Some("s0"), 0).unwrap();
+        assert_eq!(t.id, "s0");
+        assert_eq!(server_ids(&fake, "p1"), ["s1", "s2", "s0", "s3"]);
+        let q = last(&fake);
+        let args = q.split_once('?').unwrap().1;
+        assert!(q.starts_with("createPlaylist?"), "{q}");
+        assert_eq!(params(args, "playlistId"), ["p1"]);
+        assert!(params(args, "name").is_empty(), "the name is left as it is");
+        assert_eq!(local_ids(&conn, "p1"), ["s1", "s2", "s0", "s3"]);
+        assert_eq!(counts(&conn, "p1"), (42, 7500), "same tracks, same counts");
+        move_track(&client, Some(&conn), "p1", 3, 0, None, 0).unwrap();
+        assert_eq!(server_ids(&fake, "p1"), ["s3", "s1", "s2", "s0"]);
+    }
+
+    #[test]
+    fn moving_a_track_that_is_not_where_it_was_seen_writes_nothing() {
+        let (_d, _env, fake, client) = setup();
+        seed(&fake, "p1", &[("s0", "A", "X"), ("s1", "B", "X")]);
+        assert!(move_track(&client, None, "p1", 0, 1, Some("s1"), 0).is_err());
+        assert!(move_track(&client, None, "p1", 0, 2, None, 0).is_err());
+        assert_eq!(fake.calls_of("createPlaylist"), 0);
+        assert_eq!(server_ids(&fake, "p1"), ["s0", "s1"]);
     }
 }

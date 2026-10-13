@@ -304,6 +304,25 @@ impl State {
             }
             "scrobble" | "star" | "unstar" | "deletePlaylist" => ok(json!({})),
             "createPlaylist" => {
+                // With a `playlistId`, Navidrome replaces the tracks of that playlist.
+                if let Some(id) = param(query, "playlistId") {
+                    let ids = params(query, "songId");
+                    if let Some(entries) = self.playlists.lock().unwrap().get_mut(&id) {
+                        let before = entries.clone();
+                        *entries = ids
+                            .iter()
+                            .map(|sid| {
+                                before
+                                    .iter()
+                                    .chain(songs.iter())
+                                    .find(|s| s["id"] == sid.as_str())
+                                    .cloned()
+                                    .unwrap_or_else(|| json!({"id": sid}))
+                            })
+                            .collect();
+                    }
+                    return ok(json!({"playlist": {"id": id, "songCount": ids.len()}}));
+                }
                 let n = params(query, "songId").len();
                 ok(
                     json!({"playlist": {"id": "p9", "name": param(query, "name").unwrap_or_default(),
