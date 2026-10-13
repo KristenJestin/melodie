@@ -120,10 +120,17 @@ Screenshots and a recording of the animations, made with invented data, are in
   current track.
 - **The library**, in the sidebar: Home, Albums, Artists, Tracks, and the playlists. Everything is
   read from the local copy, away from the window's thread: browsing never touches the network.
-  - Home: the albums added last, the mixes (the personal mix, the rediscoveries, and a mix for
-    each of the six genres `melodie mixes` offers, found by the same code), the albums played most.
-  - Albums: a grid of covers, sorted by date added, name, artist or year (a second click on the
-    sort turns it round). Artists and Tracks: long lists sorted by a click on a column.
+  - Home: a greeting by the time of day, then a large card for something worth playing now (the
+    album added last, the personal mix, the album played last, the album played most), in the
+    colours of its cover, browsed with its arrows or its dots. Under it, rows that scroll sideways
+    (shift and the wheel, a touchpad, or a drag; the wheel alone scrolls the page): the albums
+    added last, the mixes as coloured cards (the personal mix, the rediscoveries, and a mix for
+    each of the six genres `melodie mixes` offers, found by the same code), the albums played
+    most, the albums played last, the artists played most (in circles), the playlists. Each row
+    holds 20 at most; "See all" opens the albums in that order, or the artists. "Played last"
+    is the server's, as of the last copy.
+  - Albums: a grid of covers, sorted by date added, name, artist, year, plays or last played (a
+    second click on the sort turns it round). Artists and Tracks: long lists sorted by a click on a column.
   - A page for an album (its tracks; play, shuffle, play next, add to the queue, instant mix, add
     to a playlist), an artist (its top tracks by plays, its albums; play, shuffle, instant mix)
     and a playlist (its tracks, as the local copy holds them; play, shuffle, play next, add to the
