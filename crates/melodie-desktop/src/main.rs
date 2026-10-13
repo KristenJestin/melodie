@@ -177,10 +177,6 @@ impl Root {
     }
 
     fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        // the sign-in screen covers everything: its fields take every key
-        if self.account.read(cx).screen(cx) == Screen::SignIn {
-            return;
-        }
         let k = &ev.keystroke;
         let key = Key::read(k.modifiers.control, &k.key, k.key_char.as_deref());
         let situation = {
@@ -196,6 +192,8 @@ impl Root {
                 dialog_open: self.views.dialogs.read(cx).is_open(),
                 selection: c.selection.count(c.here()) > 0,
                 field_empty: v.is_empty(),
+                sign_in: self.account.read(cx).screen(cx) == Screen::SignIn,
+                sign_in_field_focused: self.views.sign_in.read(cx).has_focus(window, cx),
             }
         };
         match keys::act(key, situation) {

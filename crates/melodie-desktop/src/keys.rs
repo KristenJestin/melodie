@@ -48,6 +48,10 @@ pub struct Situation<'a> {
     /// Rows of the current list are picked.
     pub selection: bool,
     pub field_empty: bool,
+    /// The sign-in screen covers the window.
+    pub sign_in: bool,
+    /// The focus is in one of the sign-in screen's fields.
+    pub sign_in_field_focused: bool,
 }
 
 /// What the key makes the window do.
@@ -77,6 +81,14 @@ pub fn in_search(here: &Place) -> bool {
 }
 
 pub fn act(key: Key, s: Situation) -> Act {
+    // The sign-in screen covers the window and keeps every key but one: Space still plays and
+    // pauses what the daemon plays on after a sign out, unless it is typed in a field.
+    if s.sign_in {
+        return match key {
+            Key::Space if !s.sign_in_field_focused => Act::PlayPause,
+            _ => Act::Pass,
+        };
+    }
     let typing = typing(s.here, s.field_focused);
     if s.dialog_open {
         return match key {
@@ -111,6 +123,8 @@ mod tests {
             dialog_open: false,
             selection: false,
             field_empty: true,
+            sign_in: false,
+            sign_in_field_focused: false,
         }
     }
 
@@ -122,6 +136,24 @@ mod tests {
             act(Key::Space, at(&Place::Album("al1".into()), true)),
             Act::PlayPause
         );
+    }
+
+    #[test]
+    fn space_still_plays_and_pauses_under_the_sign_in_screen_outside_its_fields() {
+        // after a sign out the music plays on, behind the screen
+        let covered = |sign_in_field_focused| Situation {
+            sign_in: true,
+            sign_in_field_focused,
+            ..at(&Place::Albums, false)
+        };
+        assert_eq!(act(Key::Space, covered(false)), Act::PlayPause);
+        // in a field it is a space of the address, the user or the password
+        assert_eq!(act(Key::Space, covered(true)), Act::Pass);
+        // the screen keeps every other key: nothing opens the search or goes back behind it
+        for key in [Key::Find, Key::Slash, Key::Escape, Key::Enter, Key::Other] {
+            assert_eq!(act(key, covered(false)), Act::Pass, "{key:?}");
+            assert_eq!(act(key, covered(true)), Act::Pass, "{key:?}");
+        }
     }
 
     #[test]
