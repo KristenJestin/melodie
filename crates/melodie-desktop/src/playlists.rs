@@ -1,9 +1,11 @@
 //! What the sidebar shows of each playlist: the picture the server makes for it (a mosaic of its
 //! covers), else the same icon as every other playlist.
 
+use crate::covers::{Cover, Covers};
 use melodie_core::library::Playlist;
-use std::collections::HashMap;
-use std::path::PathBuf;
+
+/// The side, in logical pixels, of a playlist's picture in the sidebar.
+pub const PICTURE: f32 = 24.0;
 
 /// The cover ids to ask the shared cover queue for, once each, in the order of the playlists.
 pub fn wanted_covers(playlists: &[Playlist]) -> Vec<String> {
@@ -16,17 +18,23 @@ pub fn wanted_covers(playlists: &[Playlist]) -> Vec<String> {
     ids
 }
 
-/// The picture file of a playlist, if it has a cover and the cover is on disk.
-pub fn picture<'a>(
-    playlist: &Playlist,
-    files: &'a HashMap<String, PathBuf>,
-) -> Option<&'a PathBuf> {
-    playlist.cover.as_ref().and_then(|id| files.get(id))
+/// The picture of a playlist, if it has a cover and the cover is on disk (at the size the
+/// sidebar draws it, or a smaller one meanwhile).
+pub fn picture(playlist: &Playlist, covers: &Covers) -> Option<Cover> {
+    playlist
+        .cover
+        .as_ref()
+        .and_then(|id| covers.get(id, PICTURE))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::covers::{Files, resolve};
+    use melodie_core::cover::{self, Tier, Want};
+    use melodie_core::env::Env;
+    use std::sync::Arc;
+    use std::time::Instant;
 
     fn playlist(id: &str, cover: Option<&str>) -> Playlist {
         Playlist {
@@ -55,19 +63,41 @@ mod tests {
         assert_eq!(wanted_covers(&list), ["pl-a"]);
     }
 
+    /// The covers known after the cover queue found `ids` at the sidebar's size on disk.
+    fn covers_on_disk(env: &Env, ids: &[&str]) -> Covers {
+        for id in ids {
+            let file = cover::tier_path(env, id, Tier::for_draw(PICTURE, 1.0));
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, "").unwrap();
+        }
+        let wants: Vec<Want> = ids
+            .iter()
+            .map(|id| Want::new(*id, Tier::for_draw(PICTURE, 1.0)))
+            .collect();
+        let (found, _) = resolve(env, &wants);
+        let mut files = Files::default();
+        files.merge(found, Instant::now());
+        Covers::new(Arc::new(files), 1.0)
+    }
+
     #[test]
     fn a_playlist_shows_its_picture_once_the_file_is_there() {
-        let files = HashMap::from([("pl-p1".to_string(), PathBuf::from("/cache/pl-p1.jpg"))]);
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        let covers = covers_on_disk(&env, &["pl-p1"]);
+        let shown = picture(&playlist("p1", Some("pl-p1")), &covers).unwrap();
         assert_eq!(
-            picture(&playlist("p1", Some("pl-p1")), &files),
-            Some(&PathBuf::from("/cache/pl-p1.jpg"))
+            shown.path,
+            cover::tier_path(&env, "pl-p1", Tier::for_draw(PICTURE, 1.0))
         );
     }
 
     #[test]
     fn a_playlist_keeps_its_icon_without_a_picture_or_before_the_file_lands() {
-        let files = HashMap::new();
-        assert_eq!(picture(&playlist("p1", None), &files), None);
-        assert_eq!(picture(&playlist("p2", Some("pl-p2")), &files), None);
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        let covers = covers_on_disk(&env, &["pl-p1"]);
+        assert_eq!(picture(&playlist("p1", None), &covers), None);
+        assert_eq!(picture(&playlist("p2", Some("pl-p2")), &covers), None);
     }
 }

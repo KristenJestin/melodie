@@ -17,6 +17,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use melodie_core::library::{Artist, ArtistBy, Sort, Track, TrackBy};
 use melodie_desktop::browse::Place;
+use melodie_desktop::covers::Covers;
 use melodie_desktop::figures::{Figures as _, clock_text};
 use melodie_desktop::launch::{Adding, Job, Kind};
 use melodie_desktop::selection::{How, Selection};
@@ -687,7 +688,7 @@ fn artist_header(sort: Sort<ArtistBy>, pal: Palette, catalog: Entity<Catalog>) -
 fn artist_row(
     ix: usize,
     a: &Artist,
-    covers: &std::collections::HashMap<String, std::path::PathBuf>,
+    covers: &Covers,
     pal: Palette,
     catalog: &Entity<Catalog>,
 ) -> Stateful<Div> {
@@ -708,7 +709,7 @@ fn artist_row(
                 .cursor_pointer()
                 .hover(|s| s.bg(Hsla { a: 0.07, ..pal.fg }))
                 .child(cover_box(
-                    a.cover.as_ref().and_then(|c| covers.get(c)),
+                    a.cover.as_ref().and_then(|c| covers.get(c, 40.)),
                     40.,
                     20.,
                     pal,
@@ -738,7 +739,12 @@ impl Render for ArtistList {
         let pal = palette(&self.shared, window, cx);
         let (artists, covers, sort, empty) = {
             let c = self.catalog.read(cx);
-            (c.artists.clone(), c.covers.clone(), c.artist_sort, c.empty)
+            (
+                c.artists.clone(),
+                Covers::new(c.covers.clone(), window.scale_factor()),
+                c.artist_sort,
+                c.empty,
+            )
         };
         if artists.is_some() && self.shown_sort != Some(sort) {
             if self.shown_sort.is_some() {

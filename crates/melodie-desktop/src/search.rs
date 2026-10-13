@@ -19,11 +19,10 @@ use gpui_kit::*;
 use melodie_core::env::Env;
 use melodie_core::search::{self, Hit};
 use melodie_desktop::browse::Place;
+use melodie_desktop::covers::{Covers, Use};
 use melodie_desktop::find::{self, Action, Answer, Latest};
 use melodie_desktop::launch::{Adding, Kind};
 use melodie_desktop::theme::Palette;
-use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -184,7 +183,8 @@ impl SearchView {
             .filter(|(kind, _)| *kind != Kind::Track)
             .flat_map(|(_, hits)| hits.iter());
         let ids: Vec<String> = shown.chain(all).filter_map(|h| h.cover.clone()).collect();
-        self.catalog.update(cx, |c, cx| c.want_covers(ids, cx));
+        self.catalog
+            .update(cx, |c, cx| c.want_covers(ids, Use::SMALL, true, cx));
     }
 }
 
@@ -264,7 +264,7 @@ fn result_row(
     list: &'static str,
     ix: usize,
     hit: &Hit,
-    covers: &HashMap<String, PathBuf>,
+    covers: &Covers,
     pal: Palette,
     catalog: &Entity<Catalog>,
     hover: Hover,
@@ -293,7 +293,7 @@ fn result_row(
                 .cursor_pointer()
                 .hover(|s| s.bg(Hsla { a: 0.07, ..pal.fg }))
                 .child(cover_box(
-                    hit.cover.as_ref().and_then(|c| covers.get(c)),
+                    hit.cover.as_ref().and_then(|c| covers.get(c, 40.)),
                     40.,
                     round,
                     pal,
@@ -354,7 +354,11 @@ impl Render for SearchView {
         let pal = palette(&self.shared, window, cx);
         let (here, covers, can_back) = {
             let c = self.catalog.read(cx);
-            (c.here().clone(), c.covers.clone(), c.nav.can_go_back())
+            (
+                c.here().clone(),
+                Covers::new(c.covers.clone(), window.scale_factor()),
+                c.nav.can_go_back(),
+            )
         };
         let text = self.text.clone();
         let catalog = &self.catalog;

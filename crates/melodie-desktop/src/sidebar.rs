@@ -13,9 +13,9 @@ use gpui_kit::component::Icon;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use melodie_desktop::browse::Place;
-use melodie_desktop::playlists;
+use melodie_desktop::covers::{Cover, Covers};
+use melodie_desktop::playlists::{self, PICTURE};
 use melodie_desktop::theme::{Palette, mix};
-use std::path::PathBuf;
 
 /// A window narrower than this has the sidebar of icons.
 const COMPACT: f32 = 760.0;
@@ -40,16 +40,13 @@ impl Sidebar {
     }
 }
 
-/// The side of a playlist's picture: the entry's icon, a little larger so that it reads.
-const PICTURE: f32 = 24.0;
-
 /// An entry: its icon (a playlist's own picture instead, when it has one), its name unless
 /// compact, marked when it is where the user is.
 #[derive(IntoElement)]
 struct Entry {
     id: ElementId,
     icon: IconName,
-    picture: Option<PathBuf>,
+    picture: Option<Cover>,
     label: SharedString,
     compact: bool,
     on: bool,
@@ -82,7 +79,7 @@ impl RenderOnce for Entry {
             .on_click(move |_, _, cx| catalog.update(cx, |c, cx| c.start_at(to.clone(), cx)))
             .child(match self.picture {
                 // GPUI does not clip children to rounded corners: the image is rounded itself
-                Some(path) => img(path)
+                Some(cover) => img(cover.path)
                     .size(px(PICTURE))
                     .flex_none()
                     .rounded(px(4.))
@@ -118,7 +115,7 @@ impl Render for Sidebar {
             (
                 c.nav.section().clone(),
                 c.playlists.clone(),
-                c.covers.clone(),
+                Covers::new(c.covers.clone(), window.scale_factor()),
             )
         };
         let (queue_open, settings_open) = {
@@ -214,7 +211,7 @@ impl Render for Sidebar {
                     .children(list.iter().map(|p| Entry {
                         id: ElementId::Name(format!("nav-pl-{}", p.id).into()),
                         icon: IconName::ListMusic,
-                        picture: playlists::picture(p, &covers).cloned(),
+                        picture: playlists::picture(p, &covers),
                         label: p.name.clone().into(),
                         compact,
                         on: section == Place::Playlist(p.id.clone()),

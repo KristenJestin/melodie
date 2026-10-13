@@ -1,7 +1,7 @@
 //! The pictures of the queue's rows, looked up away from the render path: finding a thumbnail
 //! checks files, and a list redraws on every frame of a scroll or a fade.
 
-use melodie_core::cover;
+use melodie_core::cover::{Disk, Tier};
 use melodie_core::env::Env;
 use melodie_core::proto::QueueEntry;
 use std::collections::HashMap;
@@ -16,13 +16,11 @@ pub fn resolve(env: &Env, tracks: &[QueueEntry]) -> Thumbs {
     tracks
         .iter()
         .filter_map(|t| {
+            // the smallest file not smaller than a thumbnail: any tier the window fetched serves
             let local = t
                 .cover_id
                 .as_deref()
-                .and_then(|id| match cover::local(env, id) {
-                    cover::Local::Have(p) => Some(p),
-                    _ => None,
-                });
+                .and_then(|id| Disk::read(env, id).pick(Tier::Thumb).cloned());
             local
                 .or_else(|| t.cover.clone().map(PathBuf::from))
                 .map(|p| (t.entry, p))
@@ -54,6 +52,7 @@ pub fn big(track: &QueueEntry, thumbs: &Thumbs) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use melodie_core::cover;
 
     fn track(entry: u64, cover_id: Option<&str>, cover: Option<&str>) -> QueueEntry {
         QueueEntry {
@@ -89,6 +88,21 @@ mod tests {
         );
         assert_eq!(thumbs.get(&3), None, "no picture at all: the glyph");
         assert_eq!(thumbs.get(&4), None);
+    }
+
+    #[test]
+    fn a_row_tier_file_serves_the_queue_when_there_is_no_thumbnail() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        let row = cover::tier_path(&env, "c1", Tier::Row);
+        std::fs::create_dir_all(row.parent().unwrap()).unwrap();
+        std::fs::write(&row, "").unwrap();
+        let thumbs = resolve(&env, &[track(1, Some("c1"), Some("/tmp/full.img"))]);
+        assert_eq!(
+            thumbs.get(&1),
+            Some(&row),
+            "the window's own file, before the daemon's"
+        );
     }
 
     #[test]
@@ -131,6 +145,7 @@ mod tests {
     #[test]
     fn the_rows_of_the_queue_get_their_covers_when_they_land() {
         use crate::covers::{Fetch, Queue, round};
+        use melodie_core::cover::Want;
         let dir = tempfile::tempdir().unwrap();
         let env = Env::with_home(dir.path());
         let tracks = [
@@ -140,12 +155,16 @@ mod tests {
         ];
         assert!(resolve(&env, &tracks).is_empty(), "the glyph at first");
         let mut queue = Queue::default();
-        let new = queue.see(wanted(&tracks));
+        let new = queue.see(
+            wanted(&tracks)
+                .into_iter()
+                .map(|id| Want::new(id, Tier::Thumb)),
+        );
         queue.missing(new);
         let batch = queue.start().unwrap();
-        let r = round(&env, &batch, |ids| {
-            for id in ids {
-                let thumb = cover::thumb_path(&env, id);
+        let r = round(&env, &batch, |wants| {
+            for w in wants {
+                let thumb = cover::thumb_path(&env, &w.id);
                 std::fs::create_dir_all(thumb.parent().unwrap()).unwrap();
                 std::fs::write(thumb, "").unwrap();
             }
