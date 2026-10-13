@@ -252,7 +252,8 @@ pub fn recent(env: &Env, seen: &[Seen]) -> anyhow::Result<Option<Vec<Item>>> {
         };
         out.extend(item.map(Item::Found));
     }
-    for a in lib::recently_played(&conn, RECENT)? {
+    // more than are missing: some are already there
+    for a in lib::recently_played(&conn, RECENT * 2)? {
         if out.len() >= RECENT {
             break;
         }
@@ -575,6 +576,31 @@ mod tests {
         };
         assert_eq!(Seen::of_job(&star), None);
         assert_eq!(Seen::of_job(&Job::PlayMix), None);
+    }
+
+    #[test]
+    fn the_list_fills_when_the_albums_seen_were_also_played_lately() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        let path = db::db_path(&env);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut conn = db::create(&path).unwrap();
+        let tx = conn.transaction().unwrap();
+        db::insert_artist(&tx, &json!({"id":"ar1","name":"Nightfall","albumCount":20})).unwrap();
+        for n in 1..=20 {
+            let mut a = json!({"id":format!("al{n:02}"),"name":format!("Album {n}"),"artist":"Nightfall","artistId":"ar1"});
+            a["played"] = json!(format!("2026-09-01T10:{n:02}:00Z"));
+            db::insert_album(&tx, &a).unwrap();
+        }
+        tx.commit().unwrap();
+        drop(conn);
+        // seen: the albums played last but one, and the ones just before them
+        let seen: Vec<Seen> = (13..=19)
+            .rev()
+            .map(|n| Seen::Album(format!("al{n:02}")))
+            .collect();
+        let items = recent(&env, &seen).unwrap().unwrap();
+        assert_eq!(items.len(), RECENT);
     }
 
     #[test]
