@@ -7,19 +7,20 @@ use crate::context_menu;
 use crate::dialogs::{self, Dialog};
 use crate::motion;
 use crate::player::palette;
-use crate::tables::{Cols, RowCtx, TRACK_ROW, row_hover, track_header, track_row};
+use crate::tables::{RowCtx, TRACK_ROW, row_hover, track_header, track_row, track_rows};
 use crate::widgets::IconButton;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use melodie_core::library::{Album, Track};
+use melodie_core::library::Album;
 use melodie_core::search::human_duration;
 use melodie_desktop::browse::{self, Place};
 use melodie_desktop::covers::Covers;
 use melodie_desktop::figures::Figures as _;
 use melodie_desktop::launch::{Adding, Job, Kind};
 use melodie_desktop::selection::Selection;
+use melodie_desktop::table::{ColSort, Cols, Shown, Table};
 use melodie_desktop::theme::Palette;
 use std::sync::Arc;
 
@@ -64,8 +65,8 @@ pub struct PageView {
     catalog: Entity<Catalog>,
     tracks: UniformListScrollHandle,
     scroll: ScrollHandle,
-    /// The place the lists were last shown for: another one starts from the top.
-    shown: Option<Place>,
+    /// The place and the sort the lists were last shown with: another one starts from the top.
+    shown: Option<(Place, Option<ColSort>)>,
 }
 
 impl PageView {
@@ -256,12 +257,12 @@ fn actions(kind: Kind, id: &str, extra: Extra, pal: Palette, catalog: &Entity<Ca
         })
 }
 
-/// A list of tracks under a page's header, in a virtual list. Its rows can be picked; in a
+/// The track table under a page's header, in a virtual list. Its rows can be picked; in a
 /// playlist of the user's (`playlist`: its id and name) they can be removed and dragged.
 #[allow(clippy::too_many_arguments)]
 fn track_list(
     id: &'static str,
-    tracks: Arc<[Track]>,
+    shown: Shown,
     cols: Cols,
     pal: Palette,
     scroll: &UniformListScrollHandle,
@@ -269,23 +270,30 @@ fn track_list(
     (here, selection): (Place, Selection),
     playlist: Option<(String, String)>,
 ) -> Div {
-    let catalog = catalog.clone();
+    let sort = {
+        let (catalog, here) = (catalog.clone(), here.clone());
+        move |s, cx: &mut App| catalog.update(cx, |c, cx| c.sort_tracks(here.clone(), s, cx))
+    };
     v_flex()
         .flex_1()
         .min_h_0()
-        .child(track_header(cols, None, pal, |_, _| {}))
+        .child(track_header(
+            &cols,
+            playlist.is_some(),
+            shown.sort,
+            pal,
+            sort,
+        ))
         .child(
-            uniform_list(id, tracks.len(), move |range, window, cx| {
-                range
-                    .map(|ix| {
-                        let row = RowCtx {
-                            playlist: playlist.clone(),
-                            ..RowCtx::of(&selection, &here, ix, row_hover(id, ix, window, cx))
-                        };
-                        track_row(id, ix, &tracks[ix], cols, pal, &catalog, row)
-                    })
-                    .collect()
-            })
+            track_rows(
+                id,
+                shown,
+                Arc::new(cols),
+                pal,
+                catalog,
+                (here, selection),
+                playlist,
+            )
             .track_scroll(scroll)
             .flex_1(),
         )
@@ -294,7 +302,7 @@ fn track_list(
 impl Render for PageView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let pal = palette(&self.shared, window, cx);
-        let (here, page, covers, can_back, empty, selection, own) = {
+        let (here, page, shown, covers, can_back, empty, selection, own) = {
             let c = self.catalog.read(cx);
             let here = c.here().clone();
             let page = c.pages.get(&here).cloned();
@@ -305,6 +313,7 @@ impl Render for PageView {
             (
                 here.clone(),
                 page,
+                c.views.get(&here).cloned(),
                 Covers::new(c.covers.clone(), window.scale_factor()),
                 c.nav.can_go_back(),
                 c.empty,
@@ -312,13 +321,19 @@ impl Render for PageView {
                 own,
             )
         };
-        if self.shown.as_ref() != Some(&here) {
+        let now = (here.clone(), shown.as_ref().and_then(|s| s.sort));
+        if self.shown.as_ref() != Some(&now) {
             self.tracks.scroll_to_item(0, ScrollStrategy::Top);
-            self.shown = Some(here.clone());
+            self.shown = Some(now);
         }
         context_menu::list_is(&here, &self.tracks, TRACK_ROW, cx);
         let width = content_width(window, &self.shared, cx);
-        let cols = |c: Cols| c.fit(width);
+        let cols = |t: Table| t.cols(width);
+        let shown = || {
+            shown
+                .clone()
+                .unwrap_or_else(|| Shown::new(Arc::from([]), None))
+        };
         let catalog = &self.catalog;
         let back = {
             let catalog = catalog.clone();
@@ -398,15 +413,8 @@ impl Render for PageView {
                     ))
                     .child(track_list(
                         "album-tracks",
-                        tracks.clone(),
-                        cols(Cols {
-                            number: true,
-                            artist: tracks.iter().any(|t| t.artist != album.artist),
-                            album: false,
-                            year: false,
-                            plays: true,
-                            edit: false,
-                        }),
+                        shown(),
+                        cols(Table::album(&album.artist, tracks)),
                         pal,
                         &self.tracks,
                         catalog,
@@ -450,15 +458,8 @@ impl Render for PageView {
                     ))
                     .child(track_list(
                         "playlist-tracks",
-                        tracks.clone(),
-                        cols(Cols {
-                            number: true,
-                            artist: true,
-                            album: true,
-                            year: false,
-                            plays: false,
-                            edit: own,
-                        }),
+                        shown(),
+                        cols(Table::Playlist),
                         pal,
                         &self.tracks,
                         catalog,
@@ -491,24 +492,27 @@ impl Render for PageView {
                     pal,
                 ))
                 .when(!top.is_empty(), |d| {
+                    let (shown, cols) = (shown(), cols(Table::TopTracks));
+                    let sort = {
+                        let (catalog, here) = (catalog.clone(), here.clone());
+                        move |s, cx: &mut App| {
+                            catalog.update(cx, |c, cx| c.sort_tracks(here.clone(), s, cx))
+                        }
+                    };
+                    let sorted = shown.sort.is_some();
                     d.child(section_title("Top tracks", pal))
-                        .children(top.iter().enumerate().map(|(ix, t)| {
-                            track_row(
+                        .child(track_header(&cols, false, shown.sort, pal, sort))
+                        .children((0..shown.len()).filter_map(|ix| {
+                            let (rank, t) = shown.row(ix)?;
+                            Some(track_row(
                                 "top-track",
                                 ix,
                                 t,
-                                cols(Cols {
-                                    number: true,
-                                    artist: false,
-                                    album: true,
-                                    year: false,
-                                    plays: true,
-                                    edit: false,
-                                }),
+                                &cols,
                                 pal,
                                 catalog,
-                                RowCtx::plain(row_hover("top-track", ix, window, cx)),
-                            )
+                                RowCtx::plain(rank, sorted, row_hover("top-track", ix, window, cx)),
+                            ))
                         }))
                 })
                 .when(!albums.is_empty(), |d| {
@@ -575,12 +579,13 @@ impl Render for SelectionBar {
             let catalog = self.catalog.clone();
             move |cx: &App| {
                 let c = catalog.read(cx);
-                let tracks = c.shown_tracks().unwrap_or_else(|| Arc::from([]));
-                let ids: Vec<&str> = tracks.iter().map(|t| t.id.as_str()).collect();
-                let picks = c.selection.picks(c.here(), &ids);
+                let Some(shown) = c.shown() else {
+                    return (vec![], vec![]);
+                };
+                let picks = shown.picks(&c.selection, c.here());
                 let titles = picks
                     .iter()
-                    .map(|(ix, _)| tracks[*ix].title.clone())
+                    .map(|(rank, _)| shown.tracks[*rank].title.clone())
                     .collect::<Vec<_>>();
                 (picks, titles)
             }

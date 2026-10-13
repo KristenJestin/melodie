@@ -151,7 +151,21 @@ Screenshots and a recording of the animations, made with invented data, are in
     holds 20 at most; "See all" opens the albums in that order, or the artists. "Played last"
     is the server's, as of the last copy.
   - Albums: a grid of covers, sorted by date added, name, artist, year, plays or last played (a
-    second click on the sort turns it round). Artists and Tracks: long lists sorted by a click on a column.
+    second click on the sort turns it round). Artists: a long list sorted by a click on a column.
+  - **Every list of tracks is the same table** (Tracks, an album, a playlist, an artist's top
+    tracks, the search's tracks; not the queue, whose order is the play order): a header row with
+    the columns in one order, #, title, artist, album, year, plays, time, those that make no sense
+    in a place left out (no album or year on an album's page, nor artist when every track is the
+    album artist's, no artist on the artist's page, no #
+    in Tracks or the search, no year or plays in the search, which does not read them). #, year, plays and time have a fixed width;
+    title, artist and album share the rest. Under 640 pixels of content, album, year and plays go,
+    everywhere. A click on a header sorts by it, ascending; a second, descending; a third goes
+    back to the list's own order (the album's, the playlist's, the top tracks' rank, the search's
+    relevance; the library's Tracks are by artist). Sorting changes the view only: # stays the
+    row's rank in the list's own order, and removing a row of a sorted playlist removes that rank.
+    A sorted playlist's rows are not dragged (there is no order to drop them in). A sort belongs
+    to the visit: a list opened anew (the sidebar, a link, a search result) shows its own order,
+    one come back to (Back, Forward) keeps its sort, and a new search shows its tracks unsorted.
   - A page for an album (its tracks; play, shuffle, play next, add to the queue, instant mix, add
     to a playlist), an artist (its top tracks by plays, its albums; play, shuffle, instant mix)
     and a playlist (its tracks, as the local copy holds them; play, shuffle, play next, add to the
