@@ -120,6 +120,8 @@ impl Checked {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Repeat {
     pub rank: usize,
+    /// The track there, to check it still is when it is removed.
+    pub id: String,
     /// The rank of the occurrence it repeats.
     pub first: usize,
     pub title: String,
@@ -145,6 +147,7 @@ fn repeats(v: &Value, key: &str) -> Vec<Repeat> {
                 .map(|d| Repeat {
                     rank: n(d, "index"),
                     first: n(d, "first"),
+                    id: d["track"]["id"].as_str().unwrap_or("").to_string(),
                     title: d["track"]["title"].as_str().unwrap_or("").to_string(),
                     artist: d["track"]["artist"].as_str().unwrap_or("").to_string(),
                 })
@@ -164,6 +167,33 @@ impl Found {
         })
     }
 
+    /// What removes the exact duplicates shown, and what it says when done; none when there are
+    /// none.
+    pub fn remove(&self, playlist: &str) -> Option<(Job, String)> {
+        if self.exact.is_empty() {
+            return None;
+        }
+        let job = Job::RemoveFromPlaylist {
+            id: playlist.to_string(),
+            picks: self
+                .exact
+                .iter()
+                .map(|r| (r.rank - 1, r.id.clone()))
+                .collect(),
+        };
+        let name = &self.name;
+        let gone = match self.exact.len() {
+            1 => format!("Removed 1 duplicate from {name}"),
+            k => format!("Removed {k} duplicates from {name}"),
+        };
+        let said = match self.similar.len() {
+            0 => gone,
+            1 => format!("{gone} (1 likely duplicate left)"),
+            k => format!("{gone} ({k} likely duplicates left)"),
+        };
+        Some((job, said))
+    }
+
     /// The button that removes the exact duplicates; none when there are none.
     pub fn remove_label(&self) -> Option<String> {
         match self.exact.len() {
@@ -172,23 +202,6 @@ impl Found {
             n => Some(format!("Remove {n} duplicates")),
         }
     }
-}
-
-/// What the window says after `playlist duplicates --remove --json`.
-pub fn removed_message(out: &str) -> Result<String, String> {
-    let v = read_json(out, "Could not remove the duplicates")?;
-    let n = |k: &str| v[k].as_array().map_or(0, Vec::len);
-    let name = name_of(&v);
-    let gone = match n("removed") {
-        0 => format!("No duplicates removed from {name}"),
-        1 => format!("Removed 1 duplicate from {name}"),
-        k => format!("Removed {k} duplicates from {name}"),
-    };
-    Ok(match n("similar") {
-        0 => gone,
-        1 => format!("{gone} (1 likely duplicate left)"),
-        k => format!("{gone} ({k} likely duplicates left)"),
-    })
 }
 
 #[cfg(test)]
@@ -281,6 +294,7 @@ mod tests {
             d.exact,
             [Repeat {
                 rank: 4,
+                id: "t1".into(),
                 first: 1,
                 title: "One".into(),
                 artist: "A".into()
@@ -295,16 +309,43 @@ mod tests {
     }
 
     #[test]
-    fn what_removing_the_duplicates_did_is_said() {
+    fn removing_the_duplicates_removes_exactly_the_ranks_shown() {
         let out = json!({"playlist": {"id": "p1", "name": "Road"}, "total": 6,
             "exact": [{"index": 3, "first": 0, "track": {"id": "t1", "title": "One", "artist": "A", "album": "B"}},
-                      {"index": 4, "first": 0, "track": {"id": "t1", "title": "One", "artist": "A", "album": "B"}}],
+                      {"index": 4, "first": 1, "track": {"id": "-t2", "title": "Two", "artist": "A", "album": "B"}}],
             "similar": [{"index": 5, "first": 1, "track": {"id": "t9", "title": "Two", "artist": "C", "album": "D"}}],
-            "removed": [{"index": 3}, {"index": 4}]})
+            "removed": []})
         .to_string();
+        let d = Found::read(&out).unwrap();
+        let (job, said) = d.remove("p1").unwrap();
         assert_eq!(
-            removed_message(&out).unwrap(),
+            job,
+            Job::RemoveFromPlaylist {
+                id: "p1".into(),
+                picks: vec![(3, "t1".into()), (4, "-t2".into())],
+            },
+            "the ranks shown, each with the track shown there, and nothing else"
+        );
+        assert_eq!(
+            job.args(),
+            [
+                "playlist",
+                "remove",
+                "--expect=t1",
+                "--expect=-t2",
+                "--",
+                "p1",
+                "4",
+                "5"
+            ]
+        );
+        assert_eq!(
+            said,
             "Removed 2 duplicates from Road (1 likely duplicate left)"
         );
+        let none = json!({"playlist": {"id": "p1", "name": "Road"}, "total": 2,
+            "exact": [], "similar": [], "removed": []})
+        .to_string();
+        assert_eq!(Found::read(&none).unwrap().remove("p1"), None);
     }
 }

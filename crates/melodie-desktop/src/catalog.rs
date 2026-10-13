@@ -13,7 +13,6 @@ use melodie_core::mix;
 use melodie_core::store;
 use melodie_core::time::now_secs;
 use melodie_desktop::browse::{self, Nav, Place};
-use melodie_desktop::edit;
 use melodie_desktop::launch::{self, Job};
 use melodie_desktop::selection::{How, Selection};
 use rusqlite::Connection;
@@ -220,7 +219,6 @@ impl Catalog {
         };
         let read: fn(&str) -> Result<String, String> = match &job {
             Job::AddToPlaylist { .. } => launch::added_message,
-            Job::Duplicates { .. } => edit::removed_message,
             _ => |_| Ok(String::new()),
         };
         self.shared.update(cx, |s, cx| {

@@ -197,11 +197,16 @@ impl Dialogs {
                 };
                 edit(Job::RemoveFromPlaylist { id, picks }, Some(said), self, cx)
             }
+            // the ranks shown, each checked to hold the track shown: nothing else goes
             Dialog::Duplicates {
                 id,
                 found: Some(Ok(f)),
                 ..
-            } if !f.exact.is_empty() => edit(Job::Duplicates { id, remove: true }, None, self, cx),
+            } => {
+                if let Some((job, said)) = f.remove(&id) {
+                    edit(job, Some(said), self, cx)
+                }
+            }
             // skipping is the answer that adds nothing twice
             Dialog::Ask { question } => self.answer(question.skip.1, window, cx),
             _ => {}
