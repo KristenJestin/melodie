@@ -252,6 +252,7 @@ impl Render for PlayerView {
                     .child({
                         let shared = shared.clone();
                         IconButton::new("heart", IconName::Heart, pal)
+                            .tip(if starred { "Unlike" } else { "Like" })
                             .selected(starred)
                             .disabled(!has_track)
                             .on_click(move |_, _, cx| {
@@ -271,6 +272,7 @@ impl Render for PlayerView {
                     .child({
                         let (id, title) = picked;
                         IconButton::new("add-current", IconName::ListPlus, pal)
+                            .tip("Add to playlist")
                             .disabled(!has_track)
                             .on_click(move |_, window, cx| {
                                 // the id seen now, not "current": the track may change meanwhile
@@ -286,6 +288,7 @@ impl Render for PlayerView {
                     .child({
                         let shared = shared.clone();
                         IconButton::new("prev", IconName::SkipBack, pal)
+                            .tip("Previous")
                             .diameter(48.)
                             .disabled(!has_track)
                             .on_click(move |_, _, cx| {
@@ -302,6 +305,7 @@ impl Render for PlayerView {
                             },
                             pal,
                         )
+                        .tip(if playing { "Pause" } else { "Play" })
                         .diameter(64.)
                         .primary()
                         .on_click(play),
@@ -309,6 +313,7 @@ impl Render for PlayerView {
                     .child({
                         let shared = shared.clone();
                         IconButton::new("next", IconName::SkipForward, pal)
+                            .tip("Next")
                             .diameter(48.)
                             .disabled(!has_track)
                             .on_click(move |_, _, cx| {
@@ -318,6 +323,7 @@ impl Render for PlayerView {
                     .child({
                         let shared = shared.clone();
                         IconButton::new("queue", IconName::ListMusic, pal)
+                            .tip("Queue")
                             .selected(queue_open)
                             .on_click(move |_, _, cx| {
                                 shared.update(cx, |s, cx| {

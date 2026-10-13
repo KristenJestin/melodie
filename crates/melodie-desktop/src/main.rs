@@ -17,6 +17,7 @@ mod signin;
 mod stats;
 mod tables;
 mod timing;
+mod tips;
 mod widgets;
 
 use albums::AlbumGrid;
@@ -209,6 +210,8 @@ impl Root {
 
     /// Does what a key or a mouse button asked for; what is not ours goes on.
     fn run(&mut self, act: Act, window: &mut Window, cx: &mut Context<Self>) {
+        // a tooltip would outlive the button of a page that goes
+        tips::hide(cx);
         match act {
             Act::OpenSearch => {
                 self.catalog
@@ -544,6 +547,8 @@ impl Render for Root {
                         ),
                 )
             })
+            // the tooltips, above all
+            .when_some(tips::overlay(cx), |d, tips| d.child(tips))
     }
 }
 
@@ -605,6 +610,7 @@ fn main() -> ExitCode {
                 picked: cx.new(|_| SelectionBar::new(s.clone(), c.clone())),
             };
             cx.set_global(DialogsHandle(views.dialogs.clone()));
+            tips::install(cx);
             cx.new(|cx| Root::new(shared, catalog, account, views, window, cx))
         });
         if let Err(e) = opened {

@@ -114,6 +114,7 @@ impl Render for MiniPlayer {
                     pal,
                 )
                 .primary()
+                .tip(if playing { "Pause" } else { "Play" })
                 .on_click(move |_, _, cx| {
                     cx.stop_propagation();
                     toggle.update(cx, |s, cx| s.play_or_pause(cx))
@@ -122,6 +123,7 @@ impl Render for MiniPlayer {
             .child(
                 IconButton::new("mini-next", IconName::SkipForward, pal)
                     .disabled(track.is_none())
+                    .tip("Next")
                     .on_click(move |_, _, cx| {
                         cx.stop_propagation();
                         next.update(cx, |s, cx| s.send(Request::Next, cx))

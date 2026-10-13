@@ -175,6 +175,7 @@ impl Render for Sidebar {
                         )
                         .child(
                             IconButton::new("nav-new-playlist", IconName::Plus, pal)
+                                .tip("New playlist")
                                 .diameter(28.)
                                 .on_click(|_, window, cx| {
                                     dialogs::open(Dialog::Create { with: None }, window, cx)
@@ -209,6 +210,7 @@ impl Render for Sidebar {
                     .justify_center()
                     .child(
                         IconButton::new("nav-queue", IconName::ListMusic, pal)
+                            .tip("Queue")
                             .selected(queue_open)
                             .on_click(move |_, _, cx| {
                                 queue.update(cx, |s, cx| {
@@ -220,6 +222,7 @@ impl Render for Sidebar {
                     )
                     .child(
                         IconButton::new("settings", IconName::Settings, pal)
+                            .tip("Settings")
                             .selected(settings_open)
                             .on_click(move |_, _, cx| {
                                 gear.update(cx, |s, cx| {
