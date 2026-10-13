@@ -330,8 +330,13 @@ impl SignInView {
         });
         let subs = vec![
             cx.subscribe_in(&server, window, |this, _, ev: &InputEvent, window, cx| {
-                if matches!(ev, InputEvent::PressEnter { .. }) {
-                    this.user.update(cx, |i, cx| i.focus(window, cx));
+                match ev {
+                    InputEvent::PressEnter { .. } => {
+                        this.user.update(cx, |i, cx| i.focus(window, cx))
+                    }
+                    // the plain-http warning follows what is typed
+                    InputEvent::Change => cx.notify(),
+                    _ => {}
                 }
             }),
             cx.subscribe_in(&user, window, |this, _, ev: &InputEvent, window, cx| {
@@ -493,6 +498,8 @@ impl Render for SignInView {
             window,
             cx,
         );
+        let clear = account::token_goes_in_clear(&self.server.read(cx).value());
+        let w = motion::flag("sign-in-clear", clear, motion::ENTER, window, cx);
         let b = motion::flag("sign-in-busy", self.busy, motion::HOVER, window, cx);
         let view = cx.entity();
         div()
@@ -528,6 +535,20 @@ impl Render for SignInView {
                             })),
                     )
                     .child(self.field("SERVER", IconName::Server, &self.server, pal))
+                    .when(w > 0.0, |d| {
+                        d.child(
+                            div()
+                                .id("sign-in-clear")
+                                .text_sm()
+                                .text_color(pal.accent)
+                                .opacity(w)
+                                .mt(px(-6. * (1. - w)))
+                                .child(
+                                    "This address is plain http: the login would cross the \
+                                     network in clear. Prefer https.",
+                                ),
+                        )
+                    })
                     .child(self.field("USER", IconName::CircleUser, &self.user, pal))
                     .child(self.field("PASSWORD", IconName::KeyRound, &self.password, pal))
                     .when(e > 0.0, |d| {

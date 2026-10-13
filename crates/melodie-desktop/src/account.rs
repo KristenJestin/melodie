@@ -84,6 +84,47 @@ pub fn check_form(server: &str, user: &str) -> Result<(String, String), &'static
     Ok((url, user.to_string()))
 }
 
+/// Whether `address` sends the token in clear over a network: plain `http://` to a host that is
+/// neither this machine nor a private network. A warning, never a refusal.
+pub fn token_goes_in_clear(address: &str) -> bool {
+    let address = address.trim();
+    let Some(rest) = address
+        .get(..7)
+        .filter(|scheme| scheme.eq_ignore_ascii_case("http://"))
+        .map(|_| &address[7..])
+    else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host = authority.rsplit('@').next().unwrap_or_default();
+    let host = match host.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or_default(),
+        None => host.split(':').next().unwrap_or_default(),
+    };
+    let host = host.to_ascii_lowercase();
+    if host.is_empty() {
+        return false;
+    }
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return match ip {
+            std::net::IpAddr::V4(v4) => {
+                !(v4.is_loopback() || v4.is_private() || v4.is_link_local())
+            }
+            std::net::IpAddr::V6(v6) => {
+                let first = v6.segments()[0];
+                // unique local (fc00::/7) and link-local (fe80::/10)
+                !(v6.is_loopback() || first & 0xfe00 == 0xfc00 || first & 0xffc0 == 0xfe80)
+            }
+        };
+    }
+    // a name on a home network: `localhost`, a bare machine name, `.local`, `.lan`
+    let local_name = !host.contains('.')
+        || ["localhost", "local", "lan", "home.arpa"]
+            .iter()
+            .any(|tld| host.ends_with(&format!(".{tld}")));
+    !local_name
+}
+
 /// How a sign-in ended. Holds no password, and no token: `melodie` kept it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
@@ -284,6 +325,44 @@ mod tests {
         // a local problem tells nothing of the login
         assert_eq!(Standing::after(Some(3), false), None);
         assert_eq!(Standing::after(None, false), None);
+    }
+
+    #[test]
+    fn plain_http_to_a_host_off_the_private_networks_warns() {
+        for clear in [
+            "http://music.example.org",
+            "http://music.example.org:4533/navidrome",
+            "http://203.0.113.7:4533",
+            "http://172.32.0.1",
+            "http://172.15.0.1",
+            "http://[2001:db8::1]:4533",
+            "HTTP://music.example.org",
+            "http://user@music.example.org",
+        ] {
+            assert!(token_goes_in_clear(clear), "{clear}");
+        }
+        for safe in [
+            "https://music.example.org",
+            "http://localhost:4533",
+            "http://127.0.0.1:4533",
+            "http://127.1.2.3",
+            "http://[::1]:4533",
+            "http://192.168.1.20:4533",
+            "http://10.0.0.5",
+            "http://172.16.0.1",
+            "http://172.31.255.255",
+            "http://169.254.1.1",
+            "http://[fd12:3456::1]",
+            "http://[fe80::1]",
+            "http://navidrome:4533",
+            "http://nas.local",
+            "http://nas.lan:4533/",
+            "http://user@192.168.1.20",
+            "not an address",
+            "",
+        ] {
+            assert!(!token_goes_in_clear(safe), "{safe}");
+        }
     }
 
     #[test]
