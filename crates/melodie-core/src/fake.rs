@@ -24,6 +24,9 @@ pub struct State {
     /// lists it: it was deleted between the two calls.
     pub playlist_gone: AtomicBool,
     pub expected_token: Mutex<String>,
+    /// When set, a token made from this password and the request's salt is accepted too, as a
+    /// real server does after a login.
+    pub password: Mutex<Option<String>>,
     /// Code d'erreur Subsonic à renvoyer pour tout, si présent.
     pub fail_code: Mutex<Option<i64>>,
     /// Réponse HTTP brute à renvoyer pour tout (état, corps), si présente.
@@ -106,6 +109,7 @@ impl Fake {
             playlist_changed: Mutex::new("2026-10-01T10:00:00Z".into()),
             playlist_gone: AtomicBool::new(false),
             expected_token: Mutex::new(token.to_string()),
+            password: Mutex::new(None),
             fail_code: Mutex::new(None),
             raw: Mutex::new(None),
             calls: Mutex::new(Vec::new()),
@@ -207,7 +211,12 @@ impl State {
                 .to_string(),
             );
         }
-        if param(query, "t").as_deref() != Some(self.expected_token.lock().unwrap().as_str()) {
+        let t = param(query, "t");
+        let from_password = self.password.lock().unwrap().as_deref().is_some_and(|p| {
+            t.as_deref()
+                == Some(crate::api::token(p, &param(query, "s").unwrap_or_default()).as_str())
+        });
+        if !from_password && t.as_deref() != Some(self.expected_token.lock().unwrap().as_str()) {
             return (
                 200,
                 json!({"subsonic-response": {"status": "failed", "version": "1.16.1",
