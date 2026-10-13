@@ -24,7 +24,7 @@ use melodie_desktop::covers::{Covers, Use};
 use melodie_desktop::find::{self, Action, Answer, Latest};
 use melodie_desktop::launch::{Adding, Kind};
 use melodie_desktop::menu::{Item, Spot};
-use melodie_desktop::table::{self as track_table, ColSort, Shown, Table};
+use melodie_desktop::table::{self as track_table, ColSort, Shown, Sorts, Table};
 use melodie_desktop::theme::Palette;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -86,7 +86,7 @@ impl SearchView {
                 }
                 this.step = step;
                 // the move may have put a list back in its own order
-                this.tabulate(cx);
+                this.resort(cx);
                 match here {
                     Place::Search => this.focus(window, cx),
                     Place::Found(kind) => {
@@ -162,7 +162,14 @@ impl SearchView {
         let n = self.latest.ask();
         let env = self.env.clone();
         let started = Instant::now();
-        let task = cx.background_spawn(async move { find::answer(&env, &text, all) });
+        let sorts = self.catalog.read(cx).sorts.clone();
+        let task = cx.background_spawn(async move {
+            let answer = find::answer(&env, &text, all)?;
+            anyhow::Ok(answer.map(|a| {
+                let tables = tabulate(&a, &sorts);
+                (a, tables)
+            }))
+        });
         cx.spawn(async move |this, cx| {
             let answer = task.await;
             let _ = this.update(cx, |this, cx| {
@@ -170,10 +177,12 @@ impl SearchView {
                     return;
                 }
                 match answer {
-                    Ok(Some(a)) => {
+                    Ok(Some((a, tables))) => {
                         this.want_covers(&a, cx);
                         this.answer = Some(Arc::new(a));
-                        this.tabulate(cx);
+                        this.tables = tables;
+                        // sorted meanwhile
+                        this.resort(cx);
                         this.empty = Empty::Loading;
                     }
                     Ok(None) => this.empty = Empty::NoCopy,
@@ -188,29 +197,20 @@ impl SearchView {
         .detach();
     }
 
-    /// The tracks of the answer as their tables show them.
-    fn tabulate(&mut self, cx: &App) {
-        self.tables.clear();
+    /// Sorts the tables of the tracks found again where their sort changed.
+    fn resort(&mut self, cx: &App) {
         let sorts = &self.catalog.read(cx).sorts;
-        let Some(a) = &self.answer else { return };
-        let grouped = a.groups.iter().find(|g| g.kind == search::Kind::Track);
-        let all = a.all.as_ref().filter(|(k, _)| *k == Kind::Track);
-        let lists = [
-            (Place::Search, grouped.map(|g| &g.hits[..])),
-            (Place::Found(Kind::Track), all.map(|(_, hits)| &hits[..])),
-        ];
-        for (place, hits) in lists {
-            if let Some(hits) = hits {
-                let tracks = hits.iter().map(track_table::track_of).collect();
-                let shown = Shown::new(tracks, sorts.get(&place));
-                self.tables.insert(place, shown);
+        for (place, shown) in &mut self.tables {
+            let sort = sorts.get(place);
+            if shown.sort != sort {
+                *shown = Shown::new(shown.tracks.clone(), sort);
             }
         }
     }
 
     fn sort(&mut self, place: Place, sort: Option<ColSort>, cx: &mut Context<Self>) {
         self.catalog.update(cx, |c, _| c.sorts.set(place, sort));
-        self.tabulate(cx);
+        self.resort(cx);
         cx.notify();
     }
 
@@ -409,6 +409,25 @@ fn found_title(kind: Kind, n: usize, text: &str, pal: Palette, window: &Window) 
     )
     .px(px(PAD))
     .pb_2()
+}
+
+/// The tracks of an answer as their tables show them, by place. Blocking: run it away from the
+/// window (there may be thousands).
+fn tabulate(a: &Answer, sorts: &Sorts) -> HashMap<Place, Shown> {
+    let grouped = a.groups.iter().find(|g| g.kind == search::Kind::Track);
+    let all = a.all.as_ref().filter(|(k, _)| *k == Kind::Track);
+    let lists = [
+        (Place::Search, grouped.map(|g| &g.hits[..])),
+        (Place::Found(Kind::Track), all.map(|(_, hits)| &hits[..])),
+    ];
+    lists
+        .into_iter()
+        .filter_map(|(place, hits)| {
+            let tracks = hits?.iter().map(track_table::track_of).collect();
+            let shown = Shown::new(tracks, sorts.get(&place));
+            Some((place, shown))
+        })
+        .collect()
 }
 
 fn hint(id: &'static str, text: String, pal: Palette) -> AnyElement {
