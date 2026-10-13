@@ -520,39 +520,43 @@ pub fn playlist_insert(conn: &Connection, v: &Value) -> Result<bool> {
     let (Some(pid), Some(name)) = (id(v), text(v, "name")) else {
         return Ok(false);
     };
-    conn.execute("DELETE FROM playlists WHERE id = ?1", [&pid])?;
-    conn.execute("DELETE FROM fts_playlists WHERE id = ?1", [&pid])?;
-    conn.execute(
-        "INSERT INTO playlists(id, name, songCount, duration, changed, coverArt, owner)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![
-            pid,
-            name,
-            num(v, "songCount"),
-            num(v, "duration"),
-            text(v, "changed"),
-            cover(v),
-            text(v, "owner")
-        ],
-    )?;
-    conn.execute(
-        "INSERT INTO fts_playlists(id, name) VALUES (?1, ?2)",
-        params![pid, name],
-    )?;
-    Ok(true)
+    atomically(conn, || {
+        conn.execute("DELETE FROM playlists WHERE id = ?1", [&pid])?;
+        conn.execute("DELETE FROM fts_playlists WHERE id = ?1", [&pid])?;
+        conn.execute(
+            "INSERT INTO playlists(id, name, songCount, duration, changed, coverArt, owner)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                pid,
+                name,
+                num(v, "songCount"),
+                num(v, "duration"),
+                text(v, "changed"),
+                cover(v),
+                text(v, "owner")
+            ],
+        )?;
+        conn.execute(
+            "INSERT INTO fts_playlists(id, name) VALUES (?1, ?2)",
+            params![pid, name],
+        )?;
+        Ok(true)
+    })
 }
 
 pub fn playlist_rename(conn: &Connection, id: &str, name: &str, at: &str) -> Result<()> {
-    conn.execute(
-        "UPDATE playlists SET name = ?2, changed = ?3 WHERE id = ?1",
-        params![id, name, at],
-    )?;
-    conn.execute("DELETE FROM fts_playlists WHERE id = ?1", [id])?;
-    conn.execute(
-        "INSERT INTO fts_playlists(id, name) VALUES (?1, ?2)",
-        params![id, name],
-    )?;
-    Ok(())
+    atomically(conn, || {
+        conn.execute(
+            "UPDATE playlists SET name = ?2, changed = ?3 WHERE id = ?1",
+            params![id, name, at],
+        )?;
+        conn.execute("DELETE FROM fts_playlists WHERE id = ?1", [id])?;
+        conn.execute(
+            "INSERT INTO fts_playlists(id, name) VALUES (?1, ?2)",
+            params![id, name],
+        )?;
+        Ok(())
+    })
 }
 
 /// The ids of the tracks of a playlist (`entry` objects of `getPlaylist`), in order.
@@ -560,15 +564,34 @@ pub fn entry_ids(entries: &[Value]) -> Vec<String> {
     entries.iter().filter_map(id).collect()
 }
 
+/// Runs `f` as one unit: its writes all land or none does, so a reader never sees half of them.
+/// A savepoint, so it also works inside a transaction.
+pub fn atomically<T>(conn: &Connection, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    conn.execute_batch("SAVEPOINT atomically")?;
+    match f() {
+        Ok(v) => {
+            conn.execute_batch("RELEASE atomically")?;
+            Ok(v)
+        }
+        Err(e) => {
+            // Rolled back, then released: a savepoint left open would hold the write lock.
+            let _ = conn.execute_batch("ROLLBACK TO atomically; RELEASE atomically");
+            Err(e)
+        }
+    }
+}
+
 /// The tracks of a playlist, in its order.
 pub fn replace_playlist_tracks(conn: &Connection, pid: &str, tracks: &[String]) -> Result<()> {
-    conn.execute("DELETE FROM playlist_tracks WHERE playlist = ?1", [pid])?;
-    let mut ins =
-        conn.prepare("INSERT INTO playlist_tracks(playlist, pos, track) VALUES (?1, ?2, ?3)")?;
-    for (pos, tid) in tracks.iter().enumerate() {
-        ins.execute(params![pid, pos as i64, tid])?;
-    }
-    Ok(())
+    atomically(conn, || {
+        conn.execute("DELETE FROM playlist_tracks WHERE playlist = ?1", [pid])?;
+        let mut ins =
+            conn.prepare("INSERT INTO playlist_tracks(playlist, pos, track) VALUES (?1, ?2, ?3)")?;
+        for (pos, tid) in tracks.iter().enumerate() {
+            ins.execute(params![pid, pos as i64, tid])?;
+        }
+        Ok(())
+    })
 }
 
 /// The track ids of a playlist the copy holds, in order (empty when it holds none).
@@ -580,10 +603,12 @@ pub fn playlist_track_ids(conn: &Connection, pid: &str) -> Result<Vec<String>> {
 }
 
 pub fn playlist_delete(conn: &Connection, id: &str) -> Result<()> {
-    conn.execute("DELETE FROM playlist_tracks WHERE playlist = ?1", [id])?;
-    conn.execute("DELETE FROM playlists WHERE id = ?1", [id])?;
-    conn.execute("DELETE FROM fts_playlists WHERE id = ?1", [id])?;
-    Ok(())
+    atomically(conn, || {
+        conn.execute("DELETE FROM playlist_tracks WHERE playlist = ?1", [id])?;
+        conn.execute("DELETE FROM playlists WHERE id = ?1", [id])?;
+        conn.execute("DELETE FROM fts_playlists WHERE id = ?1", [id])?;
+        Ok(())
+    })
 }
 
 /// Effectifs de la copie.
@@ -729,6 +754,24 @@ mod tests {
                 assert!(r.join().unwrap().unwrap(), "a lost race must not fail");
             }
         });
+    }
+
+    #[test]
+    fn a_failed_replacement_leaves_the_playlist_as_it_was() {
+        let d = tempfile::tempdir().unwrap();
+        // Not `create`: it switches the journal off to build a copy fast, and nothing rolls back.
+        let conn = Connection::open(d.path().join("l.db")).unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        replace_playlist_tracks(&conn, "p1", &["t1".into(), "t2".into()]).unwrap();
+        // The third track cannot be written: nobody may see the list half replaced.
+        conn.execute_batch(
+            "CREATE TRIGGER refuse BEFORE INSERT ON playlist_tracks WHEN NEW.track = 'boom'
+             BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+        )
+        .unwrap();
+        let tracks = ["t3".into(), "boom".into(), "t4".into()];
+        assert!(replace_playlist_tracks(&conn, "p1", &tracks).is_err());
+        assert_eq!(playlist_track_ids(&conn, "p1").unwrap(), ["t1", "t2"]);
     }
 
     #[test]

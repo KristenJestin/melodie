@@ -51,15 +51,22 @@ fn call(client: &Client, method: &str, extra: &[(&str, String)]) -> Result<Value
         .map_err(|e| state::from_api(e, client.url()))
 }
 
-/// Applies an edit to the tracks of a playlist in the local copy, as the server just did it.
+/// Applies an edit to a playlist in the local copy, as the server just did it: its counts and
+/// its tracks, together, so a reader never sees one without the other.
 fn edit_local(
     conn: &Connection,
     pid: &str,
+    d_count: i64,
+    d_secs: i64,
+    at: u64,
     f: impl FnOnce(&mut Vec<String>),
 ) -> Result<(), Failure> {
-    let mut ids = db::playlist_track_ids(conn, pid)?;
-    f(&mut ids);
-    db::replace_playlist_tracks(conn, pid, &ids)?;
+    db::atomically(conn, || {
+        db::playlist_adjust(conn, pid, d_count, d_secs, &rfc3339(at))?;
+        let mut ids = db::playlist_track_ids(conn, pid)?;
+        f(&mut ids);
+        db::replace_playlist_tracks(conn, pid, &ids)
+    })?;
     Ok(())
 }
 
@@ -79,8 +86,7 @@ pub fn add(
     params.extend(tracks.iter().map(|t| ("songIdToAdd", t.id.clone())));
     call(client, "updatePlaylist", &params)?;
     if let Some(c) = conn {
-        db::playlist_adjust(c, pid, tracks.len() as i64, secs(tracks), &rfc3339(at))?;
-        edit_local(c, pid, |ids| {
+        edit_local(c, pid, tracks.len() as i64, secs(tracks), at, |ids| {
             ids.extend(tracks.iter().map(|t| t.id.clone()))
         })?;
     }
@@ -244,8 +250,7 @@ pub fn remove_duplicates(
     call(client, "updatePlaylist", &params)?;
     if let Some(c) = conn {
         let secs: i64 = gone.iter().map(|d| d.track.duration as i64).sum();
-        db::playlist_adjust(c, pid, -(gone.len() as i64), -secs, &rfc3339(at))?;
-        edit_local(c, pid, |ids| {
+        edit_local(c, pid, -(gone.len() as i64), -secs, at, |ids| {
             let mut i = 0;
             ids.retain(|_| {
                 i += 1;
@@ -285,8 +290,7 @@ pub fn remove(
         ],
     )?;
     if let Some(c) = conn {
-        db::playlist_adjust(c, pid, -1, -(track.duration as i64), &rfc3339(at))?;
-        edit_local(c, pid, |ids| {
+        edit_local(c, pid, -1, -(track.duration as i64), at, |ids| {
             if index < ids.len() {
                 ids.remove(index);
             }
@@ -325,9 +329,11 @@ pub fn create(
         if p.get("changed").is_none() {
             p["changed"] = json!(rfc3339(at));
         }
-        db::playlist_insert(c, &p)?;
         let ids: Vec<String> = tracks.iter().map(|t| t.id.clone()).collect();
-        db::replace_playlist_tracks(c, &id, &ids)?;
+        db::atomically(c, || {
+            db::playlist_insert(c, &p)?;
+            db::replace_playlist_tracks(c, &id, &ids)
+        })?;
     }
     Ok(id)
 }
@@ -650,6 +656,20 @@ mod tests {
         assert_eq!(local_ids(&conn, &id), ["s3"]);
         delete(&client, Some(&conn), &id).unwrap();
         assert!(local_ids(&conn, &id).is_empty());
+    }
+
+    #[test]
+    fn a_local_edit_that_fails_changes_neither_the_tracks_nor_the_counts() {
+        let (_d, env, _fake, client) = setup();
+        let conn = db::open_existing(&env).unwrap().unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER refuse BEFORE INSERT ON playlist_tracks WHEN NEW.track = 'boom'
+             BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+        )
+        .unwrap();
+        let before = (counts(&conn, "p1"), local_ids(&conn, "p1"));
+        assert!(add(&client, Some(&conn), "p1", &[info("boom", 200)], 0).is_err());
+        assert_eq!((counts(&conn, "p1"), local_ids(&conn, "p1")), before);
     }
 
     // --- duplicates ---
