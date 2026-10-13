@@ -141,6 +141,12 @@ impl Catalog {
         }
     }
 
+    pub fn forward(&mut self, cx: &mut Context<Self>) {
+        if self.nav.forward() {
+            self.moved(cx);
+        }
+    }
+
     fn moved(&mut self, cx: &mut Context<Self>) {
         self.selection.clear();
         self.refresh(cx);
