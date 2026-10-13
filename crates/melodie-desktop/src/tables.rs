@@ -81,6 +81,9 @@ pub fn track_header(
                     .cursor_pointer()
                     .text_color(if on.is_some() { pal.fg } else { pal.secondary })
                     .hover(|st| st.text_color(pal.fg))
+                    // the window's root takes the focus from any press that reaches it: sorting
+                    // must not take it from the search field
+                    .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                     .on_click(move |_, _, cx| pick(table::clicked(sort, col), cx))
                     .child(col.label())
                     .when_some(on, |d, s| {
