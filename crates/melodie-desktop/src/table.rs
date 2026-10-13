@@ -115,8 +115,8 @@ impl Table {
             Self::Album => matches!(col, Col::Album | Col::Year),
             Self::Playlist => false,
             Self::TopTracks => col == Col::Artist,
-            // a result's rank is its relevance; the search does not read the plays
-            Self::Search => matches!(col, Col::Number | Col::Plays),
+            // a result's rank is its relevance; the search reads no year or plays of a track
+            Self::Search => matches!(col, Col::Number | Col::Year | Col::Plays),
         }
     }
 
@@ -369,7 +369,7 @@ mod tests {
         );
         assert_eq!(
             Table::Search.cols(WIDE),
-            [Col::Title, Col::Artist, Col::Album, Col::Year, Col::Time]
+            [Col::Title, Col::Artist, Col::Album, Col::Time]
         );
     }
 
