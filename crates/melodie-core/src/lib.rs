@@ -9,6 +9,7 @@ pub mod db;
 pub mod env;
 #[cfg(any(test, feature = "fake"))]
 pub mod fake;
+pub mod library;
 pub mod likes;
 pub mod mix;
 pub mod playlists;
