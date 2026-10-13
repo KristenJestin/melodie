@@ -20,6 +20,7 @@ use melodie_core::env::Env;
 use melodie_core::search::{self as core, Genre};
 use melodie_desktop::covers::{Covers, Use};
 use melodie_desktop::find::{self, Latest};
+use melodie_desktop::keys::{self, PaletteClick};
 use melodie_desktop::launch::Job;
 use melodie_desktop::quick::{self, Do, Group, How, Item, Recent, Section, Seen};
 use melodie_desktop::theme::Palette;
@@ -534,6 +535,16 @@ impl Render for QuickSearch {
             .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                 close.update(cx, |q, cx| q.close(window, cx))
             })
+            // a right click beside the card closes it, as a left click does, and opens no menu
+            // on what was behind
+            .on_mouse_down(MouseButton::Right, {
+                let close = this.clone();
+                move |_, window, cx| {
+                    if keys::palette_right_click(false) == PaletteClick::Close {
+                        close.update(cx, |q, cx| q.close(window, cx))
+                    }
+                }
+            })
             // the layer keeps the pointer from the root, whose listener would close it
             .on_mouse_down(
                 MouseButton::Navigate(NavigationDirection::Back),
@@ -558,6 +569,12 @@ impl Render for QuickSearch {
                     .overflow_hidden()
                     // a click inside does not close it
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    // a right click inside does nothing: the rows have no menu
+                    .on_mouse_down(MouseButton::Right, |_, _, cx| {
+                        if keys::palette_right_click(true) == PaletteClick::Keep {
+                            cx.stop_propagation()
+                        }
+                    })
                     .child(div().px_3().child(self.field.clone()))
                     .child(div().h(px(1.)).bg(Hsla { a: 0.08, ..pal.fg }))
                     .child(body)

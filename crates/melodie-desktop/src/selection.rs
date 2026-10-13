@@ -57,6 +57,15 @@ impl Selection {
         self.of(list).map_or(0, BTreeSet::len)
     }
 
+    /// The row the menu key opens the menu on: the one clicked last while it is picked, else
+    /// the first one picked.
+    pub fn focused(&self, list: &Place) -> Option<usize> {
+        let picked = self.of(list)?;
+        self.anchor
+            .filter(|a| picked.contains(a))
+            .or_else(|| picked.first().copied())
+    }
+
     /// The ranks picked in `list`, in its order.
     pub fn ranks(&self, list: &Place) -> Vec<usize> {
         self.of(list)
@@ -123,6 +132,19 @@ mod tests {
         assert_eq!(s.count(&Place::Tracks), 1);
         s.clear();
         assert_eq!(s.count(&Place::Tracks), 0);
+    }
+
+    #[test]
+    fn the_menu_key_takes_the_row_clicked_last_while_it_is_picked() {
+        let mut s = Selection::default();
+        assert_eq!(s.focused(&here()), None);
+        s.click(&here(), 2, How::Toggle);
+        s.click(&here(), 5, How::Toggle);
+        assert_eq!(s.focused(&here()), Some(5));
+        // unpicked by the last click: the first one picked
+        s.click(&here(), 5, How::Toggle);
+        assert_eq!(s.focused(&here()), Some(2));
+        assert_eq!(s.focused(&Place::Tracks), None, "another list");
     }
 
     #[test]

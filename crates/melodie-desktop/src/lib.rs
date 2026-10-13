@@ -13,6 +13,7 @@ pub mod keys;
 pub mod launch;
 pub mod layout;
 pub mod link;
+pub mod menu;
 pub mod model;
 pub mod playlists;
 pub mod quick;

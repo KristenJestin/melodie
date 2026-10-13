@@ -571,6 +571,7 @@ mod tests {
         };
         assert_eq!(Seen::of_job(&mix), None);
         let star = Job::Star {
+            kind: Kind::Track,
             id: "t1".into(),
             starred: true,
         };

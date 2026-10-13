@@ -22,6 +22,8 @@ pub enum Key {
     Down,
     /// The `q` character: shows or hides the queue.
     Queue,
+    /// The menu key, or Shift+F10: the menu of the row picked.
+    Menu,
     Other,
 }
 
@@ -56,6 +58,13 @@ impl Key {
     }
 }
 
+impl Key {
+    /// The keys that open the menu of a row, as a right click does.
+    pub fn opens_menu(shift: bool, key: &str) -> bool {
+        key == "menu" || (shift && key == "f10")
+    }
+}
+
 /// The mouse buttons that move through the places, as far as the window cares.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Thumb {
@@ -70,6 +79,8 @@ pub struct Situation<'a> {
     pub here: &'a Place,
     /// The search palette is open, over the current place.
     pub palette_open: bool,
+    /// A context menu is open, over everything else.
+    pub menu_open: bool,
     /// The search field has the window focus.
     pub field_focused: bool,
     /// The settings card is open, or the queue is shown over the main area (a narrow window).
@@ -96,6 +107,10 @@ pub enum Act {
     PaletteDown,
     /// Runs one of the actions of the palette's result.
     PaletteRun(How),
+    /// Closes the context menu, and opens the search palette in its place.
+    MenuToPalette,
+    /// Closes the context menu.
+    CloseMenu,
     CloseOverlays,
     CloseDialog,
     /// What the dialog's main button does.
@@ -107,6 +122,8 @@ pub enum Act {
     PlayPause,
     /// Show or hide the queue.
     ToggleQueue,
+    /// The menu of the row picked.
+    OpenMenu,
     /// Not ours: the key goes on (typed in the field).
     Pass,
 }
@@ -119,6 +136,22 @@ pub fn typing(here: &Place, field_focused: bool) -> bool {
 
 pub fn in_search(here: &Place) -> bool {
     matches!(here, Place::Search | Place::Found(_))
+}
+
+/// What a right click does on the open palette: nothing inside it, whatever the row; outside it
+/// the palette closes, as a left click does, and no menu opens on what was behind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaletteClick {
+    Keep,
+    Close,
+}
+
+pub fn palette_right_click(inside: bool) -> PaletteClick {
+    if inside {
+        PaletteClick::Keep
+    } else {
+        PaletteClick::Close
+    }
 }
 
 pub fn act(key: Key, s: Situation) -> Act {
@@ -136,6 +169,15 @@ pub fn act(key: Key, s: Situation) -> Act {
             Key::Escape => Act::CloseDialog,
             // as before the modifiers were read
             Key::Enter | Key::ShiftEnter | Key::CtrlEnter => Act::Confirm,
+            _ => Act::Pass,
+        };
+    }
+    // drawn above everything: its own keys go to it, Escape closes it before anything else,
+    // and the palette takes its place
+    if s.menu_open {
+        return match key {
+            Key::Palette => Act::MenuToPalette,
+            Key::Escape => Act::CloseMenu,
             _ => Act::Pass,
         };
     }
@@ -162,6 +204,7 @@ pub fn act(key: Key, s: Situation) -> Act {
         Key::Escape => Act::Back,
         Key::Space if !typing => Act::PlayPause,
         Key::Queue if !typing => Act::ToggleQueue,
+        Key::Menu if s.selection => Act::OpenMenu,
         _ => Act::Pass,
     }
 }
@@ -189,6 +232,7 @@ mod tests {
         Situation {
             here,
             palette_open: false,
+            menu_open: false,
             field_focused,
             overlay_open: false,
             dialog_open: false,
@@ -408,6 +452,26 @@ mod tests {
     }
 
     #[test]
+    fn the_menu_key_or_shift_f10_opens_the_menu_of_the_row_picked() {
+        assert!(Key::opens_menu(false, "menu"));
+        assert!(Key::opens_menu(true, "f10"));
+        assert!(!Key::opens_menu(false, "f10"));
+        let picked = Situation {
+            selection: true,
+            ..at(&Place::Tracks, false)
+        };
+        assert_eq!(act(Key::Menu, picked), Act::OpenMenu);
+        // nothing picked: nothing to open it on
+        assert_eq!(act(Key::Menu, at(&Place::Tracks, false)), Act::Pass);
+        // a dialog keeps it
+        let dialog = Situation {
+            dialog_open: true,
+            ..picked
+        };
+        assert_eq!(act(Key::Menu, dialog), Act::Pass);
+    }
+
+    #[test]
     fn keys_are_read_from_the_keystroke() {
         assert_eq!(Key::read(false, false, "q", Some("q")), Key::Queue);
         assert_eq!(Key::read(true, false, "q", Some("q")), Key::Other);
@@ -507,5 +571,60 @@ mod tests {
         assert_eq!(Key::read(false, true, "enter", None), Key::ShiftEnter);
         assert_eq!(Key::read(true, false, "enter", None), Key::CtrlEnter);
         assert_eq!(Key::read(false, false, "enter", None), Key::Enter);
+    }
+
+    #[test]
+    fn ctrl_k_with_a_context_menu_open_closes_it_and_opens_the_palette() {
+        for here in places() {
+            let menu = Situation {
+                menu_open: true,
+                selection: true,
+                ..at(&here, false)
+            };
+            assert_eq!(act(Key::Palette, menu), Act::MenuToPalette, "{here:?}");
+        }
+    }
+
+    #[test]
+    fn a_right_click_on_the_palette_opens_no_menu() {
+        // on a row or on the card: nothing, and the click goes no further
+        assert_eq!(palette_right_click(true), PaletteClick::Keep);
+        // beside the card: it closes, like a left click, and the click goes no further
+        assert_eq!(palette_right_click(false), PaletteClick::Close);
+    }
+
+    #[test]
+    fn the_menu_key_does_nothing_while_the_palette_is_open() {
+        for here in places() {
+            let open = Situation {
+                palette_open: true,
+                selection: true,
+                ..at(&here, false)
+            };
+            assert_eq!(act(Key::Menu, open), Act::Pass, "{here:?}");
+        }
+    }
+
+    #[test]
+    fn escape_closes_only_the_topmost_of_the_menu_and_the_palette() {
+        for here in places() {
+            // the menu is drawn above everything: it goes first, the queue, the selection
+            // and the page stay
+            let menu = Situation {
+                menu_open: true,
+                overlay_open: true,
+                selection: true,
+                field_empty: false,
+                ..at(&here, false)
+            };
+            assert_eq!(act(Key::Escape, menu), Act::CloseMenu, "{here:?}");
+            // then the palette, when it is the topmost
+            let palette = Situation {
+                menu_open: false,
+                palette_open: true,
+                ..menu
+            };
+            assert_eq!(act(Key::Escape, palette), Act::TogglePalette, "{here:?}");
+        }
     }
 }

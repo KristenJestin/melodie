@@ -3,6 +3,7 @@
 
 use crate::app::Shared;
 use crate::catalog::{Catalog, Empty};
+use crate::context_menu::Menued as _;
 use crate::motion;
 use crate::player::palette;
 use crate::sidebar;
@@ -17,6 +18,7 @@ use melodie_desktop::browse::{self, Place};
 use melodie_desktop::covers::{Cover, Covers, Use};
 use melodie_desktop::launch::{Job, Kind};
 use melodie_desktop::layout;
+use melodie_desktop::menu::{Item, Spot};
 use melodie_desktop::theme::Palette;
 use std::cell::Cell;
 use std::path::PathBuf;
@@ -100,6 +102,7 @@ pub fn album_cell(
         id: album.id.clone(),
         name: album.name.clone(),
         artist: album.artist.clone(),
+        item: Item::album(album),
         cover: album.cover.as_ref().and_then(|c| covers.get(c, side)),
         side,
         pal,
@@ -114,6 +117,7 @@ pub struct AlbumCell {
     id: String,
     name: String,
     artist: String,
+    item: Item,
     cover: Option<Cover>,
     side: f32,
     pal: Palette,
@@ -126,6 +130,7 @@ impl RenderOnce for AlbumCell {
             id,
             name,
             artist,
+            item,
             cover,
             side,
             pal,
@@ -141,6 +146,7 @@ impl RenderOnce for AlbumCell {
         let look = hover.look;
         hover
             .track(v_flex().id(ElementId::Name(format!("album-{id}").into())))
+            .menu(item, Spot::Library)
             .w(px(side))
             .h(px(side + TEXT))
             .flex_none()
