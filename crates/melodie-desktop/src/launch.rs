@@ -1,6 +1,7 @@
 //! What the window asks of the `melodie` program: what needs the server (and so the keyring)
 //! goes through it, so the window never holds a token.
 
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
 /// What can be played, queued or mixed from the library.
@@ -118,6 +119,28 @@ impl Adding {
 }
 
 impl Job {
+    /// The playlist it reads or writes.
+    pub fn playlist(&self) -> Option<&str> {
+        match self {
+            Self::AddToPlaylist { playlist, .. } | Self::CheckAdd { playlist, .. } => {
+                Some(playlist)
+            }
+            Self::RenamePlaylist { id, .. }
+            | Self::DeletePlaylist { id }
+            | Self::RemoveFromPlaylist { id, .. }
+            | Self::MoveInPlaylist { id, .. }
+            | Self::Duplicates { id, .. } => Some(id),
+            Self::PlayMix
+            | Self::Rediscover
+            | Self::Star { .. }
+            | Self::Play { .. }
+            | Self::Queue { .. }
+            | Self::Mix { .. }
+            | Self::CreatePlaylist { .. }
+            | Self::MixGenre { .. } => None,
+        }
+    }
+
     pub fn args(&self) -> Vec<String> {
         let words = |w: &[&str]| w.iter().map(|w| w.to_string()).collect::<Vec<_>>();
         match self {
@@ -265,6 +288,47 @@ pub fn read_json(out: &str, otherwise: &str) -> Result<serde_json::Value, String
     Ok(v)
 }
 
+/// The playlist jobs, one at a time per playlist: a move writes back the whole order it read, so
+/// a job started while another of the same playlist runs could undo what that one wrote.
+pub struct Lanes<T> {
+    /// A playlist is here while one of its jobs runs, with the jobs that wait behind it.
+    waiting: HashMap<String, VecDeque<T>>,
+}
+
+impl<T> Default for Lanes<T> {
+    fn default() -> Self {
+        Self {
+            waiting: HashMap::new(),
+        }
+    }
+}
+
+impl<T> Lanes<T> {
+    /// `item`, for `playlist`: given back to be started now, or kept until the job of that
+    /// playlist that runs is done.
+    pub fn start(&mut self, playlist: &str, item: T) -> Option<T> {
+        match self.waiting.get_mut(playlist) {
+            Some(behind) => {
+                behind.push_back(item);
+                None
+            }
+            None => {
+                self.waiting.insert(playlist.to_string(), VecDeque::new());
+                Some(item)
+            }
+        }
+    }
+
+    /// The job of `playlist` that ran is done: the next one to start, if any.
+    pub fn done(&mut self, playlist: &str) -> Option<T> {
+        let next = self.waiting.get_mut(playlist)?.pop_front();
+        if next.is_none() {
+            self.waiting.remove(playlist);
+        }
+        next
+    }
+}
+
 /// The `melodie` beside this program when there is one (a build or an install puts both in the
 /// same folder), else the one on the `PATH`.
 pub fn program(this_exe: Option<&Path>) -> PathBuf {
@@ -278,6 +342,67 @@ pub fn program(this_exe: Option<&Path>) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_second_edit_waits_for_the_first() {
+        let mut lanes = Lanes::default();
+        assert_eq!(lanes.start("p1", "move"), Some("move"));
+        assert_eq!(lanes.start("p1", "add"), None, "waits for the move");
+        assert_eq!(lanes.start("p1", "remove"), None);
+        // another playlist does not wait
+        assert_eq!(lanes.start("p2", "rename"), Some("rename"));
+        assert_eq!(lanes.done("p1"), Some("add"));
+        assert_eq!(lanes.start("p1", "check"), None, "the add runs now");
+        assert_eq!(lanes.done("p1"), Some("remove"));
+        assert_eq!(lanes.done("p1"), Some("check"));
+        assert_eq!(lanes.done("p1"), None);
+        assert_eq!(lanes.start("p1", "again"), Some("again"), "nothing runs");
+        assert_eq!(lanes.done("p2"), None);
+    }
+
+    #[test]
+    fn the_jobs_that_touch_a_playlist_name_it() {
+        let id = || "p1".to_string();
+        let adding = || Adding::Tracks(vec!["t1".into()]);
+        for job in [
+            Job::AddToPlaylist {
+                playlist: id(),
+                what: adding(),
+                allow_duplicates: false,
+            },
+            Job::CheckAdd {
+                playlist: id(),
+                what: adding(),
+            },
+            Job::RenamePlaylist {
+                id: id(),
+                name: "N".into(),
+            },
+            Job::DeletePlaylist { id: id() },
+            Job::RemoveFromPlaylist {
+                id: id(),
+                picks: vec![(0, "t1".into())],
+            },
+            Job::MoveInPlaylist {
+                id: id(),
+                from: 0,
+                to: 1,
+                track: "t1".into(),
+            },
+            Job::Duplicates {
+                id: id(),
+                remove: true,
+            },
+        ] {
+            assert_eq!(job.playlist(), Some("p1"), "{job:?}");
+        }
+        let create = Job::CreatePlaylist {
+            name: "N".into(),
+            with: Some(adding()),
+        };
+        assert_eq!(create.playlist(), None, "a new playlist waits for nothing");
+        assert_eq!(Job::PlayMix.playlist(), None);
+    }
 
     #[test]
     fn the_arguments_of_each_job() {
