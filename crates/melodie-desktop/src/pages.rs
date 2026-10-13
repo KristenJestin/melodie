@@ -3,9 +3,10 @@
 use crate::albums::{GAP, MIN_CELL, PAD, album_cell, content_width, cover_box, empty_state};
 use crate::app::Shared;
 use crate::catalog::{Catalog, Empty, Page};
+use crate::dialogs::{self, Dialog};
 use crate::motion;
 use crate::player::palette;
-use crate::tables::{Cols, track_header, track_row};
+use crate::tables::{Cols, RowCtx, track_header, track_row};
 use crate::widgets::IconButton;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
@@ -15,7 +16,8 @@ use gpui_kit::*;
 use melodie_core::library::{Album, Track};
 use melodie_core::search::human_duration;
 use melodie_desktop::browse::{self, Place};
-use melodie_desktop::launch::{Job, Kind};
+use melodie_desktop::launch::{Adding, Job, Kind};
+use melodie_desktop::selection::Selection;
 use melodie_desktop::theme::Palette;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -75,10 +77,10 @@ impl HomeView {
 
 /// A mix to start: a large card.
 fn mix_card(
-    id: &'static str,
+    id: impl Into<ElementId>,
     icon: IconName,
-    name: &'static str,
-    about: &'static str,
+    name: impl Into<SharedString>,
+    about: impl Into<SharedString>,
     job: Job,
     pal: Palette,
     catalog: &Entity<Catalog>,
@@ -123,14 +125,15 @@ fn mix_card(
                     div()
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(pal.fg)
-                        .child(name),
+                        .truncate()
+                        .child(name.into()),
                 )
                 .child(
                     div()
                         .text_sm()
                         .text_color(pal.secondary)
                         .truncate()
-                        .child(about),
+                        .child(about.into()),
                 ),
         )
 }
@@ -190,7 +193,18 @@ impl Render for HomeView {
                             Job::Rediscover,
                             pal,
                             catalog,
-                        )),
+                        ))
+                        .children(home.genres.iter().map(|(name, total)| {
+                            mix_card(
+                                ElementId::Name(format!("mix-genre-{name}").into()),
+                                IconName::Tag,
+                                format!("{name} mix"),
+                                plural(*total as i64, "track"),
+                                Job::MixGenre { name: name.clone() },
+                                pal,
+                                catalog,
+                            )
+                        })),
                 )
                 .when(!home.most_played.is_empty(), |d| {
                     d.child(section_title("Most played", pal)).child(album_rows(
@@ -276,15 +290,32 @@ fn header(
         )
 }
 
-/// Play, shuffle, play next, add at the end; and, for an album, add to a playlist.
-fn actions(kind: Kind, id: &str, picker: bool, pal: Palette, catalog: &Entity<Catalog>) -> Div {
+/// What a page's header offers to change, besides playing.
+enum Extra {
+    None,
+    /// An album: add it to a playlist.
+    Album {
+        name: String,
+    },
+    /// A playlist of the user's: rename, find its duplicates, delete.
+    Playlist {
+        name: String,
+        tracks: usize,
+    },
+}
+
+/// Play, shuffle, play next, add at the end, an instant mix; then what `extra` says.
+fn actions(kind: Kind, id: &str, extra: Extra, pal: Palette, catalog: &Entity<Catalog>) -> Div {
     let job = |make: fn(Kind, String) -> Job| {
         let (catalog, id) = (catalog.clone(), id.to_string());
         move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
             catalog.update(cx, |c, cx| c.run(make(kind, id.clone()), cx))
         }
     };
-    let pick = catalog.clone();
+    let open = |make: Box<dyn Fn() -> Dialog>| {
+        move |_: &ClickEvent, window: &mut Window, cx: &mut App| dialogs::open(make(), window, cx)
+    };
+    let id = id.to_string();
     h_flex()
         .gap_2()
         .flex_wrap()
@@ -309,14 +340,6 @@ fn actions(kind: Kind, id: &str, picker: bool, pal: Palette, catalog: &Entity<Ca
                     shuffle: true,
                 })),
         )
-        .when(kind == Kind::Artist, |d| {
-            d.child(
-                IconButton::new("page-mix", IconName::Sparkles, pal)
-                    .label("Instant mix")
-                    .diameter(38.)
-                    .on_click(job(|kind, id| Job::Mix { kind, id })),
-            )
-        })
         .when(kind != Kind::Artist, |d| {
             d.child(
                 IconButton::new("page-next", IconName::ListStart, pal)
@@ -339,114 +362,64 @@ fn actions(kind: Kind, id: &str, picker: bool, pal: Palette, catalog: &Entity<Ca
                     })),
             )
         })
-        .when(kind == Kind::Album, |d| {
+        // `melodie mix` makes instant mixes from a track, an album or an artist
+        .when(kind != Kind::Playlist, |d| {
             d.child(
+                IconButton::new("page-mix", IconName::Sparkles, pal)
+                    .label("Instant mix")
+                    .diameter(38.)
+                    .on_click(job(|kind, id| Job::Mix { kind, id })),
+            )
+        })
+        .map(|d| match extra {
+            Extra::None => d,
+            Extra::Album { name } => d.child(
                 IconButton::new("page-add", IconName::ListPlus, pal)
                     .label("Add to playlist")
                     .diameter(38.)
-                    .selected(picker)
-                    .on_click(move |_, _, cx| {
-                        pick.update(cx, |c, cx| {
-                            c.picker_open = !c.picker_open;
-                            cx.notify()
-                        })
-                    }),
-            )
+                    .on_click(open(Box::new(move || Dialog::Pick {
+                        what: Adding::Album(id.clone()),
+                        about: name.clone(),
+                    }))),
+            ),
+            Extra::Playlist { name, tracks } => {
+                let (id2, id3, name2, name3) = (id.clone(), id.clone(), name.clone(), name.clone());
+                d.child(
+                    IconButton::new("page-rename", IconName::Pencil, pal)
+                        .label("Rename")
+                        .diameter(38.)
+                        .on_click(open(Box::new(move || Dialog::Rename {
+                            id: id.clone(),
+                            name: name.clone(),
+                        }))),
+                )
+                .child(
+                    IconButton::new("page-duplicates", IconName::CopyX, pal)
+                        .label("Duplicates")
+                        .diameter(38.)
+                        .on_click(open(Box::new(move || Dialog::Duplicates {
+                            id: id2.clone(),
+                            name: name2.clone(),
+                            found: None,
+                        }))),
+                )
+                .child(
+                    IconButton::new("page-delete", IconName::Trash, pal)
+                        .label("Delete")
+                        .diameter(38.)
+                        .on_click(open(Box::new(move || Dialog::Delete {
+                            id: id3.clone(),
+                            name: name3.clone(),
+                            tracks,
+                        }))),
+                )
+            }
         })
 }
 
-/// The user's playlists, to add a track or an album to.
-pub fn picker(
-    kind: Kind,
-    id: &str,
-    t: f32,
-    pal: Palette,
-    catalog: &Entity<Catalog>,
-    cx: &App,
-) -> Div {
-    let lists = catalog.read(cx).own_playlists();
-    div()
-        .absolute()
-        .top(px(8. - 8. * (1. - t)))
-        .left(px(PAD))
-        .opacity(t)
-        .child(
-            v_flex()
-                .id("playlist-picker")
-                .w(px(280.))
-                .max_h(px(320.))
-                .overflow_y_scroll()
-                .p_2()
-                .gap_1()
-                .rounded_xl()
-                .bg(pal.surface)
-                .border_1()
-                .border_color(Hsla { a: 0.10, ..pal.fg })
-                .shadow_xl()
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(
-                    div()
-                        .px_2()
-                        .py_1()
-                        .text_xs()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(pal.secondary)
-                        .child("ADD TO PLAYLIST"),
-                )
-                .when(lists.is_empty(), |d| {
-                    d.child(
-                        div()
-                            .px_2()
-                            .py_2()
-                            .text_sm()
-                            .text_color(pal.secondary)
-                            .child("You have no playlist yet"),
-                    )
-                })
-                .children(lists.into_iter().map(|p| {
-                    let (catalog, id, pid) = (catalog.clone(), id.to_string(), p.id.clone());
-                    h_flex()
-                        .id(ElementId::Name(format!("pick-{}", p.id).into()))
-                        .px_2()
-                        .py_2()
-                        .gap_2()
-                        .items_center()
-                        .rounded_lg()
-                        .cursor_pointer()
-                        .text_sm()
-                        .text_color(pal.fg)
-                        .hover(|s| s.bg(Hsla { a: 0.08, ..pal.fg }))
-                        .on_click(move |_, _, cx| {
-                            catalog.update(cx, |c, cx| {
-                                c.picker_open = false;
-                                c.run(
-                                    Job::AddToPlaylist {
-                                        playlist: pid.clone(),
-                                        kind,
-                                        id: id.clone(),
-                                    },
-                                    cx,
-                                );
-                                cx.notify()
-                            })
-                        })
-                        .child(
-                            Icon::new(IconName::ListMusic)
-                                .size(px(16.))
-                                .text_color(pal.secondary),
-                        )
-                        .child(div().flex_1().min_w_0().truncate().child(p.name.clone()))
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(pal.secondary)
-                                .child(p.songs.to_string()),
-                        )
-                })),
-        )
-}
-
-/// A list of tracks under a page's header, in a virtual list.
+/// A list of tracks under a page's header, in a virtual list. Its rows can be picked; in a
+/// playlist of the user's (`playlist`: its id and name) they can be removed and dragged.
+#[allow(clippy::too_many_arguments)]
 fn track_list(
     id: &'static str,
     tracks: Arc<[Track]>,
@@ -454,6 +427,8 @@ fn track_list(
     pal: Palette,
     scroll: &UniformListScrollHandle,
     catalog: &Entity<Catalog>,
+    (here, selection): (Place, Selection),
+    playlist: Option<(String, String)>,
 ) -> Div {
     let catalog = catalog.clone();
     v_flex()
@@ -463,7 +438,13 @@ fn track_list(
         .child(
             uniform_list(id, tracks.len(), move |range, _, _| {
                 range
-                    .map(|ix| track_row(id, ix, &tracks[ix], cols, pal, &catalog))
+                    .map(|ix| {
+                        let row = RowCtx {
+                            playlist: playlist.clone(),
+                            ..RowCtx::of(&selection, &here, ix)
+                        };
+                        track_row(id, ix, &tracks[ix], cols, pal, &catalog, row)
+                    })
                     .collect()
             })
             .track_scroll(scroll)
@@ -474,16 +455,22 @@ fn track_list(
 impl Render for PageView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let pal = palette(&self.shared, window, cx);
-        let (here, page, covers, can_back, picker_open, empty) = {
+        let (here, page, covers, can_back, empty, selection, own) = {
             let c = self.catalog.read(cx);
             let here = c.here().clone();
+            let page = c.pages.get(&here).cloned();
+            let own = match page.as_deref() {
+                Some(Page::Playlist { playlist, .. }) => c.is_own(playlist),
+                _ => false,
+            };
             (
                 here.clone(),
-                c.pages.get(&here).cloned(),
+                page,
                 c.covers.clone(),
                 c.nav.can_go_back(),
-                c.picker_open,
                 c.empty,
+                c.selection.clone(),
+                own,
             )
         };
         if self.shown.as_ref() != Some(&here) {
@@ -493,7 +480,6 @@ impl Render for PageView {
         let width = content_width(window);
         let cols = |c: Cols| c.fit(width);
         let catalog = &self.catalog;
-        let pk = motion::flag("picker", picker_open, motion::PANEL, window, cx);
         let back = {
             let catalog = catalog.clone();
             h_flex()
@@ -553,7 +539,15 @@ impl Render for PageView {
                         "ALBUM",
                         album.name.clone(),
                         about.into_any_element(),
-                        actions(Kind::Album, &album.id, picker_open, pal, catalog),
+                        actions(
+                            Kind::Album,
+                            &album.id,
+                            Extra::Album {
+                                name: album.name.clone(),
+                            },
+                            pal,
+                            catalog,
+                        ),
                         pal,
                     ))
                     .child(track_list(
@@ -565,34 +559,14 @@ impl Render for PageView {
                             album: false,
                             year: false,
                             plays: true,
+                            edit: false,
                         }),
                         pal,
                         &self.tracks,
                         catalog,
+                        (here.clone(), selection.clone()),
+                        None,
                     ))
-                    .when(pk > 0.0, |d| {
-                        let close = catalog.clone();
-                        d.child(
-                            div()
-                                .id("picker-scrim")
-                                .absolute()
-                                .inset_0()
-                                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                    close.update(cx, |c, cx| {
-                                        c.picker_open = false;
-                                        cx.notify()
-                                    })
-                                })
-                                .child(div().absolute().top(px(240.)).left_0().child(picker(
-                                    Kind::Album,
-                                    &album.id,
-                                    pk,
-                                    pal,
-                                    catalog,
-                                    cx,
-                                ))),
-                        )
-                    })
                     .into_any_element()
             }
             Some(Page::Playlist { playlist, tracks }) => {
@@ -612,7 +586,20 @@ impl Render for PageView {
                         "PLAYLIST",
                         playlist.name.clone(),
                         about.into_any_element(),
-                        actions(Kind::Playlist, &playlist.id, false, pal, catalog),
+                        actions(
+                            Kind::Playlist,
+                            &playlist.id,
+                            if own {
+                                Extra::Playlist {
+                                    name: playlist.name.clone(),
+                                    tracks: tracks.len(),
+                                }
+                            } else {
+                                Extra::None
+                            },
+                            pal,
+                            catalog,
+                        ),
                         pal,
                     ))
                     .child(track_list(
@@ -624,10 +611,13 @@ impl Render for PageView {
                             album: true,
                             year: false,
                             plays: false,
+                            edit: own,
                         }),
                         pal,
                         &self.tracks,
                         catalog,
+                        (here.clone(), selection.clone()),
+                        own.then(|| (playlist.id.clone(), playlist.name.clone())),
                     ))
                     .into_any_element()
             }
@@ -651,7 +641,7 @@ impl Render for PageView {
                         plural(artist.tracks, "track")
                     )
                     .into_any_element(),
-                    actions(Kind::Artist, &artist.id, false, pal, catalog),
+                    actions(Kind::Artist, &artist.id, Extra::None, pal, catalog),
                     pal,
                 ))
                 .when(!top.is_empty(), |d| {
@@ -667,9 +657,11 @@ impl Render for PageView {
                                     album: true,
                                     year: false,
                                     plays: true,
+                                    edit: false,
                                 }),
                                 pal,
                                 catalog,
+                                RowCtx::plain(),
                             )
                         }))
                 })
@@ -689,5 +681,125 @@ impl Render for PageView {
             .size_full()
             .child(back)
             .child(div().flex_1().min_h_0().child(body))
+    }
+}
+
+/// What is done with the rows picked in a list: a bar that rises at the bottom while some are.
+pub struct SelectionBar {
+    shared: Entity<Shared>,
+    catalog: Entity<Catalog>,
+    /// What the bar said last, kept while it fades out.
+    count: usize,
+}
+
+impl SelectionBar {
+    pub fn new(shared: Entity<Shared>, catalog: Entity<Catalog>) -> Self {
+        Self {
+            shared,
+            catalog,
+            count: 0,
+        }
+    }
+}
+
+impl Render for SelectionBar {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (count, playlist) = {
+            let c = self.catalog.read(cx);
+            let here = c.here().clone();
+            let playlist = match c.pages.get(&here).map(Arc::as_ref) {
+                Some(Page::Playlist { playlist, .. }) if c.is_own(playlist) => {
+                    Some((playlist.id.clone(), playlist.name.clone()))
+                }
+                _ => None,
+            };
+            (c.selection.count(&here), playlist)
+        };
+        let t = motion::flag("selection-bar", count > 0, motion::ENTER, window, cx);
+        if count > 0 {
+            self.count = count;
+        }
+        if t == 0.0 {
+            return div().into_any_element();
+        }
+        let pal = palette(&self.shared, window, cx);
+        let n = self.count;
+        // what the picked rows hold, read when a button is pressed
+        let picked = {
+            let catalog = self.catalog.clone();
+            move |cx: &App| {
+                let c = catalog.read(cx);
+                let tracks = c.shown_tracks().unwrap_or_else(|| Arc::from([]));
+                let ids: Vec<&str> = tracks.iter().map(|t| t.id.as_str()).collect();
+                let picks = c.selection.picks(c.here(), &ids);
+                let titles = picks
+                    .iter()
+                    .map(|(ix, _)| tracks[*ix].title.clone())
+                    .collect::<Vec<_>>();
+                (picks, titles)
+            }
+        };
+        let add = {
+            let picked = picked.clone();
+            move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                let (picks, _) = picked(cx);
+                let about = plural(picks.len() as i64, "track");
+                let what = Adding::Tracks(picks.into_iter().map(|(_, id)| id).collect());
+                dialogs::open(Dialog::Pick { what, about }, window, cx)
+            }
+        };
+        let clear = self.catalog.clone();
+        h_flex()
+            .id("selection-bar")
+            // a click on the bar is not a click on the row under it
+            .occlude()
+            .mb(px(8. * (1. - t)))
+            .opacity(t)
+            .px_3()
+            .py_2()
+            .gap_2()
+            .items_center()
+            .rounded_full()
+            .bg(pal.surface)
+            .border_1()
+            .border_color(Hsla { a: 0.12, ..pal.fg })
+            .shadow_lg()
+            .child(
+                div()
+                    .px_2()
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(pal.fg)
+                    .child(format!("{n} selected")),
+            )
+            .child(
+                IconButton::new("picked-add", IconName::ListPlus, pal)
+                    .label("Add to playlist")
+                    .diameter(34.)
+                    .on_click(add),
+            )
+            .when_some(playlist, |d, (id, name)| {
+                d.child(
+                    IconButton::new("picked-remove", IconName::ListMinus, pal)
+                        .label("Remove")
+                        .diameter(34.)
+                        .on_click(move |_, window, cx| {
+                            let (picks, titles) = picked(cx);
+                            let dialog = Dialog::Remove {
+                                id: id.clone(),
+                                name: name.clone(),
+                                picks,
+                                titles,
+                            };
+                            dialogs::open(dialog, window, cx)
+                        }),
+                )
+            })
+            .child(
+                IconButton::new("picked-clear", IconName::X, pal)
+                    .diameter(34.)
+                    .on_click(move |_, _, cx| clear.update(cx, |c, cx| c.unselect(cx))),
+            )
+            .into_any_element()
     }
 }

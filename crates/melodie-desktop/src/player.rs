@@ -1,6 +1,7 @@
 //! The player, in the spirit of Amberol: the cover large, the track, the position, a few buttons.
 
 use crate::app::{Shared, Shown};
+use crate::dialogs::{self, Dialog};
 use crate::motion;
 use crate::widgets::IconButton;
 use gpui_kit::assets::IconName;
@@ -11,7 +12,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use melodie_core::proto::Request;
 use melodie_core::track::clock;
-use melodie_desktop::launch::Job;
+use melodie_desktop::launch::{Adding, Job};
 use melodie_desktop::model::{Clock, PlayState, VOLUME_SLIDER_MAX, volume_percent};
 use melodie_desktop::theme::Palette;
 use std::time::{Duration, Instant};
@@ -172,6 +173,7 @@ impl Render for PlayerView {
                 None,
             ),
         };
+        let picked = (id.clone(), title.clone());
 
         let play = {
             let shared = shared.clone();
@@ -263,6 +265,21 @@ impl Render for PlayerView {
                                             cx,
                                         )
                                     })
+                                }
+                            })
+                    })
+                    .child({
+                        let (id, title) = picked;
+                        IconButton::new("add-current", IconName::ListPlus, pal)
+                            .disabled(!has_track)
+                            .on_click(move |_, window, cx| {
+                                // the id seen now, not "current": the track may change meanwhile
+                                if let Some(id) = id.clone() {
+                                    let dialog = Dialog::Pick {
+                                        what: Adding::Tracks(vec![id]),
+                                        about: title.to_string(),
+                                    };
+                                    dialogs::open(dialog, window, cx)
                                 }
                             })
                     })

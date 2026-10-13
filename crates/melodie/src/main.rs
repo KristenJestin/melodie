@@ -108,11 +108,14 @@ enum PlaylistCmd {
     /// Adds a track, an album or the current track (default) to a playlist
     Add {
         playlist_id: String,
-        /// `current`, `track <id>` or `album <id>`
+        /// `current`, `track <id>…` or `album <id>`
         target: Vec<String>,
         /// Also adds the tracks already in the playlist (otherwise they are skipped and counted)
         #[arg(long)]
         allow_duplicates: bool,
+        /// Says what would be added and what is already there, without writing anything
+        #[arg(long, conflicts_with = "allow_duplicates")]
+        dry_run: bool,
         /// JSON output: tracks added and tracks already present
         #[arg(long)]
         json: bool,
@@ -127,8 +130,24 @@ enum PlaylistCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Removes the track at <rank> (counted from 1, like `duplicates` prints it)
-    Remove { playlist_id: String, rank: usize },
+    /// Removes the tracks at these ranks (counted from 1, like `duplicates` prints them)
+    Remove {
+        playlist_id: String,
+        #[arg(required = true, num_args = 1..)]
+        rank: Vec<usize>,
+        /// The id each rank should hold, in the same order: nothing is removed otherwise
+        #[arg(long)]
+        expect: Vec<String>,
+    },
+    /// Moves the track at rank <from> to rank <to> (counted from 1)
+    Move {
+        playlist_id: String,
+        from: usize,
+        to: usize,
+        /// The id rank <from> should hold: nothing is moved otherwise
+        #[arg(long)]
+        expect: Option<String>,
+    },
     /// Creates a playlist, optionally with a track, an album or the current track
     Create {
         /// <name>, then `current`, `track <id>` or `album <id>` (with --prompt: the target only)
@@ -481,16 +500,34 @@ fn playlist_cmd(env: &Env, cmd: PlaylistCmd) -> ExitCode {
                 playlist_id,
                 target: t,
                 allow_duplicates,
+                dry_run,
                 json,
-            } => playlists_cmd::add_cmd(env, &playlist_id, &target(&t)?, allow_duplicates, json),
+            } => playlists_cmd::add_cmd(
+                env,
+                &playlist_id,
+                &target(&t)?,
+                playlists_cmd::Duplicates {
+                    allow: allow_duplicates,
+                    dry_run,
+                },
+                json,
+            ),
             PlaylistCmd::Duplicates {
                 playlist_id,
                 remove,
                 json,
             } => playlists_cmd::duplicates_cmd(env, &playlist_id, remove, json),
-            PlaylistCmd::Remove { playlist_id, rank } => {
-                playlists_cmd::remove_cmd(env, &playlist_id, rank)
-            }
+            PlaylistCmd::Remove {
+                playlist_id,
+                rank,
+                expect,
+            } => playlists_cmd::remove_cmd(env, &playlist_id, &rank, &expect),
+            PlaylistCmd::Move {
+                playlist_id,
+                from,
+                to,
+                expect,
+            } => playlists_cmd::move_cmd(env, &playlist_id, from, to, expect.as_deref()),
             PlaylistCmd::Create { args, prompt } => {
                 let (name, rest) = if prompt {
                     (ask("Nom de la playlist", None)?, &args[..])

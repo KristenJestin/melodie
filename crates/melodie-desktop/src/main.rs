@@ -4,6 +4,7 @@
 mod albums;
 mod app;
 mod catalog;
+mod dialogs;
 mod mini;
 mod motion;
 mod pages;
@@ -21,6 +22,7 @@ mod widgets;
 use albums::AlbumGrid;
 use app::Shared;
 use catalog::Catalog;
+use dialogs::{Dialogs, DialogsHandle};
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -31,7 +33,7 @@ use melodie_desktop::browse::Place;
 use melodie_desktop::keys::{self, Act, Key, Situation};
 use melodie_desktop::theme::{self, Active, Choice, Palette};
 use mini::MiniPlayer;
-use pages::{HomeView, PageView};
+use pages::{HomeView, PageView, SelectionBar};
 use player::{PlayerView, palette};
 use queue::QueuePanel;
 use search::SearchView;
@@ -46,14 +48,18 @@ gpui_kit::assets::icon_assets!(
         ArrowDown,
         ArrowUp,
         AudioLines,
+        Check,
         ChevronLeft,
         CircleUser,
+        Copy,
+        CopyX,
         Disc3,
         GripVertical,
         Heart,
         House,
         KeyRound,
         ListEnd,
+        ListMinus,
         ListMusic,
         ListPlus,
         ListStart,
@@ -64,7 +70,9 @@ gpui_kit::assets::icon_assets!(
         Music,
         Palette,
         Pause,
+        Pencil,
         Play,
+        Plus,
         RefreshCw,
         RotateCcw,
         Search,
@@ -73,6 +81,8 @@ gpui_kit::assets::icon_assets!(
         SkipBack,
         SkipForward,
         Sparkles,
+        Tag,
+        Trash,
         Volume2,
         X,
     ]
@@ -94,6 +104,8 @@ struct Views {
     search: Entity<SearchView>,
     mini: Entity<MiniPlayer>,
     sign_in: Entity<SignInView>,
+    dialogs: Entity<Dialogs>,
+    picked: Entity<SelectionBar>,
 }
 
 struct Root {
@@ -137,6 +149,14 @@ impl Root {
                 }
             }),
             sign_in_follow(&account, &catalog, window, cx),
+            // a dialog closed (or one without a field opened): its field gives the focus back
+            cx.observe_in(&views.dialogs, window, |this, dialogs, window, cx| {
+                let d = dialogs.read(cx);
+                let wants_field = d.open.as_ref().is_some_and(|d| d.has_field());
+                if !wants_field && d.field_focused(window, cx) {
+                    window.focus(&this.focus, cx);
+                }
+            }),
             cx.observe(&shared, move |this, shared, cx| {
                 let open = shared.read(cx).queue_open;
                 if open && !was_open {
@@ -173,7 +193,8 @@ impl Root {
                 here: c.here(),
                 field_focused: v.has_focus(window, cx),
                 overlay_open: s.queue_open || s.settings_open,
-                picker_open: c.picker_open,
+                dialog_open: self.views.dialogs.read(cx).is_open(),
+                selection: c.selection.count(c.here()) > 0,
                 field_empty: v.is_empty(),
             }
         };
@@ -189,10 +210,11 @@ impl Root {
                 s.settings_open = false;
                 cx.notify()
             }),
-            Act::ClosePicker => self.catalog.update(cx, |c, cx| {
-                c.picker_open = false;
-                cx.notify()
-            }),
+            Act::CloseDialog => self.views.dialogs.update(cx, |d, cx| d.close(cx)),
+            // Enter in the name field is the field's own: it confirms once, through its event
+            Act::Confirm if self.views.dialogs.read(cx).field_focused(window, cx) => return,
+            Act::Confirm => self.views.dialogs.update(cx, |d, cx| d.confirm(window, cx)),
+            Act::ClearSelection => self.catalog.update(cx, |c, cx| c.unselect(cx)),
             Act::ClearField => {
                 self.views.search.update(cx, |v, cx| v.clear(window, cx));
             }
@@ -397,6 +419,17 @@ impl Render for Root {
                         .when(here != Place::Player, |d| d.child(v.mini.clone())),
                 ),
             )
+            // the rows picked: what can be done with them, above the mini player
+            .child(
+                div()
+                    .absolute()
+                    .bottom(px(lift + 12.))
+                    .left(px(sidebar::width(width)))
+                    .right_0()
+                    .flex()
+                    .justify_center()
+                    .child(v.picked.clone()),
+            )
             .when(st > 0.0, |d| {
                 d.child(
                     div()
@@ -472,6 +505,7 @@ impl Render for Root {
                         ),
                 )
             })
+            .child(self.views.dialogs.clone())
             // over everything, the notices included; clicks stay on it
             .when(si > 0.0, |d| {
                 d.child(
@@ -547,7 +581,10 @@ fn main() -> ExitCode {
                 search: cx.new(|cx| SearchView::new(s.clone(), c.clone(), env.clone(), window, cx)),
                 mini: cx.new(|_| MiniPlayer::new(s.clone(), c.clone())),
                 sign_in: cx.new(|cx| SignInView::new(s.clone(), account.clone(), window, cx)),
+                dialogs: cx.new(|cx| Dialogs::new(s.clone(), c.clone(), window, cx)),
+                picked: cx.new(|_| SelectionBar::new(s.clone(), c.clone())),
             };
+            cx.set_global(DialogsHandle(views.dialogs.clone()));
             cx.new(|cx| Root::new(shared, catalog, account, views, window, cx))
         });
         if let Err(e) = opened {

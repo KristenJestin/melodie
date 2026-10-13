@@ -28,7 +28,8 @@ pub enum Failure {
     NotFound(String),
     /// Aucune copie locale : la première synchronisation tourne en arrière-plan.
     Syncing,
-    /// Problème local (trousseau, disque, base) : jamais muet, jamais confondu avec un état.
+    /// Problème local (trousseau, disque, base), or a request the server turned down over HTTP:
+    /// jamais muet, jamais confondu avec un état.
     Internal(anyhow::Error),
 }
 
@@ -136,6 +137,9 @@ pub fn from_api(e: ApiError, url: &str) -> Failure {
             url: url.to_string(),
             detail,
         },
+        ApiError::Http(detail) => {
+            Failure::Internal(anyhow!("the server turned the request down: {detail}"))
+        }
     }
 }
 

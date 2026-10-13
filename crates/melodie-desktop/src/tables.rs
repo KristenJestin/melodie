@@ -5,6 +5,7 @@
 use crate::albums::{PAD, content_width, cover_box, empty_state};
 use crate::app::Shared;
 use crate::catalog::Catalog;
+use crate::dialogs::{self, Dialog};
 use crate::player::palette;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
@@ -14,7 +15,8 @@ use gpui_kit::*;
 use melodie_core::library::{Artist, ArtistBy, Sort, Track, TrackBy};
 use melodie_core::track::clock;
 use melodie_desktop::browse::Place;
-use melodie_desktop::launch::{Job, Kind};
+use melodie_desktop::launch::{Adding, Job, Kind};
+use melodie_desktop::selection::{How, Selection};
 use melodie_desktop::theme::Palette;
 use std::sync::Arc;
 
@@ -32,6 +34,14 @@ pub struct Cols {
     pub album: bool,
     pub year: bool,
     pub plays: bool,
+    /// The rows can be removed (a playlist of the user's): one more button.
+    pub edit: bool,
+}
+
+/// The width of the buttons a row shows on hover.
+fn actions_width(cols: Cols) -> f32 {
+    let n = if cols.edit { 5. } else { 4. };
+    n * 28. + (n - 1.) * 4.
 }
 
 impl Cols {
@@ -162,7 +172,7 @@ pub fn track_header(
                 d,
             )
         })
-        .child(cell(Some(64.), 0.))
+        .child(cell(Some(actions_width(cols)), 0.))
 }
 
 /// A small button inside a row: shown on the row's hover, never animated.
@@ -170,7 +180,7 @@ pub fn row_button(
     id: ElementId,
     icon: IconName,
     pal: Palette,
-    on_click: impl Fn(&mut App) + 'static,
+    on_click: impl Fn(&mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
     div()
         .id(id)
@@ -182,9 +192,9 @@ pub fn row_button(
         .rounded_full()
         .cursor_pointer()
         .hover(|s| s.bg(Hsla { a: 0.12, ..pal.fg }))
-        .on_click(move |_, _, cx| {
+        .on_click(move |_, window, cx| {
             cx.stop_propagation();
-            on_click(cx)
+            on_click(window, cx)
         })
         .child(Icon::new(icon).size(px(16.)).text_color(pal.secondary))
 }
@@ -213,7 +223,78 @@ fn link(
         .child(text)
 }
 
-/// One track: a click plays it; on hover, play it next or add it at the end of the queue.
+/// Where a track row is and what it may do besides playing.
+#[derive(Clone)]
+pub struct RowCtx {
+    /// Rows of this list can be picked (Ctrl+click, Shift+click).
+    pub selectable: bool,
+    pub selected: bool,
+    /// The playlist the row is in, when the user may edit it: remove the row, drag it elsewhere.
+    pub playlist: Option<(String, String)>,
+}
+
+impl RowCtx {
+    /// A row that only plays.
+    pub fn plain() -> Self {
+        Self {
+            selectable: false,
+            selected: false,
+            playlist: None,
+        }
+    }
+
+    /// The row `ix` of the list at `here`, picked or not.
+    pub fn of(selection: &Selection, here: &Place, ix: usize) -> Self {
+        Self {
+            selectable: true,
+            selected: selection.has(here, ix),
+            playlist: None,
+        }
+    }
+}
+
+/// A row of a playlist being dragged to another rank.
+#[derive(Clone)]
+pub struct Dragged {
+    from: usize,
+    title: SharedString,
+    pal: Palette,
+}
+
+impl Render for Dragged {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let pal = self.pal;
+        h_flex()
+            .w(px(300.))
+            .h(px(TRACK_ROW - 4.))
+            .px_3()
+            .gap_3()
+            .items_center()
+            .rounded_lg()
+            .bg(pal.surface)
+            .border_1()
+            .border_color(pal.accent)
+            .shadow_lg()
+            .opacity(0.94)
+            .child(
+                Icon::new(IconName::GripVertical)
+                    .size(px(16.))
+                    .text_color(pal.secondary),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .truncate()
+                    .text_sm()
+                    .text_color(pal.fg)
+                    .child(self.title.clone()),
+            )
+    }
+}
+
+/// One track: a click plays it, Ctrl+click or Shift+click picks it; on hover, play it next, add
+/// it at the end of the queue, add it to a playlist, an instant mix from it, and in the user's
+/// playlist, remove it. A row of the user's playlist can be dragged onto another.
 pub fn track_row(
     list: &'static str,
     ix: usize,
@@ -221,29 +302,34 @@ pub fn track_row(
     cols: Cols,
     pal: Palette,
     catalog: &Entity<Catalog>,
+    row: RowCtx,
 ) -> Stateful<Div> {
     let key = |what: &str| ElementId::Name(format!("{list}-{what}-{ix}").into());
-    let job = |next: Option<bool>| {
+    let job = |make: fn(String) -> Job| {
         let id = t.id.clone();
         let catalog = catalog.clone();
-        move |cx: &mut App| {
-            let id = id.clone();
-            let job = match next {
-                None => Job::Play {
-                    kind: Kind::Track,
-                    id,
-                    shuffle: false,
-                },
-                Some(next) => Job::Queue {
-                    kind: Kind::Track,
-                    id,
-                    next,
-                },
-            };
+        move |_: &mut Window, cx: &mut App| {
+            let job = make(id.clone());
             catalog.update(cx, |c, cx| c.run(job, cx))
         }
     };
-    let play = job(None);
+    let play = job(|id| Job::Play {
+        kind: Kind::Track,
+        id,
+        shuffle: false,
+    });
+    let pick = {
+        let (id, title) = (t.id.clone(), t.title.clone());
+        move |window: &mut Window, cx: &mut App| {
+            let dialog = Dialog::Pick {
+                what: Adding::Tracks(vec![id.clone()]),
+                about: title.clone(),
+            };
+            dialogs::open(dialog, window, cx)
+        }
+    };
+    let (select, selectable) = (catalog.clone(), row.selectable);
+    let accent = pal.accent;
     h_flex()
         .id(key("row"))
         .group(list)
@@ -260,6 +346,12 @@ pub fn track_row(
                 .rounded_md()
                 .text_sm()
                 .cursor_pointer()
+                .when(row.selected, |d| {
+                    d.bg(Hsla {
+                        a: 0.18,
+                        ..pal.accent
+                    })
+                })
                 .hover(|s| s.bg(Hsla { a: 0.07, ..pal.fg }))
                 .when(cols.number, |d| {
                     d.child(
@@ -318,7 +410,7 @@ pub fn track_row(
                 )
                 .child(
                     h_flex()
-                        .w(px(64.))
+                        .w(px(actions_width(cols)))
                         .flex_none()
                         .gap_1()
                         .invisible()
@@ -327,17 +419,88 @@ pub fn track_row(
                             key("next"),
                             IconName::ListStart,
                             pal,
-                            job(Some(true)),
+                            job(|id| Job::Queue {
+                                kind: Kind::Track,
+                                id,
+                                next: true,
+                            }),
                         ))
                         .child(row_button(
                             key("last"),
                             IconName::ListEnd,
                             pal,
-                            job(Some(false)),
-                        )),
+                            job(|id| Job::Queue {
+                                kind: Kind::Track,
+                                id,
+                                next: false,
+                            }),
+                        ))
+                        .child(row_button(key("add"), IconName::ListPlus, pal, pick))
+                        .child(row_button(
+                            key("mix"),
+                            IconName::Sparkles,
+                            pal,
+                            job(|id| Job::Mix {
+                                kind: Kind::Track,
+                                id,
+                            }),
+                        ))
+                        .when_some(
+                            row.playlist.clone().filter(|_| cols.edit),
+                            |d, (pid, name)| {
+                                let (catalog, id, title) =
+                                    (catalog.clone(), t.id.clone(), t.title.clone());
+                                d.child(row_button(
+                                    key("remove"),
+                                    IconName::ListMinus,
+                                    pal,
+                                    move |_, cx| {
+                                        let job = Job::RemoveFromPlaylist {
+                                            id: pid.clone(),
+                                            picks: vec![(ix, id.clone())],
+                                        };
+                                        let said = format!("Removed {title} from {name}");
+                                        catalog.update(cx, |c, cx| c.edit(job, Some(said), cx))
+                                    },
+                                ))
+                            },
+                        ),
                 ),
         )
-        .on_click(move |_, _, cx| play(cx))
+        .when(row.playlist.is_some(), |d| {
+            let dropped = catalog.clone();
+            d.on_drag(
+                Dragged {
+                    from: ix,
+                    title: t.title.clone().into(),
+                    pal,
+                },
+                |d, _, _, cx| cx.new(|_| d.clone()),
+            )
+            // the line shows where the row will land
+            .drag_over::<Dragged>(move |style, d, _, _| {
+                if d.from < ix {
+                    style.border_b_2().border_color(accent)
+                } else if d.from > ix {
+                    style.border_t_2().border_color(accent)
+                } else {
+                    style
+                }
+            })
+            .on_drop(move |d: &Dragged, _, cx| {
+                let from = d.from;
+                dropped.update(cx, |c, cx| c.move_in_playlist(from, ix, cx))
+            })
+        })
+        .on_click(move |ev, window, cx| {
+            let m = ev.modifiers();
+            if selectable && (m.control || m.shift) {
+                let how = if m.shift { How::Range } else { How::Toggle };
+                select.update(cx, |c, cx| c.select(ix, how, cx))
+            } else {
+                play(window, cx)
+            }
+        })
 }
 
 pub struct TrackList {
@@ -401,8 +564,10 @@ impl Render for TrackList {
             album: true,
             year: true,
             plays: true,
+            edit: false,
         }
         .fit(content_width(window));
+        let selection = self.catalog.read(cx).selection.clone();
         let catalog = self.catalog.clone();
         let header = track_header(cols, Some(sort), pal, move |s, cx| {
             catalog.update(cx, |c, cx| c.sort_tracks(s, cx))
@@ -414,7 +579,10 @@ impl Render for TrackList {
                 let catalog = self.catalog.clone();
                 uniform_list("track-rows", list.len(), move |range, _, _| {
                     range
-                        .map(|ix| track_row("track-row", ix, &list[ix], cols, pal, &catalog))
+                        .map(|ix| {
+                            let row = RowCtx::of(&selection, &Place::Tracks, ix);
+                            track_row("track-row", ix, &list[ix], cols, pal, &catalog, row)
+                        })
                         .collect()
                 })
                 .track_scroll(&self.scroll)

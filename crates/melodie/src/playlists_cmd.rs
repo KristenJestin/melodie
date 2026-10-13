@@ -8,8 +8,8 @@ use melodie_core::api::Client;
 use melodie_core::db;
 use melodie_core::env::Env;
 use melodie_core::playlists::{
-    Duplicate, Target, add_checked, create, delete, duplicates, pick, remove, remove_duplicates,
-    rename,
+    AddOutcome, Duplicate, Target, add_checked, check_add, create, delete, duplicates, move_track,
+    pick, remove_duplicates, remove_many, rename,
 };
 use melodie_core::resolve;
 use melodie_core::search::Kind;
@@ -40,19 +40,23 @@ fn tracks_of(
                 ..TrackInfo::default()
             }])
         }
-        Target::Track(id) => {
-            let title = conn
-                .and_then(|c| db::name_of(c, db::StarKind::Track, id))
-                .unwrap_or_else(|| id.clone());
-            let duration = conn.and_then(|c| db::track_duration(c, id)).unwrap_or(0);
-            Ok(vec![TrackInfo {
-                id: id.clone(),
-                title,
-                duration: duration.max(0) as u64,
-                ..TrackInfo::default()
-            }])
-        }
+        Target::Track(id) => Ok(vec![local_track(conn, id)]),
+        Target::Tracks(ids) => Ok(ids.iter().map(|id| local_track(conn, id)).collect()),
         Target::Album(id) => Ok(resolve::resolve(client, Kind::Album, id)?),
+    }
+}
+
+/// A track as the local copy knows it (its title and duration), or its id alone.
+fn local_track(conn: Option<&Connection>, id: &str) -> TrackInfo {
+    let title = conn
+        .and_then(|c| db::name_of(c, db::StarKind::Track, id))
+        .unwrap_or_else(|| id.to_string());
+    let duration = conn.and_then(|c| db::track_duration(c, id)).unwrap_or(0);
+    TrackInfo {
+        id: id.to_string(),
+        title,
+        duration: duration.max(0) as u64,
+        ..TrackInfo::default()
     }
 }
 
@@ -114,31 +118,43 @@ fn json_failure(o: &Oops) -> Option<ExitCode> {
     Some(ExitCode::SUCCESS)
 }
 
-pub fn add_cmd(
-    env: &Env,
-    pid: &str,
-    target: &Target,
-    allow_duplicates: bool,
-    json: bool,
-) -> ExitCode {
+/// What `playlist add` does with the tracks already in the playlist.
+#[derive(Debug, Clone, Copy)]
+pub struct Duplicates {
+    /// Added anyway.
+    pub allow: bool,
+    /// Nothing is written: the output says what would be added and what is there already.
+    pub dry_run: bool,
+}
+
+pub fn add_cmd(env: &Env, pid: &str, target: &Target, dup: Duplicates, json: bool) -> ExitCode {
     let r = (|| -> Result<(), Oops> {
         let s = session(env)?;
         let tracks = tracks_of(target, &s.client, s.conn.as_ref())?;
-        let r = add_checked(
-            &s.client,
-            s.conn.as_ref(),
-            pid,
-            &tracks,
-            allow_duplicates,
-            now_secs(),
-        );
+        let r = if dup.dry_run {
+            check_add(&s.client, pid, &tracks)
+        } else {
+            add_checked(
+                &s.client,
+                s.conn.as_ref(),
+                pid,
+                &tracks,
+                dup.allow,
+                now_secs(),
+            )
+        };
         state::record(env, &r);
         let done = r?;
         let name = playlist_name(s.conn.as_ref(), pid);
         if json {
             let mut body = with_playlist(s.conn.as_ref(), pid, done.to_json());
-            body["allowDuplicates"] = json!(allow_duplicates);
+            body["allowDuplicates"] = json!(dup.allow);
+            if dup.dry_run {
+                body["dryRun"] = json!(true);
+            }
             println!("{body}");
+        } else if dup.dry_run {
+            print_dry_run(&name, &done);
         } else if done.added.is_empty() {
             finish(
                 &format!("Déjà dans « {name} »"),
@@ -157,6 +173,14 @@ pub fn add_cmd(
         Err(o) if json => json_failure(&o).unwrap_or_else(|| ctl::report_oops(&o)),
         r => finish_result(r),
     }
+}
+
+fn print_dry_run(name: &str, done: &AddOutcome) {
+    println!(
+        "À ajouter à « {name} » : {} ; déjà présents : {}",
+        done.added.len(),
+        done.already.len()
+    );
 }
 
 fn finish_result(r: Result<(), Oops>) -> ExitCode {
@@ -241,22 +265,52 @@ pub fn duplicates_cmd(env: &Env, pid: &str, remove: bool, json: bool) -> ExitCod
     }
 }
 
-/// `rank` is what a person reads (from 1, like `duplicates`); the 0-based index of Subsonic's
-/// `songIndexToRemove` is computed here, once.
-pub fn remove_cmd(env: &Env, pid: &str, rank: usize) -> ExitCode {
+/// Ranks are what a person reads (from 1, like `duplicates`); the 0-based indexes of Subsonic's
+/// `songIndexToRemove` are computed here, once. `expect`, when given, holds the id of each rank.
+pub fn remove_cmd(env: &Env, pid: &str, ranks: &[usize], expect: &[String]) -> ExitCode {
     plain((|| {
-        let Some(index) = rank.checked_sub(1) else {
+        if !expect.is_empty() && expect.len() != ranks.len() {
             return Err(Failure::Internal(anyhow!(
-                "rank 0 does not exist: ranks are counted from 1"
+                "--expect is given once per rank ({} ranks, {} ids)",
+                ranks.len(),
+                expect.len()
             )));
-        };
+        }
+        let picks = ranks
+            .iter()
+            .enumerate()
+            .map(|(n, &rank)| Ok((index_of(rank)?, expect.get(n).map(String::as_str))))
+            .collect::<Result<Vec<_>, Failure>>()?;
         let s = session(env)?;
-        let r = remove(&s.client, s.conn.as_ref(), pid, index, now_secs());
+        let r = remove_many(&s.client, s.conn.as_ref(), pid, &picks, now_secs());
         state::record(env, &r);
-        let t = r?;
+        let gone = r?;
         finish(
             &format!("Retiré de « {} »", playlist_name(s.conn.as_ref(), pid)),
-            &t.title,
+            &tracks_label(&gone),
+        );
+        Ok(())
+    })())
+}
+
+/// The 0-based index of a rank counted from 1.
+fn index_of(rank: usize) -> Result<usize, Failure> {
+    rank.checked_sub(1).ok_or_else(|| {
+        Failure::Internal(anyhow!("rank 0 does not exist: ranks are counted from 1"))
+    })
+}
+
+/// `playlist move <id> <from> <to>`: ranks from 1.
+pub fn move_cmd(env: &Env, pid: &str, from: usize, to: usize, expect: Option<&str>) -> ExitCode {
+    plain((|| {
+        let (f, t) = (index_of(from)?, index_of(to)?);
+        let s = session(env)?;
+        let r = move_track(&s.client, s.conn.as_ref(), pid, f, t, expect, now_secs());
+        state::record(env, &r);
+        let moved = r?;
+        finish(
+            &format!("Déplacé dans « {} »", playlist_name(s.conn.as_ref(), pid)),
+            &format!("{} (rang {from} → {to})", moved.title),
         );
         Ok(())
     })())

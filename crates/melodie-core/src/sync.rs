@@ -463,14 +463,12 @@ mod tests {
     #[test]
     fn injoignable() {
         let (_d, env, fake, client) = setup(3);
-        *fake.state.raw.lock().unwrap() = Some((500, "boom".into()));
+        *fake.state.raw.lock().unwrap() = Some((503, "boom".into()));
         assert!(matches!(
             run(&env, &client, true),
             Err(Failure::Unreachable { .. })
         ));
         *fake.state.raw.lock().unwrap() = Some((200, "pas du json".into()));
-        assert!(matches!(client.ping(), Err(ApiError::Unreachable(_))));
-        *fake.state.raw.lock().unwrap() = Some((404, "{}".into()));
         assert!(matches!(client.ping(), Err(ApiError::Unreachable(_))));
         // Port fermé.
         let dead = Client::new(
@@ -489,6 +487,23 @@ mod tests {
         }
         assert!(!db::db_path(&env).exists());
         assert!(fake.state.n_requests.load(Ordering::SeqCst) > 0);
+    }
+
+    #[test]
+    fn an_http_error_is_not_reported_as_unreachable() {
+        let (_d, _env, fake, client) = setup(3);
+        for code in [400, 404, 413, 414, 500] {
+            *fake.state.raw.lock().unwrap() = Some((code, "{}".into()));
+            match client.ping() {
+                Err(ApiError::Http(m)) => assert!(m.contains(&code.to_string()), "{m}"),
+                other => panic!("HTTP {code}: {other:?}"),
+            }
+        }
+        // What a proxy answers when the server behind it is down.
+        for code in [502, 503, 504] {
+            *fake.state.raw.lock().unwrap() = Some((code, "{}".into()));
+            assert!(matches!(client.ping(), Err(ApiError::Unreachable(_))));
+        }
     }
 
     #[test]

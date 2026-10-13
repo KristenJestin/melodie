@@ -9,9 +9,12 @@ use melodie_core::env::Env;
 use melodie_core::library::{
     self as lib, Album, AlbumBy, Artist, ArtistBy, Playlist, Sort, Track, TrackBy,
 };
+use melodie_core::mix;
 use melodie_core::store;
+use melodie_core::time::now_secs;
 use melodie_desktop::browse::{self, Nav, Place};
-use melodie_desktop::launch;
+use melodie_desktop::launch::{self, Job};
+use melodie_desktop::selection::{How, Selection};
 use rusqlite::Connection;
 use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
@@ -23,10 +26,14 @@ use std::time::Instant;
 const HOME_ALBUMS: usize = 24;
 /// Top tracks on an artist's page.
 const TOP_TRACKS: usize = 10;
+/// Genre mixes on the home page, as many as `melodie mixes` offers.
+const GENRES: usize = 6;
 
 pub struct Home {
     pub recent: Arc<[Album]>,
     pub most_played: Arc<[Album]>,
+    /// The genres most present among the liked or frequent tracks, with their track counts.
+    pub genres: Vec<(String, usize)>,
 }
 
 pub enum Page {
@@ -76,8 +83,8 @@ pub struct Catalog {
     pub empty: Empty,
     /// The user logged in: the playlists that are theirs can be added to.
     pub user: Option<String>,
-    /// The playlist picker of the open page.
-    pub picker_open: bool,
+    /// The rows picked in the current list.
+    pub selection: Selection,
     shared: Entity<Shared>,
 }
 
@@ -102,7 +109,7 @@ impl Catalog {
             asked: HashSet::new(),
             empty: Empty::Loading,
             user,
-            picker_open: false,
+            selection: Selection::default(),
             shared,
         };
         this.load_playlists(cx);
@@ -135,7 +142,7 @@ impl Catalog {
     }
 
     fn moved(&mut self, cx: &mut Context<Self>) {
-        self.picker_open = false;
+        self.selection.clear();
         self.refresh(cx);
         cx.notify();
     }
@@ -154,6 +161,7 @@ impl Catalog {
 
     pub fn sort_tracks(&mut self, sort: Sort<TrackBy>, cx: &mut Context<Self>) {
         self.track_sort = sort;
+        self.selection.clear();
         self.load_tracks(cx);
         cx.notify();
     }
@@ -162,10 +170,7 @@ impl Catalog {
     pub fn own_playlists(&self) -> Vec<Playlist> {
         self.playlists
             .iter()
-            .filter(|p| match (&p.owner, &self.user) {
-                (Some(o), Some(u)) => o == u,
-                _ => true,
-            })
+            .filter(|p| self.is_own(p))
             .cloned()
             .collect()
     }
@@ -174,6 +179,109 @@ impl Catalog {
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         self.load_playlists(cx);
         self.refresh(cx);
+    }
+
+    /// The user may edit it (other people's playlists are only read).
+    pub fn is_own(&self, p: &Playlist) -> bool {
+        match (&p.owner, &self.user) {
+            (Some(o), Some(u)) => o == u,
+            _ => true,
+        }
+    }
+
+    /// A Ctrl+click or a Shift+click on row `ix` of the current list.
+    pub fn select(&mut self, ix: usize, how: How, cx: &mut Context<Self>) {
+        let here = self.here().clone();
+        self.selection.click(&here, ix, how);
+        cx.notify();
+    }
+
+    pub fn unselect(&mut self, cx: &mut Context<Self>) {
+        self.selection.clear();
+        cx.notify();
+    }
+
+    /// The tracks of the list shown at the current place.
+    pub fn shown_tracks(&self) -> Option<Arc<[Track]>> {
+        match self.here() {
+            Place::Tracks => self.tracks.clone(),
+            here => match self.pages.get(here).map(Arc::as_ref) {
+                Some(Page::Album { tracks, .. } | Page::Playlist { tracks, .. }) => {
+                    Some(tracks.clone())
+                }
+                _ => None,
+            },
+        }
+    }
+
+    /// Runs `melodie` to change a playlist, then reads the playlists and the current place again
+    /// and says what happened. `said` is what a success says; without it, the output says it.
+    pub fn edit(&mut self, job: Job, said: Option<String>, cx: &mut Context<Self>) {
+        let this = cx.entity();
+        let shared = self.shared.clone();
+        let deleted = match &job {
+            Job::DeletePlaylist { id } => Some(Place::Playlist(id.clone())),
+            _ => None,
+        };
+        let read: fn(&str) -> Result<String, String> = match &job {
+            Job::AddToPlaylist { .. } => launch::added_message,
+            _ => |_| Ok(String::new()),
+        };
+        self.shared.update(cx, |s, cx| {
+            s.run_then(job, cx, move |r, cx| {
+                let msg = match r {
+                    Ok(out) => match read(&out) {
+                        Ok(m) => said.unwrap_or(m),
+                        Err(why) => why,
+                    },
+                    Err(why) => format!("Could not change the playlist: {why}"),
+                };
+                this.update(cx, |c, cx| {
+                    c.selection.clear();
+                    if deleted.as_ref() == Some(c.here()) && !c.nav.back() {
+                        c.nav.start_at(Place::Home);
+                    }
+                    c.load_playlists(cx);
+                    c.refresh(cx);
+                    cx.notify();
+                });
+                if !msg.is_empty() {
+                    shared.update(cx, |s, cx| s.say(msg, cx));
+                }
+            })
+        });
+    }
+
+    /// Moves a track of the playlist shown at once, then asks `melodie` to (the list is read
+    /// again when it is done, or when it failed).
+    pub fn move_in_playlist(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
+        let here = self.here().clone();
+        let Place::Playlist(id) = &here else { return };
+        let Some(Page::Playlist { playlist, tracks }) = self.pages.get(&here).map(Arc::as_ref)
+        else {
+            return;
+        };
+        if from == to || from >= tracks.len() || to >= tracks.len() {
+            return;
+        }
+        let mut list = tracks.to_vec();
+        let t = list.remove(from);
+        let track = t.id.clone();
+        list.insert(to, t);
+        let page = Page::Playlist {
+            playlist: playlist.clone(),
+            tracks: list.into(),
+        };
+        let job = Job::MoveInPlaylist {
+            id: id.clone(),
+            from,
+            to,
+            track,
+        };
+        self.pages.insert(here, Arc::new(page));
+        self.selection.clear();
+        cx.notify();
+        self.edit(job, Some(String::new()), cx);
     }
 
     /// Reads again what the current place shows; until it comes, the place shows what it had.
@@ -236,9 +344,15 @@ impl Catalog {
             "home",
             cx,
             |c| {
+                // the genres `melodie mixes` offers, by the same code
+                let library = mix::Library::load(c, now_secs() as i64)?;
                 Ok(Home {
                     recent: lib::recently_added(c, HOME_ALBUMS)?.into(),
                     most_played: lib::most_played(c, HOME_ALBUMS)?.into(),
+                    genres: mix::top_genres(&library, GENRES)
+                        .into_iter()
+                        .map(|(name, _, total)| (name, total))
+                        .collect(),
                 })
             },
             |this, home, cx| {

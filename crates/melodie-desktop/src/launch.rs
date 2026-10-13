@@ -1,6 +1,7 @@
 //! What the window asks of the `melodie` program: what needs the server (and so the keyring)
 //! goes through it, so the window never holds a token.
 
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
 /// What can be played, queued or mixed from the library.
@@ -31,7 +32,10 @@ pub enum Job {
     /// Albums played before, but not lately.
     Rediscover,
     /// The heart of a track.
-    Star { id: String, starred: bool },
+    Star {
+        id: String,
+        starred: bool,
+    },
     /// Replaces the queue with it and plays it.
     Play {
         kind: Kind,
@@ -39,18 +43,104 @@ pub enum Job {
         shuffle: bool,
     },
     /// Adds it after the current track (`next`) or at the end.
-    Queue { kind: Kind, id: String, next: bool },
+    Queue {
+        kind: Kind,
+        id: String,
+        next: bool,
+    },
     /// An instant mix around it.
-    Mix { kind: Kind, id: String },
-    /// Adds a track or an album to a playlist; the tracks already there are left out.
-    AddToPlaylist {
-        playlist: String,
+    Mix {
         kind: Kind,
         id: String,
     },
+    /// Adds to a playlist; the tracks already there are left out unless `allow_duplicates`.
+    AddToPlaylist {
+        playlist: String,
+        what: Adding,
+        allow_duplicates: bool,
+    },
+    /// What adding would do, written nowhere: the duplicate question is asked from it.
+    CheckAdd {
+        playlist: String,
+        what: Adding,
+    },
+    /// A new playlist, empty or with what is being added.
+    CreatePlaylist {
+        name: String,
+        with: Option<Adding>,
+    },
+    RenamePlaylist {
+        id: String,
+        name: String,
+    },
+    DeletePlaylist {
+        id: String,
+    },
+    /// Removes the tracks at these ranks (from 0), each with the id the window saw there.
+    RemoveFromPlaylist {
+        id: String,
+        picks: Vec<(usize, String)>,
+    },
+    /// Moves the track at `from` to `to` (from 0); `track` is the id the window saw at `from`.
+    MoveInPlaylist {
+        id: String,
+        from: usize,
+        to: usize,
+        track: String,
+    },
+    /// Lists the duplicates of a playlist, or removes the exact ones.
+    Duplicates {
+        id: String,
+        remove: bool,
+    },
+    /// The mix of a genre.
+    MixGenre {
+        name: String,
+    },
+}
+
+/// What is added to a playlist.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Adding {
+    Album(String),
+    /// One track or several (a selection, the current track), in this order.
+    Tracks(Vec<String>),
+}
+
+impl Adding {
+    fn words(&self) -> Vec<String> {
+        match self {
+            Self::Album(id) => vec!["album".into(), id.clone()],
+            Self::Tracks(ids) => std::iter::once("track".to_string())
+                .chain(ids.iter().cloned())
+                .collect(),
+        }
+    }
 }
 
 impl Job {
+    /// The playlist it reads or writes.
+    pub fn playlist(&self) -> Option<&str> {
+        match self {
+            Self::AddToPlaylist { playlist, .. } | Self::CheckAdd { playlist, .. } => {
+                Some(playlist)
+            }
+            Self::RenamePlaylist { id, .. }
+            | Self::DeletePlaylist { id }
+            | Self::RemoveFromPlaylist { id, .. }
+            | Self::MoveInPlaylist { id, .. }
+            | Self::Duplicates { id, .. } => Some(id),
+            Self::PlayMix
+            | Self::Rediscover
+            | Self::Star { .. }
+            | Self::Play { .. }
+            | Self::Queue { .. }
+            | Self::Mix { .. }
+            | Self::CreatePlaylist { .. }
+            | Self::MixGenre { .. } => None,
+        }
+    }
+
     pub fn args(&self) -> Vec<String> {
         let words = |w: &[&str]| w.iter().map(|w| w.to_string()).collect::<Vec<_>>();
         match self {
@@ -78,9 +168,71 @@ impl Job {
                 a.push(id.clone());
                 a
             }
-            Self::AddToPlaylist { playlist, kind, id } => {
-                let mut a = words(&["playlist", "add", "--json", "--"]);
-                a.extend([playlist.clone(), kind.word().into(), id.clone()]);
+            Self::AddToPlaylist {
+                playlist,
+                what,
+                allow_duplicates,
+            } => {
+                let mut a = words(&["playlist", "add", "--json"]);
+                if *allow_duplicates {
+                    a.push("--allow-duplicates".into());
+                }
+                a.extend(["--".into(), playlist.clone()]);
+                a.extend(what.words());
+                a
+            }
+            Self::CheckAdd { playlist, what } => {
+                let mut a = words(&["playlist", "add", "--dry-run", "--json", "--"]);
+                a.push(playlist.clone());
+                a.extend(what.words());
+                a
+            }
+            Self::CreatePlaylist { name, with } => {
+                let mut a = words(&["playlist", "create", "--"]);
+                a.push(name.clone());
+                a.extend(with.iter().flat_map(Adding::words));
+                a
+            }
+            Self::RenamePlaylist { id, name } => {
+                let mut a = words(&["playlist", "rename", "--"]);
+                a.extend([id.clone(), name.clone()]);
+                a
+            }
+            Self::DeletePlaylist { id } => {
+                let mut a = words(&["playlist", "delete", "--"]);
+                a.push(id.clone());
+                a
+            }
+            // `--expect=<id>` in one word: an id may start with a dash
+            Self::RemoveFromPlaylist { id, picks } => {
+                let mut a = words(&["playlist", "remove"]);
+                a.extend(picks.iter().map(|(_, t)| format!("--expect={t}")));
+                a.extend(["--".into(), id.clone()]);
+                a.extend(picks.iter().map(|(ix, _)| (ix + 1).to_string()));
+                a
+            }
+            Self::MoveInPlaylist {
+                id,
+                from,
+                to,
+                track,
+            } => {
+                let mut a = words(&["playlist", "move"]);
+                a.extend([format!("--expect={track}"), "--".into(), id.clone()]);
+                a.extend([(from + 1).to_string(), (to + 1).to_string()]);
+                a
+            }
+            Self::Duplicates { id, remove } => {
+                let mut a = words(&["playlist", "duplicates", "--json"]);
+                if *remove {
+                    a.push("--remove".into());
+                }
+                a.extend(["--".into(), id.clone()]);
+                a
+            }
+            Self::MixGenre { name } => {
+                let mut a = words(&["mix", "genre", "--"]);
+                a.push(name.clone());
                 a
             }
             Self::Star { id, starred } => vec![
@@ -98,17 +250,7 @@ impl Job {
 /// already there, or why nothing went in (a failure is one launcher entry, read by its id: its
 /// text is for the launcher and may hold the server's address).
 pub fn added_message(out: &str) -> Result<String, String> {
-    let v: serde_json::Value = serde_json::from_str(out.trim())
-        .map_err(|_| "Could not add to the playlist".to_string())?;
-    if let Some(entry) = v.as_array().and_then(|a| a.first()) {
-        return Err(match entry["id"].as_str() {
-            Some("login") => "Navidrome wants a login: run melodie login",
-            Some("unreachable") => "Navidrome is unreachable",
-            Some("not-found") => "Not found on the server",
-            _ => "Could not add to the playlist",
-        }
-        .to_string());
-    }
+    let v = read_json(out, "Could not add to the playlist")?;
     let n = |k: &str| v[k].as_array().map_or(0, Vec::len);
     let name = v["playlist"]["name"].as_str().unwrap_or("the playlist");
     let tracks = |n: usize| {
@@ -127,6 +269,66 @@ pub fn added_message(out: &str) -> Result<String, String> {
     })
 }
 
+/// The object a `--json` output of `melodie playlist …` printed; a failure is one launcher entry,
+/// read by its id (its text is for the launcher and may hold the server's address), else
+/// `otherwise`.
+pub fn read_json(out: &str, otherwise: &str) -> Result<serde_json::Value, String> {
+    let v: serde_json::Value =
+        serde_json::from_str(out.trim()).map_err(|_| otherwise.to_string())?;
+    if let Some(entry) = v.as_array().and_then(|a| a.first()) {
+        return Err(match entry["id"].as_str() {
+            Some("login") => "Navidrome wants a login: run melodie login",
+            Some("auth-refused") => "Navidrome refused the login: run melodie login",
+            Some("unreachable") => "Navidrome is unreachable",
+            Some("not-found") => "Not found on the server",
+            _ => otherwise,
+        }
+        .to_string());
+    }
+    Ok(v)
+}
+
+/// The playlist jobs, one at a time per playlist: a move writes back the whole order it read, so
+/// a job started while another of the same playlist runs could undo what that one wrote.
+pub struct Lanes<T> {
+    /// A playlist is here while one of its jobs runs, with the jobs that wait behind it.
+    waiting: HashMap<String, VecDeque<T>>,
+}
+
+impl<T> Default for Lanes<T> {
+    fn default() -> Self {
+        Self {
+            waiting: HashMap::new(),
+        }
+    }
+}
+
+impl<T> Lanes<T> {
+    /// `item`, for `playlist`: given back to be started now, or kept until the job of that
+    /// playlist that runs is done.
+    pub fn start(&mut self, playlist: &str, item: T) -> Option<T> {
+        match self.waiting.get_mut(playlist) {
+            Some(behind) => {
+                behind.push_back(item);
+                None
+            }
+            None => {
+                self.waiting.insert(playlist.to_string(), VecDeque::new());
+                Some(item)
+            }
+        }
+    }
+
+    /// The job of `playlist` that ran is done: the next one to start, if any.
+    pub fn done(&mut self, playlist: &str) -> Option<T> {
+        let next = self.waiting.get_mut(playlist)?.pop_front();
+        if next.is_none() {
+            self.waiting.remove(playlist);
+        }
+        next
+    }
+}
+
 /// The `melodie` beside this program when there is one (a build or an install puts both in the
 /// same folder), else the one on the `PATH`.
 pub fn program(this_exe: Option<&Path>) -> PathBuf {
@@ -140,6 +342,67 @@ pub fn program(this_exe: Option<&Path>) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_second_edit_waits_for_the_first() {
+        let mut lanes = Lanes::default();
+        assert_eq!(lanes.start("p1", "move"), Some("move"));
+        assert_eq!(lanes.start("p1", "add"), None, "waits for the move");
+        assert_eq!(lanes.start("p1", "remove"), None);
+        // another playlist does not wait
+        assert_eq!(lanes.start("p2", "rename"), Some("rename"));
+        assert_eq!(lanes.done("p1"), Some("add"));
+        assert_eq!(lanes.start("p1", "check"), None, "the add runs now");
+        assert_eq!(lanes.done("p1"), Some("remove"));
+        assert_eq!(lanes.done("p1"), Some("check"));
+        assert_eq!(lanes.done("p1"), None);
+        assert_eq!(lanes.start("p1", "again"), Some("again"), "nothing runs");
+        assert_eq!(lanes.done("p2"), None);
+    }
+
+    #[test]
+    fn the_jobs_that_touch_a_playlist_name_it() {
+        let id = || "p1".to_string();
+        let adding = || Adding::Tracks(vec!["t1".into()]);
+        for job in [
+            Job::AddToPlaylist {
+                playlist: id(),
+                what: adding(),
+                allow_duplicates: false,
+            },
+            Job::CheckAdd {
+                playlist: id(),
+                what: adding(),
+            },
+            Job::RenamePlaylist {
+                id: id(),
+                name: "N".into(),
+            },
+            Job::DeletePlaylist { id: id() },
+            Job::RemoveFromPlaylist {
+                id: id(),
+                picks: vec![(0, "t1".into())],
+            },
+            Job::MoveInPlaylist {
+                id: id(),
+                from: 0,
+                to: 1,
+                track: "t1".into(),
+            },
+            Job::Duplicates {
+                id: id(),
+                remove: true,
+            },
+        ] {
+            assert_eq!(job.playlist(), Some("p1"), "{job:?}");
+        }
+        let create = Job::CreatePlaylist {
+            name: "N".into(),
+            with: Some(adding()),
+        };
+        assert_eq!(create.playlist(), None, "a new playlist waits for nothing");
+        assert_eq!(Job::PlayMix.playlist(), None);
+    }
 
     #[test]
     fn the_arguments_of_each_job() {
@@ -191,13 +454,126 @@ mod tests {
         assert_eq!(Job::Rediscover.args(), ["mix", "rediscover"]);
         let add = Job::AddToPlaylist {
             playlist: "-p1".into(),
-            kind: Kind::Album,
-            id: id(),
+            what: Adding::Album(id()),
+            allow_duplicates: false,
         };
         assert_eq!(
             add.args(),
             ["playlist", "add", "--json", "--", "-p1", "album", "-al1"]
         );
+    }
+
+    #[test]
+    fn the_arguments_of_the_playlist_jobs() {
+        let tracks = || Adding::Tracks(vec!["-t1".into(), "t2".into()]);
+        let check = Job::CheckAdd {
+            playlist: "p1".into(),
+            what: tracks(),
+        };
+        assert_eq!(
+            check.args(),
+            [
+                "playlist",
+                "add",
+                "--dry-run",
+                "--json",
+                "--",
+                "p1",
+                "track",
+                "-t1",
+                "t2"
+            ]
+        );
+        let anyway = Job::AddToPlaylist {
+            playlist: "p1".into(),
+            what: tracks(),
+            allow_duplicates: true,
+        };
+        assert_eq!(
+            anyway.args(),
+            [
+                "playlist",
+                "add",
+                "--json",
+                "--allow-duplicates",
+                "--",
+                "p1",
+                "track",
+                "-t1",
+                "t2"
+            ]
+        );
+        let create = Job::CreatePlaylist {
+            name: "-Road trip".into(),
+            with: Some(Adding::Album("al1".into())),
+        };
+        assert_eq!(
+            create.args(),
+            ["playlist", "create", "--", "-Road trip", "album", "al1"]
+        );
+        let empty = Job::CreatePlaylist {
+            name: "Road".into(),
+            with: None,
+        };
+        assert_eq!(empty.args(), ["playlist", "create", "--", "Road"]);
+        let rename = Job::RenamePlaylist {
+            id: "-p1".into(),
+            name: "New name".into(),
+        };
+        assert_eq!(
+            rename.args(),
+            ["playlist", "rename", "--", "-p1", "New name"]
+        );
+        let delete = Job::DeletePlaylist { id: "-p1".into() };
+        assert_eq!(delete.args(), ["playlist", "delete", "--", "-p1"]);
+        let remove = Job::RemoveFromPlaylist {
+            id: "p1".into(),
+            picks: vec![(0, "-t1".into()), (4, "t5".into())],
+        };
+        assert_eq!(
+            remove.args(),
+            [
+                "playlist",
+                "remove",
+                "--expect=-t1",
+                "--expect=t5",
+                "--",
+                "p1",
+                "1",
+                "5"
+            ],
+            "ranks counted from 1, an id may start with a dash"
+        );
+        let moved = Job::MoveInPlaylist {
+            id: "p1".into(),
+            from: 3,
+            to: 0,
+            track: "-t4".into(),
+        };
+        assert_eq!(
+            moved.args(),
+            ["playlist", "move", "--expect=-t4", "--", "p1", "4", "1"]
+        );
+        let list = Job::Duplicates {
+            id: "-p1".into(),
+            remove: false,
+        };
+        assert_eq!(
+            list.args(),
+            ["playlist", "duplicates", "--json", "--", "-p1"]
+        );
+        let clean = Job::Duplicates {
+            id: "p1".into(),
+            remove: true,
+        };
+        assert_eq!(
+            clean.args(),
+            ["playlist", "duplicates", "--json", "--remove", "--", "p1"]
+        );
+        let genre = Job::MixGenre {
+            name: "-Hip Hop".into(),
+        };
+        assert_eq!(genre.args(), ["mix", "genre", "--", "-Hip Hop"]);
     }
 
     #[test]
