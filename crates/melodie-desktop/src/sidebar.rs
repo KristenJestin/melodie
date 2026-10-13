@@ -219,7 +219,7 @@ impl Render for Sidebar {
                             }),
                     )
                     .child(
-                        IconButton::new("settings", IconName::Palette, pal)
+                        IconButton::new("settings", IconName::Settings, pal)
                             .selected(settings_open)
                             .on_click(move |_, _, cx| {
                                 gear.update(cx, |s, cx| {
