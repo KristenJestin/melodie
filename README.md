@@ -167,9 +167,9 @@ Screenshots and a recording of the animations, made with invented data, are in
   settings, else unpicks the rows picked, else empties the search field, else goes back. In a
   dialog, Enter does what its main button does (Escape cancels).
 - **The mouse's back and forward buttons** go back and forward between the pages, like the
-  browser's: back goes back a page (it closes the queue laid over a narrow window or the settings first), forward returns
-  to the page back left, and does nothing when there is none (a page opened after going
-  back forgets it). They do nothing behind a dialog or the sign-in screen.
+  browser's: back goes back a page (it closes the queue laid over a narrow window or the settings
+  first), forward returns to the page back left, and does nothing when there is none (a page
+  opened after going back forgets it). They do nothing behind a dialog or the sign-in screen.
 - **Tooltips**: every button that shows an icon alone says what it does when the pointer rests on
   it for about 0.4 s: a short fade and rise, beside the button, never over it. They go at a press
   or a key.
