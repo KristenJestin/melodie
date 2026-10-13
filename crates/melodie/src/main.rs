@@ -798,7 +798,7 @@ mod tests {
         }
     }
 
-    /// What the window's library runs (`melodie_gui::launch::Job`): each line must parse, with
+    /// What the window's library runs (`melodie_desktop::launch::Job`): each line must parse, with
     /// the id whole.
     #[test]
     fn the_library_commands_of_the_window_parse() {

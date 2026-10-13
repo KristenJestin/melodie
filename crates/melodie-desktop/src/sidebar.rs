@@ -11,8 +11,8 @@ use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::Icon;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use melodie_gui::browse::Place;
-use melodie_gui::theme::{Palette, mix};
+use melodie_desktop::browse::Place;
+use melodie_desktop::theme::{Palette, mix};
 
 /// A window narrower than this has the sidebar of icons.
 const COMPACT: f32 = 760.0;

@@ -48,4 +48,4 @@ jobs:
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
       # The window builds on upstream GPUI too, from the same source (docs/gui-toolkit.md).
-      - run: cargo check -p melodie-gui --no-default-features --locked
+      - run: cargo check -p melodie-desktop --no-default-features --locked

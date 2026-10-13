@@ -11,9 +11,9 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use melodie_core::proto::Request;
 use melodie_core::track::clock;
-use melodie_gui::launch::Job;
-use melodie_gui::model::{Clock, PlayState, VOLUME_SLIDER_MAX, volume_percent};
-use melodie_gui::theme::Palette;
+use melodie_desktop::launch::Job;
+use melodie_desktop::model::{Clock, PlayState, VOLUME_SLIDER_MAX, volume_percent};
+use melodie_desktop::theme::Palette;
 use std::time::{Duration, Instant};
 
 /// The palette on screen now, moving towards the target of the model.

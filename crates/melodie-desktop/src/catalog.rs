@@ -10,8 +10,8 @@ use melodie_core::library::{
     self as lib, Album, AlbumBy, Artist, ArtistBy, Playlist, Sort, Track, TrackBy,
 };
 use melodie_core::store;
-use melodie_gui::browse::{self, Nav, Place};
-use melodie_gui::launch;
+use melodie_desktop::browse::{self, Nav, Place};
+use melodie_desktop::launch;
 use rusqlite::Connection;
 use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
