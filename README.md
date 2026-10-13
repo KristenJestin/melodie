@@ -105,7 +105,8 @@ Screenshots and a recording of the animations, made with invented data, are in
   music; opening it shows the current state at once (the snapshot). Without a daemon it says
   "Nothing playing" and looks for one every half second.
 - **The player**: the cover, large; title, artist, album; the quality of the stream; a position
-  bar to drag; play/pause, previous, next; the volume; the heart. Play without a daemon starts the
+  bar to drag; play/pause, previous, next (play/pause on the axis of the cover, the other buttons
+  placed with the same room on each side); the volume; the heart. Play without a daemon starts the
   personal mix (`melodie mix me`, which starts the daemon); the heart runs `melodie like track
   <id>` or `unlike`: what needs the server goes through `melodie`. A failure is said at the
   bottom of the window for a few seconds, and so is an `unreachable` server.
@@ -155,6 +156,13 @@ Screenshots and a recording of the animations, made with invented data, are in
   Space plays or pauses (in the field, it is a space); Escape closes a dialog, else the queue or the
   settings, else unpicks the rows picked, else empties the search field, else goes back. In a
   dialog, Enter does what its main button does (Escape cancels).
+- **The mouse's back and forward buttons** go back and forward between the pages, like the
+  browser's: back goes back a page (it closes the queue or the settings first), forward returns
+  to the page back left, and does nothing when there is none (a page opened after going
+  back forgets it). They do nothing behind a dialog or the sign-in screen.
+- **Tooltips**: every button that shows an icon alone says what it does when the pointer rests on
+  it for about 0.4 s: a short fade and rise, beside the button, never over it. They go at a press
+  or a key.
 - **Signing in**: with no login, or when the server refused it (`no-login`, `auth-refused`), the
   window shows a sign-in screen: the server's address, the user, the password. It runs `melodie
   login --password-stdin`, the password written on its input: the window keeps no password and no
