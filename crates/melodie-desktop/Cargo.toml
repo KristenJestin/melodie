@@ -27,4 +27,6 @@ serde_json = "1"
 toml = "0.8"
 
 [dev-dependencies]
+# The window's own tests: a window without a screen (`TestAppContext`) to click in.
+gpui-kit = { version = "=0.7.3", features = ["test-support"] }
 tempfile = "3"
