@@ -9,6 +9,7 @@ mod motion;
 mod pages;
 mod player;
 mod queue;
+mod search;
 mod sidebar;
 #[cfg(feature = "frame-stats")]
 mod stats;
@@ -30,6 +31,7 @@ use mini::MiniPlayer;
 use pages::{HomeView, PageView};
 use player::{PlayerView, palette};
 use queue::QueuePanel;
+use search::SearchView;
 use sidebar::Sidebar;
 use std::process::ExitCode;
 use tables::{ArtistList, TrackList};
@@ -56,6 +58,7 @@ gpui_kit::assets::icon_assets!(
         Pause,
         Play,
         RotateCcw,
+        Search,
         Shuffle,
         SkipBack,
         SkipForward,
@@ -78,6 +81,7 @@ struct Views {
     artists: Entity<ArtistList>,
     tracks: Entity<TrackList>,
     page: Entity<PageView>,
+    search: Entity<SearchView>,
     mini: Entity<MiniPlayer>,
 }
 
@@ -129,8 +133,19 @@ impl Root {
         }
     }
 
-    fn on_key(&mut self, ev: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
-        match ev.keystroke.key.as_str() {
+    fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let typing = self.views.search.read(cx).has_focus(window, cx);
+        let k = &ev.keystroke;
+        // the search, from anywhere: Ctrl+F, or / when not typing
+        if (k.modifiers.control && k.key == "f") || (!typing && k.key_char.as_deref() == Some("/"))
+        {
+            self.catalog
+                .update(cx, |c, cx| c.start_at(Place::Search, cx));
+            self.views.search.update(cx, |v, cx| v.focus(window, cx));
+            cx.stop_propagation();
+            return;
+        }
+        match k.key.as_str() {
             // what is open closes first; then a page goes back
             "escape" => {
                 let open = {
@@ -148,10 +163,16 @@ impl Root {
                         c.picker_open = false;
                         cx.notify()
                     })
+                } else if *self.catalog.read(cx).here() == Place::Search
+                    && self.views.search.update(cx, |v, cx| v.clear(window, cx))
+                {
+                    // the field empties first, then the search is left
                 } else {
                     self.catalog.update(cx, |c, cx| c.back(cx))
                 }
             }
+            // a space typed in the field is text
+            "space" if typing => return,
             "space" => self.shared.update(cx, |s, cx| {
                 if s.player.current.is_some() {
                     s.send(Request::Toggle, cx)
@@ -271,6 +292,7 @@ impl Render for Root {
             Place::Artists => v.artists.clone().into(),
             Place::Tracks => v.tracks.clone().into(),
             Place::Album(_) | Place::Artist(_) | Place::Playlist(_) => v.page.clone().into(),
+            Place::Search | Place::Found(_) => v.search.clone().into(),
         };
         let (scrim, card_scrim) = (self.shared.clone(), self.shared.clone());
         // the notice stays above the mini player
@@ -436,6 +458,7 @@ fn main() -> ExitCode {
                 artists: cx.new(|_| ArtistList::new(s.clone(), c.clone())),
                 tracks: cx.new(|_| TrackList::new(s.clone(), c.clone())),
                 page: cx.new(|_| PageView::new(s.clone(), c.clone())),
+                search: cx.new(|cx| SearchView::new(s.clone(), c.clone(), env.clone(), window, cx)),
                 mini: cx.new(|_| MiniPlayer::new(s.clone(), c.clone())),
             };
             cx.new(|cx| Root::new(shared, catalog, views, window, cx))

@@ -166,7 +166,7 @@ pub fn track_header(
 }
 
 /// A small button inside a row: shown on the row's hover, never animated.
-fn row_button(
+pub fn row_button(
     id: ElementId,
     icon: IconName,
     pal: Palette,

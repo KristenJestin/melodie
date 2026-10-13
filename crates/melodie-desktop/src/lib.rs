@@ -2,6 +2,7 @@
 //! (socket and event stream); it never plays sound and never holds a token or a stream address.
 
 pub mod browse;
+pub mod find;
 pub mod launch;
 pub mod link;
 pub mod model;
