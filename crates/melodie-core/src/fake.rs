@@ -18,6 +18,8 @@ pub struct State {
     /// here keeps the fixed answer (all the songs) and ignores `updatePlaylist`.
     pub playlists: Mutex<HashMap<String, Vec<Value>>>,
     pub last_scan: Mutex<String>,
+    /// The `changed` date `getPlaylists` gives the playlist `p1`.
+    pub playlist_changed: Mutex<String>,
     pub expected_token: Mutex<String>,
     /// Code d'erreur Subsonic à renvoyer pour tout, si présent.
     pub fail_code: Mutex<Option<i64>>,
@@ -98,6 +100,7 @@ impl Fake {
             songs: Mutex::new((0..n_songs).map(song).collect()),
             playlists: Mutex::new(HashMap::new()),
             last_scan: Mutex::new("2026-10-01T10:00:00Z".into()),
+            playlist_changed: Mutex::new("2026-10-01T10:00:00Z".into()),
             expected_token: Mutex::new(token.to_string()),
             fail_code: Mutex::new(None),
             raw: Mutex::new(None),
@@ -227,7 +230,8 @@ impl State {
                 }}))
             }
             "getPlaylists" => ok(json!({"playlists": {"playlist": [
-                {"id":"p1","name":"Daft Mix","songCount":42,"duration":7500,"changed":"2026-10-01T10:00:00Z","owner":"alice","coverArt":"pl-p1"}]}})),
+                {"id":"p1","name":"Daft Mix","songCount":42,"duration":7500,
+                 "changed":self.playlist_changed.lock().unwrap().clone(),"owner":"alice","coverArt":"pl-p1"}]}})),
             "getStarred2" => ok(json!({"starred2": {"song": [
                 {"id":"s1","starred":"2026-09-01T00:00:00Z"}]}})),
             "getAlbumList2" => ok(json!({"albumList2": {"album": [
