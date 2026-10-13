@@ -1868,6 +1868,17 @@ const MALFORMED: [&str; 9] = [
 
 /// Requests that look something up or check the connection; the player's own reports to the
 /// server (now playing, scrobble, cover) come on their own time and are not counted.
+/// Waits for the copy the daemon's first background synchronisation makes: it reads the
+/// playlists (`getPlaylist`), which `lookups` would otherwise count against `open`.
+fn wait_for_the_first_copy(sb: &Sandbox) {
+    let db = sb.home().join(".cache/melodie/library.db");
+    let end = Instant::now() + Duration::from_secs(20);
+    while !db.exists() {
+        assert!(Instant::now() < end, "no local copy was made");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 fn lookups(sb: &Sandbox) -> usize {
     sb.calls()
         .iter()
@@ -1963,6 +1974,7 @@ fn open_refuses_a_malformed_address_and_changes_nothing() {
     assert!(sb.calls().is_empty(), "{:?}", sb.calls());
     // With a daemon: the queue and the playing track stay as they are.
     sb.ok(&["open", "melodie:album/al1"]);
+    wait_for_the_first_copy(&sb);
     let calls = lookups(&sb);
     for uri in MALFORMED {
         assert_eq!(sb.run(&["open", uri]).status.code(), Some(1), "{uri}");
@@ -2171,6 +2183,7 @@ fn open_uri_on_mpris_refuses_a_malformed_address_and_changes_nothing() {
     let Some((_conn, p)) = bus_player(&sb) else {
         return;
     };
+    wait_for_the_first_copy(&sb);
     let calls = lookups(&sb);
     for uri in MALFORMED {
         let err = open_uri(&p, uri).expect_err(uri);
