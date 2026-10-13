@@ -258,6 +258,16 @@ pub fn volume_percent(v: f64) -> f32 {
     (v * 100.0).clamp(0.0, f64::from(VOLUME_SLIDER_MAX)) as f32
 }
 
+/// What a mute sets the volume to, and the volume to keep for the next click. The daemon has no
+/// mute: the window mutes by setting 0, and a second click brings back what was there before.
+pub fn mute(now: f64, before: Option<f64>) -> (f64, Option<f64>) {
+    if now > 0.0 {
+        (0.0, Some(now))
+    } else {
+        (before.unwrap_or(0.5), None)
+    }
+}
+
 /// The `to` of a `queue_move` when the row `from` is dropped on the row `onto`; `None` when it
 /// does not move.
 pub fn drop_move(from: usize, onto: usize, len: usize) -> Option<(usize, usize)> {
@@ -621,6 +631,25 @@ mod tests {
         );
         assert_eq!(volume_percent(2.0), VOLUME_SLIDER_MAX);
         assert_eq!(volume_percent(-1.0), 0.0);
+    }
+
+    #[test]
+    fn a_mute_sets_zero_and_the_next_click_brings_the_volume_back() {
+        let (muted, kept) = mute(0.8, None);
+        assert_eq!((muted, kept), (0.0, Some(0.8)));
+        assert_eq!(mute(muted, kept), (0.8, None));
+    }
+
+    #[test]
+    fn a_mute_with_nothing_to_come_back_to_unmutes_to_half() {
+        // the window opened with the volume at zero, or the volume was dragged to zero
+        assert_eq!(mute(0.0, None), (0.5, None));
+    }
+
+    #[test]
+    fn a_volume_changed_after_the_mute_is_muted_again_not_restored() {
+        // muted at 0.8, then the slider moved to 0.3: a click mutes, it does not jump to 0.8
+        assert_eq!(mute(0.3, Some(0.8)), (0.0, Some(0.3)));
     }
 
     #[test]
