@@ -172,7 +172,11 @@ impl Render for HomeView {
                 })
                 .child(section_title("Mixes", pal))
                 .child(
+                    // the settled width, as the covers: the cards do not wrap again on every
+                    // frame of the queue sliding
                     h_flex()
+                        .w(px(width + 2.0 * PAD))
+                        .flex_none()
                         .px(px(PAD))
                         .gap_4()
                         .flex_wrap()
