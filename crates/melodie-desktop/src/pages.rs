@@ -10,7 +10,6 @@ use crate::tables::{Cols, RowCtx, track_header, track_row};
 use crate::widgets::IconButton;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
-use gpui_kit::component::Icon;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use melodie_core::library::{Album, Track};
@@ -59,171 +58,6 @@ fn album_rows(
     )
 }
 
-pub struct HomeView {
-    shared: Entity<Shared>,
-    catalog: Entity<Catalog>,
-    scroll: ScrollHandle,
-}
-
-impl HomeView {
-    pub fn new(shared: Entity<Shared>, catalog: Entity<Catalog>) -> Self {
-        Self {
-            shared,
-            catalog,
-            scroll: ScrollHandle::new(),
-        }
-    }
-}
-
-/// A mix to start: a large card.
-fn mix_card(
-    id: impl Into<ElementId>,
-    icon: IconName,
-    name: impl Into<SharedString>,
-    about: impl Into<SharedString>,
-    job: Job,
-    pal: Palette,
-    catalog: &Entity<Catalog>,
-) -> Stateful<Div> {
-    let catalog = catalog.clone();
-    h_flex()
-        .id(id)
-        .flex_1()
-        .min_w(px(220.))
-        .h(px(88.))
-        .px_5()
-        .gap_4()
-        .items_center()
-        .rounded_xl()
-        .cursor_pointer()
-        .bg(Hsla {
-            a: 0.14,
-            ..pal.accent
-        })
-        .hover(|s| {
-            s.bg(Hsla {
-                a: 0.22,
-                ..pal.accent
-            })
-        })
-        .on_click(move |_, _, cx| catalog.update(cx, |c, cx| c.run(job.clone(), cx)))
-        .child(
-            div()
-                .size(px(44.))
-                .flex_none()
-                .rounded_full()
-                .bg(pal.accent)
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(Icon::new(icon).size(px(20.)).text_color(pal.on_accent)),
-        )
-        .child(
-            v_flex()
-                .min_w_0()
-                .child(
-                    div()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(pal.fg)
-                        .truncate()
-                        .child(name.into()),
-                )
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(pal.secondary)
-                        .truncate()
-                        .child(about.into()),
-                ),
-        )
-}
-
-impl Render for HomeView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let pal = palette(&self.shared, window, cx);
-        let (home, covers, empty) = {
-            let c = self.catalog.read(cx);
-            (c.home.clone(), c.covers.clone(), c.empty)
-        };
-        let width = content_width(window, &self.shared, cx);
-        let catalog = &self.catalog;
-        let Some(home) = home else {
-            return div().size_full().child(empty_state(empty, "", pal));
-        };
-        div().size_full().child(
-            v_flex()
-                .id("home")
-                .size_full()
-                .overflow_y_scroll()
-                .track_scroll(&self.scroll)
-                .pb_6()
-                .child(section_title("Recently added", pal))
-                .map(|d| {
-                    if home.recent.is_empty() {
-                        d.child(
-                            div()
-                                .px(px(PAD))
-                                .text_color(pal.secondary)
-                                .child("No albums yet"),
-                        )
-                    } else {
-                        d.child(album_rows(&home.recent, 2, &covers, width, pal, catalog))
-                    }
-                })
-                .child(section_title("Mixes", pal))
-                .child(
-                    // the settled width, as the covers: the cards do not wrap again on every
-                    // frame of the queue sliding
-                    h_flex()
-                        .w(px(width + 2.0 * PAD))
-                        .flex_none()
-                        .px(px(PAD))
-                        .gap_4()
-                        .flex_wrap()
-                        .child(mix_card(
-                            "mix-me",
-                            IconName::Sparkles,
-                            "Your mix",
-                            "Favourites, familiar tracks and discoveries",
-                            Job::PlayMix,
-                            pal,
-                            catalog,
-                        ))
-                        .child(mix_card(
-                            "mix-rediscover",
-                            IconName::RotateCcw,
-                            "Rediscover",
-                            "Albums you played, not lately",
-                            Job::Rediscover,
-                            pal,
-                            catalog,
-                        ))
-                        .children(home.genres.iter().map(|(name, total)| {
-                            mix_card(
-                                ElementId::Name(format!("mix-genre-{name}").into()),
-                                IconName::Tag,
-                                format!("{name} mix"),
-                                plural(*total as i64, "track"),
-                                Job::MixGenre { name: name.clone() },
-                                pal,
-                                catalog,
-                            )
-                        })),
-                )
-                .when(!home.most_played.is_empty(), |d| {
-                    d.child(section_title("Most played", pal)).child(album_rows(
-                        &home.most_played,
-                        2,
-                        &covers,
-                        width,
-                        pal,
-                        catalog,
-                    ))
-                }),
-        )
-    }
-}
-
 pub struct PageView {
     shared: Entity<Shared>,
     catalog: Entity<Catalog>,
@@ -245,7 +79,7 @@ impl PageView {
     }
 }
 
-fn plural(n: i64, one: &str) -> String {
+pub fn plural(n: i64, one: &str) -> String {
     if n == 1 {
         format!("1 {one}")
     } else {

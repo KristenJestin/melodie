@@ -4236,6 +4236,7 @@ dependencies = [
  "futures",
  "gpui-kit",
  "image",
+ "libc",
  "melodie-core",
  "notify",
  "rusqlite",

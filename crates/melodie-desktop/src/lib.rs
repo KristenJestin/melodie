@@ -7,6 +7,7 @@ pub mod browse;
 pub mod covers;
 pub mod edit;
 pub mod find;
+pub mod home;
 pub mod keys;
 pub mod launch;
 pub mod layout;

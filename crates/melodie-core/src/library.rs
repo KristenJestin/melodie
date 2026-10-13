@@ -101,6 +101,10 @@ pub enum AlbumBy {
     Name,
     Artist,
     Year,
+    /// How often it was played.
+    Plays,
+    /// When it was last played.
+    Played,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,6 +185,8 @@ pub fn albums(conn: &Connection, sort: Sort<AlbumBy>) -> Result<Vec<Album>> {
         AlbumBy::Name => format!("name COLLATE NOCASE {d}, artist COLLATE NOCASE"),
         AlbumBy::Artist => format!("artist COLLATE NOCASE {d}, year, name COLLATE NOCASE"),
         AlbumBy::Year => format!("year {d}, artist COLLATE NOCASE, name COLLATE NOCASE"),
+        AlbumBy::Plays => format!("playCount {d}, name COLLATE NOCASE"),
+        AlbumBy::Played => format!("played IS NULL, played {d}, name COLLATE NOCASE"),
     };
     all(
         conn,
@@ -206,6 +212,18 @@ pub fn most_played(conn: &Connection, n: usize) -> Result<Vec<Album>> {
         conn,
         &format!(
             "{ALBUM} WHERE playCount > 0 ORDER BY playCount DESC, played DESC, name COLLATE NOCASE, id LIMIT ?1"
+        ),
+        [n as i64],
+        album_row,
+    )
+}
+
+/// The `n` albums played last, among those played at all.
+pub fn recently_played(conn: &Connection, n: usize) -> Result<Vec<Album>> {
+    all(
+        conn,
+        &format!(
+            "{ALBUM} WHERE played IS NOT NULL ORDER BY played DESC, name COLLATE NOCASE, id LIMIT ?1"
         ),
         [n as i64],
         album_row,
@@ -273,6 +291,19 @@ pub fn artist(conn: &Connection, id: &str) -> Result<Option<Artist>> {
         all(conn, &format!("{ARTIST} WHERE a.id = ?1"), [id], artist_row)?
             .into_iter()
             .next(),
+    )
+}
+
+/// The `n` artists whose tracks were played most, among those played at all.
+pub fn top_artists(conn: &Connection, n: usize) -> Result<Vec<Artist>> {
+    all(
+        conn,
+        &format!(
+            "{ARTIST} JOIN (SELECT artistId, sum(playCount) AS p FROM tracks GROUP BY artistId) s
+             ON s.artistId = a.id WHERE s.p > 0 ORDER BY s.p DESC, a.name COLLATE NOCASE, a.id LIMIT ?1"
+        ),
+        [n as i64],
+        artist_row,
     )
 }
 
@@ -400,9 +431,9 @@ mod tests {
         }
         for a in [
             json!({"id":"al1","name":"Lanterns","artist":"Ada Marlow","artistId":"ar1","year":2019,
-                   "playCount":4,"created":"2026-01-10T00:00:00Z"}),
+                   "playCount":4,"played":"2026-09-10T20:00:00Z","created":"2026-01-10T00:00:00Z"}),
             json!({"id":"al2","name":"copper Season","artist":"the Quiet Engines","artistId":"ar2",
-                   "year":2021,"playCount":9,"created":"2026-03-02T00:00:00Z"}),
+                   "year":2021,"playCount":9,"played":"2026-08-01T09:00:00Z","created":"2026-03-02T00:00:00Z"}),
             json!({"id":"al3","name":"Northbound","artist":"Ilse Varga","artistId":"ar3","year":2008,
                    "created":"2026-02-20T00:00:00Z"}),
             json!({"id":"al4","name":"Small Hours","artist":"Ada Marlow","artistId":"ar1","year":2023}),
@@ -471,6 +502,12 @@ mod tests {
         let conn = db::open_existing(&env).unwrap().unwrap();
         assert_eq!(album_ids(&recently_added(&conn, 10).unwrap()), ["al1"]);
         assert_eq!(album_ids(&most_played(&conn, 10).unwrap()), ["al1"]);
+        assert!(recently_played(&conn, 10).unwrap().is_empty());
+        assert!(top_artists(&conn, 10).unwrap().is_empty());
+        assert_eq!(
+            album_ids(&albums(&conn, Sort::desc(AlbumBy::Played)).unwrap()),
+            ["al1"]
+        );
         assert_eq!(
             album_ids(&albums(&conn, Sort::desc(AlbumBy::Added)).unwrap()),
             ["al1"]
@@ -513,6 +550,39 @@ mod tests {
     fn most_played_albums_leave_out_the_unplayed() {
         let (_d, conn) = library();
         assert_eq!(album_ids(&most_played(&conn, 10).unwrap()), ["al2", "al1"]);
+    }
+
+    #[test]
+    fn recently_played_albums_come_last_played_first_and_leave_out_the_unplayed() {
+        let (_d, conn) = library();
+        assert_eq!(
+            album_ids(&recently_played(&conn, 10).unwrap()),
+            ["al1", "al2"]
+        );
+        assert_eq!(album_ids(&recently_played(&conn, 1).unwrap()), ["al1"]);
+    }
+
+    #[test]
+    fn albums_sort_by_plays_and_by_last_played() {
+        let (_d, conn) = library();
+        let by = |s| album_ids(&albums(&conn, s).unwrap());
+        assert_eq!(by(Sort::desc(AlbumBy::Plays)), ["al2", "al1", "al3", "al4"]);
+        assert_eq!(by(Sort::asc(AlbumBy::Plays)), ["al3", "al4", "al1", "al2"]);
+        // never played comes last, whichever the direction
+        assert_eq!(
+            by(Sort::desc(AlbumBy::Played)),
+            ["al1", "al2", "al3", "al4"]
+        );
+        assert_eq!(by(Sort::asc(AlbumBy::Played)), ["al2", "al1", "al3", "al4"]);
+    }
+
+    #[test]
+    fn top_artists_are_those_whose_tracks_are_played_most() {
+        let (_d, conn) = library();
+        let top = top_artists(&conn, 10).unwrap();
+        // Ilse Varga has no track played
+        assert_eq!(ids(&top, |a| &a.id), ["ar1", "ar2"]);
+        assert_eq!(ids(&top_artists(&conn, 1).unwrap(), |a| &a.id), ["ar1"]);
     }
 
     #[test]

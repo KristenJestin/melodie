@@ -6,6 +6,7 @@ mod app;
 mod catalog;
 mod cover_cache;
 mod dialogs;
+mod home_page;
 mod motion;
 mod pages;
 mod playbar;
@@ -29,6 +30,7 @@ use dialogs::{Dialogs, DialogsHandle};
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use home_page::HomeView;
 use melodie_core::env::Env;
 use melodie_core::proto::{self, Request};
 use melodie_desktop::account::{self, Screen};
@@ -37,7 +39,7 @@ use melodie_desktop::browse::Place;
 use melodie_desktop::keys::{self, Act, Key, Situation, Thumb};
 use melodie_desktop::layout::{self, QUEUE_WIDTH};
 use melodie_desktop::theme::{self, Active, Choice, Palette};
-use pages::{HomeView, PageView, SelectionBar};
+use pages::{PageView, SelectionBar};
 use playbar::PlayBar;
 use player::{Bar, PlayerView, palette};
 use queue::QueuePanel;
@@ -56,6 +58,7 @@ gpui_kit::assets::icon_assets!(
         AudioLines,
         Check,
         ChevronLeft,
+        ChevronRight,
         CircleUser,
         Copy,
         CopyX,
@@ -659,7 +662,7 @@ fn main() -> ExitCode {
                 player: cx.new(|_| PlayerView::new(s.clone(), stacked, volume.clone())),
                 queue: cx.new(|cx| QueuePanel::new(s.clone(), cx)),
                 sidebar: cx.new(|_| Sidebar::new(s.clone(), c.clone())),
-                home: cx.new(|_| HomeView::new(s.clone(), c.clone())),
+                home: cx.new(|cx| HomeView::new(s.clone(), c.clone(), cx)),
                 albums: cx.new(|_| AlbumGrid::new(s.clone(), c.clone())),
                 artists: cx.new(|_| ArtistList::new(s.clone(), c.clone())),
                 tracks: cx.new(|_| TrackList::new(s.clone(), c.clone())),
