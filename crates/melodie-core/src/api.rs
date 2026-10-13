@@ -335,8 +335,18 @@ impl Client {
 
     /// Adresse de lecture d'un morceau, pour mpv seulement.
     pub fn stream_url(&self, id: &str) -> SecretUrl {
+        self.stream_url_as(id, "format=raw")
+    }
+
+    /// A light stream of a track, for what needs only the shape of its sound (the waveform):
+    /// Opus at 64 kbit/s, about 2 MB for 4 minutes whatever the file. For mpv only.
+    pub fn light_stream_url(&self, id: &str) -> SecretUrl {
+        self.stream_url_as(id, "format=opus&maxBitRate=64")
+    }
+
+    fn stream_url_as(&self, id: &str, format: &str) -> SecretUrl {
         SecretUrl(format!(
-            "{}/rest/stream.view?id={}&format=raw&u={}&t={}&s={}&v={API_VERSION}&c={CLIENT_NAME}",
+            "{}/rest/stream.view?id={}&{format}&u={}&t={}&s={}&v={API_VERSION}&c={CLIENT_NAME}",
             self.base,
             pct_encode(id),
             pct_encode(&self.creds.u),
@@ -537,6 +547,20 @@ mod tests {
         for text in [format!("{url}"), format!("{url:?}")] {
             assert!(!text.contains(&creds.t) && !text.contains(&creds.s));
             assert!(!text.contains("stream.view"));
+        }
+    }
+
+    #[test]
+    fn a_light_stream_url_asks_opus_at_64_kbits_and_hides_the_secret() {
+        let creds = Creds::from_password("alice", "sesame").unwrap();
+        let client = Client::new("http://h:4533/", creds.clone());
+        let url = client.light_stream_url("t1");
+        let raw = url.expose();
+        assert!(raw.starts_with(
+            "http://h:4533/rest/stream.view?id=t1&format=opus&maxBitRate=64&u=alice&t="
+        ));
+        for text in [format!("{url}"), format!("{url:?}")] {
+            assert!(!text.contains(&creds.t) && !text.contains(&creds.s));
         }
     }
 

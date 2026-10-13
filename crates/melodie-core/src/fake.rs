@@ -52,6 +52,8 @@ pub struct State {
     /// Songs whose stream stops half way, its connection closed before the length it announced,
     /// as when the link drops.
     pub stream_cut: Mutex<Vec<String>>,
+    /// The server cannot transcode: a stream asked in another format than `raw` is refused.
+    pub refuse_transcode: AtomicBool,
     pub n_requests: AtomicUsize,
     /// Délai en millisecondes avant chaque pochette servie.
     pub cover_delay_ms: AtomicUsize,
@@ -169,6 +171,7 @@ impl Fake {
             stream_secs_of: Mutex::new(HashMap::new()),
             stream_ramp: Mutex::new(Vec::new()),
             stream_cut: Mutex::new(Vec::new()),
+            refuse_transcode: AtomicBool::new(false),
             n_requests: AtomicUsize::new(0),
             cover_delay_ms: AtomicUsize::new(0),
             hold: AtomicBool::new(false),
@@ -434,6 +437,14 @@ impl State {
         let (status, body) = self.respond("ping", query);
         if status != 200 || !body.contains("\"status\":\"ok\"") {
             return (200, "application/json", body.into_bytes());
+        }
+        if method == "stream"
+            && self.refuse_transcode.load(Ordering::SeqCst)
+            && param(query, "format").is_some_and(|f| f != "raw")
+        {
+            let body = json!({"subsonic-response": {"status": "failed", "version": "1.16.1",
+                   "error": {"code": 0, "message": "transcoding failed"}}});
+            return (200, "application/json", body.to_string().into_bytes());
         }
         if method == "stream" {
             let own = param(query, "id")

@@ -7,6 +7,7 @@ use melodie_core::waveform::{self, LEVELS};
 use std::io::Write;
 use std::os::fd::AsRawFd;
 use std::process::{Command, Stdio};
+use std::sync::atomic::Ordering;
 
 /// `EX_TEMPFAIL`, as `melodie_core::cover::LOCKED_EXIT`.
 const LOCKED: i32 = 75;
@@ -82,6 +83,16 @@ impl Logged {
         }
     }
 
+    /// The `stream` requests the fake server had, in order.
+    fn streams(&self) -> Vec<String> {
+        let calls = self.fake.state.calls.lock().unwrap();
+        calls
+            .iter()
+            .filter(|c| c.starts_with("stream?"))
+            .cloned()
+            .collect()
+    }
+
     fn ramp(&self, id: &str) {
         self.fake.state.stream_ramp.lock().unwrap().push(id.into());
     }
@@ -100,6 +111,42 @@ fn the_levels_of_a_known_sound_served_by_the_fake_server() {
     assert!(levels[LEVELS - 3] > 235, "end {}", levels[LEVELS - 3]);
     let mid = levels[LEVELS / 2];
     assert!((105..=150).contains(&mid), "middle {mid}");
+}
+
+#[test]
+fn a_light_transcoded_stream_is_asked_for_the_waveform() {
+    let l = Logged::new();
+    l.ramp("s0");
+    assert_eq!(l.fetch("s0\t3").code, 0);
+    let streams = l.streams();
+    assert_eq!(streams.len(), 1);
+    assert!(streams[0].contains("format=opus"), "{}", streams[0]);
+    assert!(streams[0].contains("maxBitRate=64"), "{}", streams[0]);
+    assert!(waveform::read(&l.env(), "s0").is_some());
+}
+
+#[test]
+fn a_server_that_cannot_transcode_gives_its_raw_stream_once() {
+    let l = Logged::new();
+    l.ramp("s0");
+    l.fake.state.refuse_transcode.store(true, Ordering::SeqCst);
+    assert_eq!(l.fetch("s0\t3").code, 0);
+    let streams = l.streams();
+    assert_eq!(streams.len(), 2, "{streams:?}");
+    assert!(streams[1].contains("format=raw"), "{}", streams[1]);
+    let levels = waveform::read(&l.env(), "s0").expect("waveform kept");
+    assert!(levels[LEVELS - 3] > 235);
+    // a stream that cannot be read at all: the raw one is asked once, not again and again
+    l.fake.state.stream_cut.lock().unwrap().push("s1".into());
+    l.fake
+        .state
+        .stream_secs_of
+        .lock()
+        .unwrap()
+        .insert("s1".into(), 20);
+    l.fake.clear_calls();
+    assert_eq!(l.fetch("s1\t20").code, 0);
+    assert_eq!(l.streams().len(), 2);
 }
 
 #[test]

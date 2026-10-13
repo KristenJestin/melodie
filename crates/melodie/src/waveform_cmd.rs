@@ -95,11 +95,17 @@ fn remove_decoded(dir: &Path) {
     }
 }
 
-/// The levels of the track asked, decoded into a file of `dir` that is removed after.
+/// The levels of the track asked: from a light transcoded stream, else, once, from the file
+/// itself (a server that cannot transcode).
 fn compute(client: &Client, dir: &Path, ask: &Ask) -> Result<Vec<u8>> {
+    compute_from(&client.light_stream_url(&ask.id), dir, ask)
+        .or_else(|_| compute_from(&client.stream_url(&ask.id), dir, ask))
+}
+
+/// The levels of the stream `url`, decoded into a file of `dir` that is removed after.
+fn compute_from(url: &SecretUrl, dir: &Path, ask: &Ask) -> Result<Vec<u8>> {
     let pcm = dir.join(format!(".decode-{}.pcm", std::process::id()));
-    let levels =
-        decode(&client.stream_url(&ask.id), &pcm).and_then(|()| read_levels(&pcm, ask.duration));
+    let levels = decode(url, &pcm).and_then(|()| read_levels(&pcm, ask.duration));
     let _ = std::fs::remove_file(&pcm);
     levels
 }
