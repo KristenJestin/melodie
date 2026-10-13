@@ -415,9 +415,23 @@ pub fn move_track(
             list.len()
         )));
     }
-    let mut ids: Vec<String> = list.into_iter().map(|t| t.id).collect();
+    let read: Vec<String> = list.into_iter().map(|t| t.id).collect();
+    let mut ids = read.clone();
     let id = ids.remove(from);
     ids.insert(to, id);
+    // The write replaces the whole playlist: what another client (or the window's own previous
+    // edit) wrote since the read would be lost. Subsonic has no compare-and-set, so the window is
+    // made as short as it can be: read again, right before writing.
+    let now: Vec<String> = whole_entries(client, pid)?
+        .into_iter()
+        .map(|t| t.id)
+        .collect();
+    if now != read {
+        return Err(Failure::Internal(anyhow!(
+            "the playlist changed while the track was being moved: it was left as it is, read it \
+             again"
+        )));
+    }
     let mut params = vec![("playlistId", pid.to_string())];
     params.extend(ids.iter().map(|i| ("songId", i.clone())));
     post(client, "createPlaylist", &params)?;
@@ -1255,6 +1269,29 @@ mod tests {
         assert_eq!(fake.calls_of("createPlaylist"), 0, "nothing written");
         assert_eq!(server_ids(&fake, "p1"), ["s0", "s1"]);
         assert_eq!(local_ids(&conn, "p1"), before);
+    }
+
+    #[test]
+    fn a_move_refuses_when_the_playlist_changed_meanwhile() {
+        let (_d, env, fake, client) = setup();
+        let conn = db::open_existing(&env).unwrap().unwrap();
+        seed(&fake, "p1", &[("s0", "A", "X"), ("s1", "B", "X")]);
+        db::replace_playlist_tracks(&conn, "p1", &["s0".into(), "s1".into()]).unwrap();
+        // An add lands between the read the new order comes from and the write.
+        let added = ["s0", "s1", "s2"].map(|id| json!({"id": id, "title": id, "duration": 200}));
+        *fake.state.change_after_read.lock().unwrap() = Some(added.to_vec());
+        let r = move_track(&client, Some(&conn), "p1", 0, 1, Some("s0"), 0);
+        let Err(Failure::Internal(e)) = r else {
+            panic!("{r:?}")
+        };
+        assert!(e.to_string().contains("changed"), "{e}");
+        assert_eq!(fake.calls_of("createPlaylist"), 0, "nothing written");
+        assert_eq!(
+            server_ids(&fake, "p1"),
+            ["s0", "s1", "s2"],
+            "the add is kept"
+        );
+        assert_eq!(local_ids(&conn, "p1"), ["s0", "s1"]);
     }
 
     #[test]

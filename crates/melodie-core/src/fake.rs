@@ -26,6 +26,9 @@ pub struct State {
     /// Entries `getPlaylist` counts in `songCount` but leaves out, as Navidrome does with the
     /// tracks whose file is missing.
     pub hidden_entries: AtomicUsize,
+    /// Taken after the next `getPlaylist` of a seeded playlist, and becomes its content: another
+    /// client changed it just after it was read.
+    pub change_after_read: Mutex<Option<Vec<Value>>>,
     pub expected_token: Mutex<String>,
     /// Code d'erreur Subsonic à renvoyer pour tout, si présent.
     pub fail_code: Mutex<Option<i64>>,
@@ -144,6 +147,7 @@ impl Fake {
             playlist_changed: Mutex::new("2026-10-01T10:00:00Z".into()),
             playlist_gone: AtomicBool::new(false),
             hidden_entries: AtomicUsize::new(0),
+            change_after_read: Mutex::new(None),
             expected_token: Mutex::new(token.to_string()),
             fail_code: Mutex::new(None),
             raw: Mutex::new(None),
@@ -335,8 +339,14 @@ impl State {
                     return no_such(method);
                 }
                 let id = param(query, "id").unwrap_or_default();
-                let entry = match self.playlists.lock().unwrap().get(&id) {
-                    Some(seeded) => seeded.clone(),
+                let entry = match self.playlists.lock().unwrap().get_mut(&id) {
+                    Some(seeded) => {
+                        let read = seeded.clone();
+                        if let Some(changed) = self.change_after_read.lock().unwrap().take() {
+                            *seeded = changed;
+                        }
+                        read
+                    }
                     None => songs,
                 };
                 let count = entry.len() + self.hidden_entries.load(Ordering::SeqCst);
