@@ -815,9 +815,13 @@ fn status(env: &Env) -> Result<ExitCode> {
         Err(f) => println!("Connexion   : {} ({f})", f.state()),
     }
 
-    match db::open_existing(env)? {
-        Some(conn) => {
-            let c = db::counts(&conn)?;
+    // The exit code below is the ping's: an unreadable copy is told here, never turned into "no login".
+    let copy = db::open_existing(env).and_then(|conn| {
+        conn.map(|conn| db::counts(&conn).map(|c| (conn, c)))
+            .transpose()
+    });
+    match copy {
+        Ok(Some((conn, c))) => {
             let size = std::fs::metadata(db::db_path(env))
                 .map(|m| m.len())
                 .unwrap_or(0);
@@ -838,7 +842,10 @@ fn status(env: &Env) -> Result<ExitCode> {
                 megabytes(size)
             );
         }
-        None => println!("Copie       : aucune (elle se fait toute seule après la connexion)"),
+        Ok(None) => {
+            println!("Copie       : aucune (elle se fait toute seule après la connexion)")
+        }
+        Err(e) => println!("Copie       : illisible ({e:#})"),
     }
     println!(
         "Synchro     : {}",

@@ -1423,6 +1423,28 @@ fn une_sync_a_la_fois() {
 }
 
 #[test]
+fn an_unreadable_local_copy_does_not_turn_a_good_login_into_no_login() {
+    let sb = Sandbox::new(true);
+    std::fs::create_dir_all(sb.db().parent().unwrap()).unwrap();
+    std::fs::write(sb.db(), "this is not a database").unwrap();
+    let o = sb.run(&["status"]);
+    let said = String::from_utf8_lossy(&o.stdout);
+    // the ping's answer is the exit code: exit 1 would bring up the sign-in screen
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{said}{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(said.contains("Connexion   : connecté"), "{said}");
+    assert!(said.contains("Copie       : illisible"), "{said}");
+    assert!(said.contains("Synchro     :"), "{said}");
+    // an unreachable server still wins, whatever the copy is
+    *sb.fake.state.raw.lock().unwrap() = Some((503, "x".into()));
+    assert_eq!(sb.run(&["status"]).status.code(), Some(2));
+}
+
+#[test]
 fn refus_en_fond_pose_le_marqueur_sans_jeton() {
     let sb = Sandbox::new(true);
     sb.ok(&["sync", "--full"]);
