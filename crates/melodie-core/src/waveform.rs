@@ -52,8 +52,10 @@ pub fn levels(pcm: &[u8]) -> Vec<u8> {
                 return 0.0;
             }
             let sum: f64 = part
-                .chunks_exact(2)
-                .map(|b| f64::from(i16::from_le_bytes([b[0], b[1]])).powi(2))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|b| f64::from(i16::from_le_bytes(*b)).powi(2))
                 .sum();
             (sum / (part.len() / 2) as f64).sqrt()
         })
