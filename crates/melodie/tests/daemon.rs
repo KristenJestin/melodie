@@ -2579,11 +2579,11 @@ fn open_uri_on_mpris_of_an_unknown_id_is_logged_as_not_found_and_changes_nothing
 fn open_uri_on_mpris_with_a_refused_token_quits_like_a_refused_stream() {
     let sb = Sandbox::new(true);
     addressable_library(&sb);
-    // The answer to `OpenUri` is held back long enough for the refusal to reach the engine
-    // first: the daemon is quitting while the call is still waiting for its answer, which a
-    // loaded machine does by chance.
+    // The answer to `OpenUri` is held back (less than the daemon waits for it) so the refusal
+    // reaches the engine first: the daemon is quitting while the call still waits for its
+    // answer, which a loaded machine does by chance. The caller must still get it.
     let mut c = sb.cmd(&["open", "melodie:album/al1"]);
-    c.env("MELODIE_OPEN_URI_HOLD_MS", "1500");
+    c.env("MELODIE_OPEN_URI_HOLD_MS", "500");
     let o = c.output().unwrap();
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let Some((_conn, p)) = bus_player(&sb) else {
