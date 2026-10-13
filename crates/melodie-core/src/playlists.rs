@@ -51,6 +51,18 @@ fn call(client: &Client, method: &str, extra: &[(&str, String)]) -> Result<Value
         .map_err(|e| state::from_api(e, client.url()))
 }
 
+/// Applies an edit to the tracks of a playlist in the local copy, as the server just did it.
+fn edit_local(
+    conn: &Connection,
+    pid: &str,
+    f: impl FnOnce(&mut Vec<String>),
+) -> Result<(), Failure> {
+    let mut ids = db::playlist_track_ids(conn, pid)?;
+    f(&mut ids);
+    db::replace_playlist_tracks(conn, pid, &ids)?;
+    Ok(())
+}
+
 fn secs(tracks: &[TrackInfo]) -> i64 {
     tracks.iter().map(|t| t.duration as i64).sum()
 }
@@ -68,6 +80,9 @@ pub fn add(
     call(client, "updatePlaylist", &params)?;
     if let Some(c) = conn {
         db::playlist_adjust(c, pid, tracks.len() as i64, secs(tracks), &rfc3339(at))?;
+        edit_local(c, pid, |ids| {
+            ids.extend(tracks.iter().map(|t| t.id.clone()))
+        })?;
     }
     Ok(())
 }
@@ -230,6 +245,13 @@ pub fn remove_duplicates(
     if let Some(c) = conn {
         let secs: i64 = gone.iter().map(|d| d.track.duration as i64).sum();
         db::playlist_adjust(c, pid, -(gone.len() as i64), -secs, &rfc3339(at))?;
+        edit_local(c, pid, |ids| {
+            let mut i = 0;
+            ids.retain(|_| {
+                i += 1;
+                !gone.iter().any(|d| d.index == i - 1)
+            })
+        })?;
     }
     Ok(found)
 }
@@ -264,6 +286,11 @@ pub fn remove(
     )?;
     if let Some(c) = conn {
         db::playlist_adjust(c, pid, -1, -(track.duration as i64), &rfc3339(at))?;
+        edit_local(c, pid, |ids| {
+            if index < ids.len() {
+                ids.remove(index);
+            }
+        })?;
     }
     Ok(track)
 }
@@ -299,6 +326,8 @@ pub fn create(
             p["changed"] = json!(rfc3339(at));
         }
         db::playlist_insert(c, &p)?;
+        let ids: Vec<String> = tracks.iter().map(|t| t.id.clone()).collect();
+        db::replace_playlist_tracks(c, &id, &ids)?;
     }
     Ok(id)
 }
@@ -592,6 +621,35 @@ mod tests {
                 .ends_with("--prompt album al1")
         );
         assert!(render_pick(&v).contains("Daft Mix"));
+    }
+
+    fn local_ids(conn: &Connection, pid: &str) -> Vec<String> {
+        db::playlist_track_ids(conn, pid).unwrap()
+    }
+
+    #[test]
+    fn the_local_copy_follows_the_edits_of_a_playlist() {
+        let (_d, env, fake, client) = setup();
+        let conn = db::open_existing(&env).unwrap().unwrap();
+        assert_eq!(local_ids(&conn, "p1"), ["s0", "s1", "s2", "s3"]);
+        add(&client, Some(&conn), "p1", &[info("s1", 200)], 0).unwrap();
+        assert_eq!(local_ids(&conn, "p1"), ["s0", "s1", "s2", "s3", "s1"]);
+        remove(&client, Some(&conn), "p1", 0, 0).unwrap();
+        assert_eq!(local_ids(&conn, "p1"), ["s1", "s2", "s3", "s1"]);
+
+        seed(
+            &fake,
+            "p1",
+            &[("s1", "A", "B"), ("s2", "C", "D"), ("s1", "A", "B")],
+        );
+        db::replace_playlist_tracks(&conn, "p1", &["s1".into(), "s2".into(), "s1".into()]).unwrap();
+        remove_duplicates(&client, Some(&conn), "p1", 0).unwrap();
+        assert_eq!(local_ids(&conn, "p1"), ["s1", "s2"]);
+
+        let id = create(&client, Some(&conn), "alice", "New", &[info("s3", 200)], 0).unwrap();
+        assert_eq!(local_ids(&conn, &id), ["s3"]);
+        delete(&client, Some(&conn), &id).unwrap();
+        assert!(local_ids(&conn, &id).is_empty());
     }
 
     // --- duplicates ---

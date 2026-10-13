@@ -149,7 +149,8 @@ fn refresh_playlists_and_starred(
             continue;
         }
         let r = call(client, "getPlaylist", &[("id", pid.to_string())])?;
-        db::replace_playlist_tracks(tx, pid, &list(&r, &["playlist", "entry"]))?;
+        let ids = db::entry_ids(&list(&r, &["playlist", "entry"]));
+        db::replace_playlist_tracks(tx, pid, &ids)?;
     }
     let st = call(client, "getStarred2", &[])?;
     db::apply_starred(tx, &st["starred2"])?;

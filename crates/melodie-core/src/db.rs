@@ -520,15 +520,28 @@ pub fn playlist_rename(conn: &Connection, id: &str, name: &str, at: &str) -> Res
     Ok(())
 }
 
-/// The tracks of a playlist as the server lists them (`entry` objects), in its order.
-pub fn replace_playlist_tracks(conn: &Connection, pid: &str, entries: &[Value]) -> Result<()> {
+/// The ids of the tracks of a playlist (`entry` objects of `getPlaylist`), in order.
+pub fn entry_ids(entries: &[Value]) -> Vec<String> {
+    entries.iter().filter_map(id).collect()
+}
+
+/// The tracks of a playlist, in its order.
+pub fn replace_playlist_tracks(conn: &Connection, pid: &str, tracks: &[String]) -> Result<()> {
     conn.execute("DELETE FROM playlist_tracks WHERE playlist = ?1", [pid])?;
     let mut ins =
         conn.prepare("INSERT INTO playlist_tracks(playlist, pos, track) VALUES (?1, ?2, ?3)")?;
-    for (pos, tid) in entries.iter().filter_map(id).enumerate() {
+    for (pos, tid) in tracks.iter().enumerate() {
         ins.execute(params![pid, pos as i64, tid])?;
     }
     Ok(())
+}
+
+/// The track ids of a playlist the copy holds, in order (empty when it holds none).
+pub fn playlist_track_ids(conn: &Connection, pid: &str) -> Result<Vec<String>> {
+    let mut st =
+        conn.prepare("SELECT track FROM playlist_tracks WHERE playlist = ?1 ORDER BY pos")?;
+    let rows = st.query_map([pid], |r| r.get(0))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
 pub fn playlist_delete(conn: &Connection, id: &str) -> Result<()> {
@@ -645,9 +658,15 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let conn = create(&d.path().join("l.db")).unwrap();
         let e = |id: &str| serde_json::json!({"id": id});
-        replace_playlist_tracks(&conn, "p1", &[e("t2"), e("t1"), e("t2")]).unwrap();
-        replace_playlist_tracks(&conn, "p2", &[e("t9")]).unwrap();
-        replace_playlist_tracks(&conn, "p1", &[e("t3"), e("t1")]).unwrap();
+        let ids = |v: &[Value]| entry_ids(v);
+        replace_playlist_tracks(&conn, "p1", &ids(&[e("t2"), e("t1"), e("t2")])).unwrap();
+        replace_playlist_tracks(&conn, "p2", &ids(&[e("t9")])).unwrap();
+        replace_playlist_tracks(
+            &conn,
+            "p1",
+            &ids(&[e("t3"), e("t1"), serde_json::json!({})]),
+        )
+        .unwrap();
         let rows: Vec<(String, i64, String)> = conn
             .prepare("SELECT playlist, pos, track FROM playlist_tracks ORDER BY playlist, pos")
             .unwrap()
