@@ -1,7 +1,7 @@
 //! The long lists: artists and tracks, sortable by their columns, in virtual lists of fixed-height
 //! rows; and the track row the pages reuse. The buttons of a row fade in under the pointer: that
-//! is the one animation inside a row, and it runs only while the pointer moves from a row to
-//! the next (`docs/gui-toolkit.md`, "Lists").
+//! is the one animation inside a row, and it runs only when the pointer itself moves to another
+//! row; rows scrolled under a still pointer change at once (`docs/gui-toolkit.md`, "Lists").
 
 use crate::albums::{PAD, content_width, cover_box, empty_state};
 use crate::app::Shared;

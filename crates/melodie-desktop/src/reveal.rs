@@ -35,9 +35,40 @@ pub fn at(t: f32) -> Look {
     }
 }
 
-/// How long the move to `shown` takes.
-pub fn duration(shown: bool) -> Duration {
-    if shown { IN } else { OUT }
+/// How long the move to `shown` takes. A change the pointer did not cause (the layout moved
+/// under a still pointer: a list scrolled with the wheel) is instant: an animation in a row would
+/// keep the whole list off its scroll layer for as long as it runs.
+pub fn duration(shown: bool, moved: bool) -> Duration {
+    match (moved, shown) {
+        (false, _) => Duration::ZERO,
+        (true, true) => IN,
+        (true, false) => OUT,
+    }
+}
+
+/// Tells a hover change caused by the pointer moving from one caused by the layout moving under
+/// it: GPUI reports both alike. One move can change several hovers (leaving a row enters the
+/// next), so it counts as moving until `settle` says that move is over.
+#[derive(Debug, Default)]
+pub struct Moves<P> {
+    last: Option<P>,
+    moving: bool,
+}
+
+impl<P: PartialEq + Copy> Moves<P> {
+    /// A hover changes with the pointer at `at`: whether the pointer moved to get there.
+    pub fn seen(&mut self, at: P) -> bool {
+        if self.last != Some(at) {
+            self.last = Some(at);
+            self.moving = true;
+        }
+        self.moving
+    }
+
+    /// The changes of the last move are all told: another one at the same place is the layout's.
+    pub fn settle(&mut self) {
+        self.moving = false;
+    }
 }
 
 #[cfg(test)]
@@ -84,11 +115,53 @@ mod tests {
 
     #[test]
     fn coming_in_takes_longer_than_going_out_and_both_are_short() {
-        assert!(duration(true) > duration(false));
-        assert_eq!(duration(true), IN);
-        assert_eq!(duration(false), OUT);
+        assert!(duration(true, true) > duration(false, true));
+        assert_eq!(duration(true, true), IN);
+        assert_eq!(duration(false, true), OUT);
         assert!(IN <= Duration::from_millis(200), "a hover is felt at once");
         assert!(OUT >= Duration::from_millis(80), "or it is a pop again");
+    }
+
+    #[test]
+    fn a_change_under_a_still_pointer_is_instant() {
+        assert_eq!(duration(true, false), Duration::ZERO);
+        assert_eq!(duration(false, false), Duration::ZERO);
+    }
+
+    #[test]
+    fn the_first_change_seen_is_a_move() {
+        let mut m = Moves::default();
+        assert!(m.seen((10.0, 20.0)));
+    }
+
+    #[test]
+    fn every_change_of_one_move_is_a_move() {
+        // leaving a row and entering the next one, at the same place, in the same move
+        let mut m = Moves::default();
+        assert!(m.seen((10.0, 20.0)));
+        assert!(m.seen((10.0, 20.0)));
+    }
+
+    #[test]
+    fn a_list_scrolled_under_a_still_pointer_is_not_a_move() {
+        let mut m = Moves::default();
+        m.seen((10.0, 20.0));
+        m.settle();
+        // rows pass under the pointer, which stays where it was
+        assert!(!m.seen((10.0, 20.0)));
+        assert!(!m.seen((10.0, 20.0)));
+        m.settle();
+        assert!(!m.seen((10.0, 20.0)));
+    }
+
+    #[test]
+    fn a_pointer_that_moves_again_is_a_move_again() {
+        let mut m = Moves::default();
+        m.seen((10.0, 20.0));
+        m.settle();
+        assert!(!m.seen((10.0, 20.0)));
+        assert!(m.seen((10.0, 52.0)));
+        assert!(m.seen((10.0, 52.0)));
     }
 
     #[test]

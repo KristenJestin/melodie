@@ -125,25 +125,38 @@ pub fn follow_pointer_tip(
 /// thing its look with `Revealed::revealed`.
 #[derive(Clone)]
 pub struct Hover {
-    pointer: Entity<Pointer>,
+    state: Entity<Revealing>,
     pub look: reveal::Look,
 }
+
+#[derive(Default, Clone, Copy)]
+struct Revealing {
+    hovered: bool,
+    /// Whether the last change came from the pointer moving, not from the layout under it.
+    moved: bool,
+}
+
+/// The pointer's moves, window-wide: a row cannot tell alone whether it was the pointer that moved.
+#[derive(Default)]
+struct PointerMoves(reveal::Moves<Point<Pixels>>);
+
+impl Global for PointerMoves {}
 
 /// The hover of the element called `id`: the pointer's place, and the look of what it reveals,
 /// moving towards shown or hidden (a pointer that leaves turns it round where it is).
 pub fn hover(id: impl Into<ElementId>, window: &mut Window, cx: &mut App) -> Hover {
     let id: ElementId = id.into();
-    let pointer = window.use_keyed_state((id.clone(), "reveal"), cx, |_, _| Pointer::default());
-    let on = pointer.read(cx).hovered;
+    let state = window.use_keyed_state((id.clone(), "reveal"), cx, |_, _| Revealing::default());
+    let Revealing { hovered, moved } = *state.read(cx);
     let t = motion::to(
         (id, "reveal"),
-        if on { 1.0f32 } else { 0.0 },
-        reveal::duration(on),
+        if hovered { 1.0f32 } else { 0.0 },
+        reveal::duration(hovered, moved),
         window,
         cx,
     );
     Hover {
-        pointer,
+        state,
         look: reveal::at(t),
     }
 }
@@ -151,10 +164,21 @@ pub fn hover(id: impl Into<ElementId>, window: &mut Window, cx: &mut App) -> Hov
 impl Hover {
     /// Makes `el` follow the pointer: the thing it reveals shows while the pointer is on it.
     pub fn track(&self, el: Stateful<Div>) -> Stateful<Div> {
-        let pointer = self.pointer.clone();
-        el.on_hover(move |on, _, cx| {
-            pointer.update(cx, |p, cx| {
-                p.hovered = *on;
+        let state = self.state.clone();
+        el.on_hover(move |on, window, cx| {
+            let moved = cx
+                .default_global::<PointerMoves>()
+                .0
+                .seen(window.mouse_position());
+            if moved {
+                // once the other hovers of this move are told
+                window.defer(cx, |_, cx| cx.default_global::<PointerMoves>().0.settle());
+            }
+            state.update(cx, |s, cx| {
+                *s = Revealing {
+                    hovered: *on,
+                    moved,
+                };
                 cx.notify()
             })
         })
