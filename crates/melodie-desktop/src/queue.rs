@@ -12,7 +12,7 @@ use gpui_kit::component::Icon;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use melodie_core::proto::Request;
-use melodie_desktop::figures::clock_text;
+use melodie_desktop::figures::{Figures as _, clock_text, count_text};
 use melodie_desktop::menu::{Item, Spot};
 use melodie_desktop::model::Row;
 use melodie_desktop::theme::Palette;
@@ -76,16 +76,13 @@ impl Render for QueuePanel {
                                     .text_color(pal.fg)
                                     .child("Queue"),
                             )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(pal.secondary)
-                                    .child(match count {
-                                        0 => "Empty".to_string(),
-                                        1 => "1 track".to_string(),
-                                        n => format!("{n} tracks"),
-                                    }),
-                            ),
+                            .child(div().text_xs().text_color(pal.secondary).child(count_text(
+                                match count {
+                                    0 => "Empty".to_string(),
+                                    1 => "1 track".to_string(),
+                                    n => format!("{n} tracks"),
+                                },
+                            ))),
                     )
                     .child(
                         IconButton::new("clear-next", IconName::ListX, pal)
@@ -234,6 +231,7 @@ impl Render for QueueList {
                                 .w(px(22.))
                                 .flex()
                                 .justify_center()
+                                .tabular()
                                 .text_xs()
                                 .text_color(pal.secondary)
                                 .map(|d| match row {

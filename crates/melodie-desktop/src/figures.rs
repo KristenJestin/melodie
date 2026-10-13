@@ -50,6 +50,7 @@ pub fn baseline_lift(big: Line, small: Line, ascent: f32, descent: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scan::{Source, sources};
 
     #[test]
     fn the_figures_are_tabular() {
@@ -123,39 +124,99 @@ mod tests {
         assert_eq!(lift, 10.0);
     }
 
-    /// Every source of the crate but `skip`, with its name.
-    fn sources(skip: &str) -> Vec<(String, String)> {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        std::fs::read_dir(dir)
-            .unwrap()
-            .map(|f| f.unwrap().path())
-            .filter(|p| p.extension().is_some_and(|e| e == "rs") && !p.ends_with(skip))
-            .map(|p| {
-                let name = p.file_name().unwrap().to_string_lossy().into_owned();
-                (name, std::fs::read_to_string(&p).unwrap())
-            })
+    /// The lines of `src` where a time is drawn by `clock(…)`, not `clock_text`.
+    fn bare_clocks(src: &Source) -> Vec<usize> {
+        src.calls("clock")
+            .into_iter()
+            .map(|(at, _)| src.line(at))
             .collect()
+    }
+
+    /// The lines of `src` where a count that changes in place (`format!("{n} …")`, a row's
+    /// `(ix + 1).to_string()`) is drawn in proportional digits.
+    fn proportional_counts(src: &Source) -> Vec<usize> {
+        let code = src.code();
+        // `format!("{n} …")`: a format that starts with a named number and a word
+        let a_count = |args: &str| {
+            args.contains("+ 1).to_string()")
+                || args.match_indices("format!(\"{").any(|(at, f)| {
+                    let rest = &args[at + f.len()..];
+                    let name = rest.find(|c: char| !(c.is_alphanumeric() || c == '_'));
+                    name.is_some_and(|n| n > 0 && rest[n..].starts_with("} "))
+                })
+        };
+        // the element the child goes in, from where it is made to the call
+        let element = |at: usize| {
+            let start = ["div()", "cell(", "h_flex()", "v_flex()"]
+                .iter()
+                .filter_map(|e| code[..at].rfind(e))
+                .max()
+                .unwrap_or(0);
+            &code[start..at]
+        };
+        src.calls("child")
+            .into_iter()
+            .filter(|(at, args)| {
+                a_count(args)
+                    && !args.contains("count_text(")
+                    && !args.contains(".tabular()")
+                    && !element(*at).contains(".tabular()")
+            })
+            .map(|(at, _)| src.line(at))
+            .collect()
+    }
+
+    #[test]
+    fn a_proportional_count_is_seen_however_it_is_written() {
+        let caught = |code: &str| proportional_counts(&Source::new("a.rs", code));
+        assert_eq!(
+            caught("div()\n    .px_2()\n    .child(format!(\"{n} selected\")),\n"),
+            [3]
+        );
+        assert_eq!(
+            caught(
+                "div().child(match count {\n    1 => \"1 track\".to_string(),\n    n => format!(\"{n} tracks\"),\n})"
+            ),
+            [1]
+        );
+        assert_eq!(caught("div().map(|d| d.child((ix + 1).to_string()))"), [1]);
+        assert!(
+            caught("cell(None, 0.)\n    .tabular()\n    .child((ix + 1).to_string())").is_empty()
+        );
+        assert!(caught("div().child(count_text(format!(\"{n} tracks\")))").is_empty());
+        assert!(caught("div().child(format!(\"{} by {}\", a, b))").is_empty());
+        assert!(caught("d.child(div().id(format!(\"{list}-all\")).child(\"See all\"))").is_empty());
     }
 
     #[test]
     fn no_time_is_drawn_in_proportional_digits() {
         let mut seen = 0;
-        for (name, src) in sources("figures.rs") {
-            seen += src.matches("clock_text(").count();
-            for (n, line) in src.lines().enumerate() {
-                let code = line.split("//").next().unwrap();
-                // a call to `clock` itself, not `clock_text` nor a name that ends in `clock`
-                let bare = code.match_indices("clock(").any(|(at, _)| {
-                    !code[..at].ends_with(|c: char| c.is_alphanumeric() || c == '_')
-                });
-                assert!(
-                    !bare,
-                    "{name}:{}: a time drawn by `clock(…)` shifts as its digits change; use \
+        for src in sources("figures.rs") {
+            seen += src.code().matches("clock_text(").count();
+            if let Some(n) = bare_clocks(&src).first() {
+                panic!(
+                    "{}:{n}: a time drawn by `clock(…)` shifts as its digits change; use \
                      `figures::clock_text`",
-                    n + 1
+                    src.name
                 );
             }
         }
         assert!(seen >= 4, "the check reads the sources: {seen}");
+    }
+
+    #[test]
+    fn no_count_is_drawn_in_proportional_digits() {
+        let mut seen = 0;
+        for src in sources("figures.rs") {
+            seen += src.code().matches(".tabular()").count();
+            if let Some(n) = proportional_counts(&src).first() {
+                panic!(
+                    "{}:{n}: a count drawn in proportional digits shifts as it changes; use \
+                     `figures::count_text` or `.tabular()`",
+                    src.name
+                );
+            }
+        }
+        assert!(seen >= 2, "the check reads the sources: {seen}");
     }
 }

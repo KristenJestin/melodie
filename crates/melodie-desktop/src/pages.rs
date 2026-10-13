@@ -17,6 +17,7 @@ use melodie_core::library::{Album, Track};
 use melodie_core::search::human_duration;
 use melodie_desktop::browse::{self, Place};
 use melodie_desktop::covers::Covers;
+use melodie_desktop::figures::Figures as _;
 use melodie_desktop::launch::{Adding, Job, Kind};
 use melodie_desktop::selection::Selection;
 use melodie_desktop::theme::Palette;
@@ -612,6 +613,7 @@ impl Render for SelectionBar {
             .child(
                 div()
                     .px_2()
+                    .tabular()
                     .text_sm()
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(pal.fg)

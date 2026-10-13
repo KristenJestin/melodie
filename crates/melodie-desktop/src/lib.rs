@@ -18,6 +18,8 @@ pub mod model;
 pub mod playlists;
 pub mod quick;
 pub mod reveal;
+#[cfg(test)]
+mod scan;
 pub mod selection;
 pub mod theme;
 pub mod thumbs;
