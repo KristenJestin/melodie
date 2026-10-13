@@ -180,6 +180,7 @@ impl Shared {
             Job::Mix { .. } => "Could not make the mix",
             Job::AddToPlaylist { .. } => "Could not add to the playlist",
             Job::MixGenre { .. } => "Could not make the mix",
+            Job::QueueMix(_) => "Could not add the mix to the queue",
             // run by `run_then`, which says what they did
             Job::CheckAdd { .. }
             | Job::CreatePlaylist { .. }

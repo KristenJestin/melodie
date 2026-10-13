@@ -13,7 +13,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use melodie_core::proto::Request;
 use melodie_core::track::clock;
-use melodie_desktop::launch::{Adding, Job};
+use melodie_desktop::launch::{Adding, Job, Kind};
 use melodie_desktop::layout;
 use melodie_desktop::model::{Clock, PlayState};
 use melodie_desktop::theme::Palette;
@@ -227,6 +227,7 @@ impl Render for PlayerView {
                                             shared.update(cx, |s, cx| {
                                                 s.run(
                                                     Job::Star {
+                                                        kind: Kind::Track,
                                                         id,
                                                         starred: !starred,
                                                     },

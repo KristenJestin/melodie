@@ -31,8 +31,9 @@ pub enum Job {
     PlayMix,
     /// Albums played before, but not lately.
     Rediscover,
-    /// The heart of a track.
+    /// The heart of a track, an album or an artist.
     Star {
+        kind: Kind,
         id: String,
         starred: bool,
     },
@@ -97,6 +98,8 @@ pub enum Job {
     MixGenre {
         name: String,
     },
+    /// A mix (`PlayMix`, `Rediscover` or `MixGenre`) added at the end of the queue.
+    QueueMix(Box<Job>),
 }
 
 /// What is added to a playlist.
@@ -137,7 +140,8 @@ impl Job {
             | Self::Queue { .. }
             | Self::Mix { .. }
             | Self::CreatePlaylist { .. }
-            | Self::MixGenre { .. } => None,
+            | Self::MixGenre { .. }
+            | Self::QueueMix(_) => None,
         }
     }
 
@@ -235,9 +239,15 @@ impl Job {
                 a.push(name.clone());
                 a
             }
-            Self::Star { id, starred } => vec![
+            // `--queue` belongs to `mix`: before the dashes that end the options
+            Self::QueueMix(mix) => {
+                let mut a = mix.args();
+                a.insert(1, "--queue".into());
+                a
+            }
+            Self::Star { kind, id, starred } => vec![
                 if *starred { "like" } else { "unlike" }.into(),
-                "track".into(),
+                kind.word().into(),
                 // an id may start with a dash
                 "--".into(),
                 id.clone(),
@@ -408,15 +418,50 @@ mod tests {
     fn the_arguments_of_each_job() {
         assert_eq!(Job::PlayMix.args(), ["mix", "me"]);
         let like = Job::Star {
+            kind: Kind::Track,
             id: "t1".into(),
             starred: true,
         };
         assert_eq!(like.args(), ["like", "track", "--", "t1"]);
         let unlike = Job::Star {
+            kind: Kind::Track,
             id: "t1".into(),
             starred: false,
         };
         assert_eq!(unlike.args(), ["unlike", "track", "--", "t1"]);
+    }
+
+    #[test]
+    fn an_album_or_an_artist_is_liked_by_its_kind() {
+        let album = Job::Star {
+            kind: Kind::Album,
+            id: "-al1".into(),
+            starred: true,
+        };
+        assert_eq!(album.args(), ["like", "album", "--", "-al1"]);
+        let artist = Job::Star {
+            kind: Kind::Artist,
+            id: "ar1".into(),
+            starred: false,
+        };
+        assert_eq!(artist.args(), ["unlike", "artist", "--", "ar1"]);
+    }
+
+    #[test]
+    fn a_mix_goes_at_the_end_of_the_queue_with_the_flag_before_the_dashes() {
+        let genre = Job::QueueMix(Box::new(Job::MixGenre {
+            name: "-Hip Hop".into(),
+        }));
+        assert_eq!(genre.args(), ["mix", "--queue", "genre", "--", "-Hip Hop"]);
+        assert_eq!(
+            Job::QueueMix(Box::new(Job::PlayMix)).args(),
+            ["mix", "--queue", "me"]
+        );
+        assert_eq!(
+            Job::QueueMix(Box::new(Job::Rediscover)).args(),
+            ["mix", "--queue", "rediscover"]
+        );
+        assert_eq!(Job::QueueMix(Box::new(Job::PlayMix)).playlist(), None);
     }
 
     #[test]
@@ -579,6 +624,7 @@ mod tests {
     #[test]
     fn an_id_that_starts_with_a_dash_is_not_an_option() {
         let like = Job::Star {
+            kind: Kind::Track,
             id: "-t1".into(),
             starred: true,
         };

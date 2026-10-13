@@ -18,7 +18,7 @@ use gpui_kit::*;
 use melodie_core::proto::Request;
 use melodie_desktop::bar;
 use melodie_desktop::browse::Place;
-use melodie_desktop::launch::Job;
+use melodie_desktop::launch::{Job, Kind};
 use melodie_desktop::layout;
 use melodie_desktop::model::PlayState;
 use melodie_desktop::theme::{Palette, mix};
@@ -220,6 +220,7 @@ impl Render for PlayBar {
                             shared.update(cx, |s, cx| {
                                 s.run(
                                     Job::Star {
+                                        kind: Kind::Track,
                                         id,
                                         starred: !starred,
                                     },
