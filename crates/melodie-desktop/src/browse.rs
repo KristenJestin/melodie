@@ -1,10 +1,5 @@
 //! Where the window is in the library, and the pieces of browsing that need no window: the way
-//! back from a page, how many covers a row holds, which covers are on disk.
-
-use melodie_core::cover;
-use melodie_core::env::Env;
-use std::collections::HashMap;
-use std::path::PathBuf;
+//! back from a page, how many covers a row holds.
 
 /// A place of the window: a section of the sidebar, or a page opened from one.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -124,29 +119,6 @@ impl Nav {
 /// How many covers fit across `width` pixels, each at least `min` wide with `gap` between them.
 pub fn columns(width: f32, min: f32, gap: f32) -> usize {
     (((width + gap) / (min + gap)).floor() as usize).max(1)
-}
-
-/// The cover files on disk for these cover ids, and the ids with none yet (to fetch). Checks
-/// files: run it away from the window's thread.
-pub fn resolve_covers<'a>(
-    env: &Env,
-    ids: impl IntoIterator<Item = &'a str>,
-) -> (HashMap<String, PathBuf>, Vec<String>) {
-    let mut found = HashMap::new();
-    let mut missing = Vec::new();
-    for id in ids {
-        if found.contains_key(id) || missing.iter().any(|m| m == id) {
-            continue;
-        }
-        match cover::local(env, id) {
-            cover::Local::Have(p) => {
-                found.insert(id.to_string(), p);
-            }
-            cover::Local::Placeholder => {}
-            cover::Local::Missing => missing.push(id.to_string()),
-        }
-    }
-    (found, missing)
 }
 
 #[cfg(test)]
@@ -271,7 +243,8 @@ mod tests {
         for (file, src) in views {
             for call in [
                 "cover::local",
-                "resolve_covers",
+                "covers::resolve",
+                "Disk::read",
                 "is_file",
                 "std::fs",
                 "exists()",
@@ -291,27 +264,5 @@ mod tests {
         assert_eq!(columns(1000.0, 160.0, 20.0), 5);
         assert_eq!(columns(159.0, 160.0, 20.0), 1, "always one");
         assert_eq!(columns(340.0, 160.0, 20.0), 2);
-    }
-
-    #[test]
-    fn covers_on_disk_are_found_and_the_others_are_to_fetch() {
-        let dir = tempfile::tempdir().unwrap();
-        let env = Env::with_home(dir.path());
-        let thumb = cover::thumb_path(&env, "c1");
-        std::fs::create_dir_all(thumb.parent().unwrap()).unwrap();
-        std::fs::write(&thumb, "").unwrap();
-        std::fs::write(
-            format!("{}.none", cover::thumb_path(&env, "c3").display()),
-            "",
-        )
-        .unwrap();
-        let (found, missing) = resolve_covers(&env, ["c1", "c2", "c3", "c2", "c1"]);
-        assert_eq!(found.get("c1"), Some(&thumb));
-        assert_eq!(found.len(), 1);
-        assert_eq!(
-            missing,
-            ["c2"],
-            "the server's default image is not fetched again"
-        );
     }
 }

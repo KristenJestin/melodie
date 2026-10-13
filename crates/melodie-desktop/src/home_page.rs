@@ -16,12 +16,12 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use melodie_core::library::{Album, Artist, Playlist};
 use melodie_desktop::browse::Place;
+use melodie_desktop::covers::{Cover, Covers};
 use melodie_desktop::home::{self, Highlight, Kind, Mix, Row, SeeAll, Why};
 use melodie_desktop::launch::{Job, Kind as Of};
 use melodie_desktop::theme::{Palette, Tint, mix};
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::rc::Rc;
 
 /// The highlight card's height, and its cover's side.
@@ -158,9 +158,9 @@ fn mix_text(m: &Mix) -> (IconName, String, String) {
 }
 
 /// A picture, or while there is none a soft gradient of the palette with `icon` on it.
-fn picture(path: Option<&PathBuf>, side: f32, round: f32, icon: IconName, pal: Palette) -> Div {
-    match path {
-        Some(_) => cover_box(path, side, round, pal),
+fn picture(cover: Option<Cover>, side: f32, round: f32, icon: IconName, pal: Palette) -> Div {
+    match cover {
+        Some(_) => cover_box(cover, side, round, pal),
         None => div()
             .size(px(side))
             .flex_none()
@@ -194,7 +194,7 @@ fn on_card(
 
 fn artist_cell(
     a: &Artist,
-    covers: &HashMap<String, PathBuf>,
+    covers: &Covers,
     pal: Palette,
     catalog: &Entity<Catalog>,
 ) -> Stateful<Div> {
@@ -212,7 +212,7 @@ fn artist_cell(
         }))
         .child(
             picture(
-                a.cover.as_ref().and_then(|c| covers.get(c)),
+                a.cover.as_ref().and_then(|c| covers.get(c, CIRCLE)),
                 CIRCLE,
                 CIRCLE / 2.0,
                 IconName::MicVocal,
@@ -241,7 +241,7 @@ fn artist_cell(
 
 fn playlist_cell(
     p: &Playlist,
-    covers: &HashMap<String, PathBuf>,
+    covers: &Covers,
     pal: Palette,
     catalog: &Entity<Catalog>,
 ) -> Stateful<Div> {
@@ -258,7 +258,7 @@ fn playlist_cell(
         }))
         .child(
             picture(
-                p.cover.as_ref().and_then(|c| covers.get(c)),
+                p.cover.as_ref().and_then(|c| covers.get(c, SQUARE)),
                 SQUARE,
                 10.0,
                 IconName::ListMusic,
@@ -459,7 +459,10 @@ impl Render for RowView {
         let pal = palette(&self.shared, window, cx);
         let (view, covers) = {
             let c = self.catalog.read(cx);
-            (c.home_view.clone(), c.covers.clone())
+            (
+                c.home_view.clone(),
+                Covers::new(c.covers.clone(), window.scale_factor()),
+            )
         };
         let width = content_width(window, &self.shared, cx);
         let Some(view) = view else {
@@ -538,7 +541,11 @@ impl Render for HighlightView {
         let pal = palette(&self.shared, window, cx);
         let (view, covers, tints) = {
             let c = self.catalog.read(cx);
-            (c.home_view.clone(), c.covers.clone(), c.tints.clone())
+            (
+                c.home_view.clone(),
+                Covers::new(c.covers.clone(), window.scale_factor()),
+                c.tints.clone(),
+            )
         };
         let width = content_width(window, &self.shared, cx);
         let Some(view) = view else {
@@ -621,7 +628,7 @@ impl Render for HighlightView {
 /// The large card at the top: the cover, why it is here, its name, play.
 fn highlight_card(
     h: Highlight,
-    covers: &HashMap<String, PathBuf>,
+    covers: &Covers,
     cp: Palette,
     catalog: &Entity<Catalog>,
 ) -> Stateful<Div> {
@@ -640,7 +647,7 @@ fn highlight_card(
                     name.clone(),
                     artist.clone(),
                     picture(
-                        album.cover.as_ref().and_then(|c| covers.get(c)),
+                        album.cover.as_ref().and_then(|c| covers.get(c, CARD_COVER)),
                         CARD_COVER,
                         12.0,
                         IconName::Disc3,

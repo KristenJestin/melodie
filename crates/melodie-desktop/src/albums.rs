@@ -3,6 +3,7 @@
 
 use crate::app::Shared;
 use crate::catalog::{Catalog, Empty};
+use crate::motion;
 use crate::player::palette;
 use crate::sidebar;
 use crate::widgets::IconButton;
@@ -13,10 +14,10 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use melodie_core::library::{Album, AlbumBy, Sort};
 use melodie_desktop::browse::{self, Place};
+use melodie_desktop::covers::{Cover, Covers};
 use melodie_desktop::launch::{Job, Kind};
 use melodie_desktop::layout;
 use melodie_desktop::theme::Palette;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -37,8 +38,9 @@ pub fn content_width(window: &Window, shared: &Entity<Shared>, cx: &App) -> f32 
 }
 
 /// A cover, or its place while there is none: the image comes from a file GPUI reads and decodes
-/// in the background, over the placeholder.
-pub fn cover_box(path: Option<&PathBuf>, side: f32, round: f32, pal: Palette) -> Div {
+/// in the background, over the placeholder. A cover that has just replaced a smaller one fades
+/// in over it.
+pub fn cover_box(cover: Option<Cover>, side: f32, round: f32, pal: Palette) -> Div {
     div()
         .size(px(side))
         .flex_none()
@@ -48,14 +50,26 @@ pub fn cover_box(path: Option<&PathBuf>, side: f32, round: f32, pal: Palette) ->
         .flex()
         .items_center()
         .justify_center()
-        .map(|d| match path {
+        .map(|d| match cover {
             // GPUI does not clip children to rounded corners: the image is rounded itself
-            Some(p) => d.child(
-                img(p.clone())
-                    .size_full()
-                    .rounded(px(round))
-                    .object_fit(ObjectFit::Cover),
-            ),
+            Some(Cover { path, under: None }) => d.child(picture_file(path, round)),
+            Some(Cover {
+                path,
+                under: Some(under),
+            }) => {
+                let id = ElementId::Name(format!("cover-fade-{}", path.display()).into());
+                d.relative()
+                    .child(picture_file(under, round).absolute().top_0().left_0())
+                    .child(
+                        div()
+                            .size_full()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .child(picture_file(path, round))
+                            .with_animation(id, motion::enter(), |el, t| el.opacity(t)),
+                    )
+            }
             None => d.child(
                 Icon::new(IconName::Disc3)
                     .size(px((side * 0.3).round()))
@@ -64,10 +78,17 @@ pub fn cover_box(path: Option<&PathBuf>, side: f32, round: f32, pal: Palette) ->
         })
 }
 
+fn picture_file(path: PathBuf, round: f32) -> Img {
+    img(path)
+        .size_full()
+        .rounded(px(round))
+        .object_fit(ObjectFit::Cover)
+}
+
 /// One album: its cover (a play button over it on hover), its name and artist. A click opens it.
 pub fn album_cell(
     album: &Album,
-    covers: &HashMap<String, PathBuf>,
+    covers: &Covers,
     side: f32,
     pal: Palette,
     catalog: &Entity<Catalog>,
@@ -94,7 +115,7 @@ pub fn album_cell(
                 .relative()
                 .child(
                     cover_box(
-                        album.cover.as_ref().and_then(|c| covers.get(c)),
+                        album.cover.as_ref().and_then(|c| covers.get(c, side)),
                         side,
                         10.0,
                         pal,
@@ -236,7 +257,12 @@ impl Render for AlbumGrid {
         let pal = palette(&self.shared, window, cx);
         let (albums, covers, sort, empty): (Option<Arc<[Album]>>, _, _, _) = {
             let c = self.catalog.read(cx);
-            (c.albums.clone(), c.covers.clone(), c.album_sort, c.empty)
+            (
+                c.albums.clone(),
+                Covers::new(c.covers.clone(), window.scale_factor()),
+                c.album_sort,
+                c.empty,
+            )
         };
         if albums.is_some() && self.shown_sort != Some(sort) {
             if self.shown_sort.is_some() {
