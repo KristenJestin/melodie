@@ -91,7 +91,8 @@ impl Logged {
 fn the_levels_of_a_known_sound_served_by_the_fake_server() {
     let l = Logged::new();
     l.ramp("s0");
-    assert_eq!(l.fetch("s0\n").code, 0);
+    // the whole stream, as long as the track is said to be
+    assert_eq!(l.fetch("s0\t3\n").code, 0);
     let levels = waveform::read(&l.env(), "s0").expect("waveform kept");
     assert_eq!(levels.len(), LEVELS);
     // the tone grows louder evenly: low at the start, full at the end, half way in the middle
@@ -99,6 +100,35 @@ fn the_levels_of_a_known_sound_served_by_the_fake_server() {
     assert!(levels[LEVELS - 3] > 235, "end {}", levels[LEVELS - 3]);
     let mid = levels[LEVELS / 2];
     assert!((105..=150).contains(&mid), "middle {mid}");
+}
+
+#[test]
+fn a_stream_cut_short_is_not_kept_and_leaves_no_file() {
+    let l = Logged::new();
+    l.ramp("s0");
+    l.fake
+        .state
+        .stream_secs_of
+        .lock()
+        .unwrap()
+        .insert("s0".into(), 20);
+    l.fake.state.stream_cut.lock().unwrap().push("s0".into());
+    let run = l.fetch("s0\t20\n");
+    assert_eq!(run.code, 0);
+    assert_eq!(waveform::read(&l.env(), "s0"), None, "{}", run.output);
+    assert!(run.output.contains("ended early"), "{}", run.output);
+    // the half that came was decoded into a file, removed after
+    assert_eq!(left_in(&l), Vec::<std::ffi::OsString>::new());
+}
+
+/// The files of the waveforms' folder, but its lock.
+fn left_in(l: &Logged) -> Vec<std::ffi::OsString> {
+    std::fs::read_dir(waveform::dir(&l.env()))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name())
+        .filter(|n| n != ".fetch.lock")
+        .collect()
 }
 
 #[test]

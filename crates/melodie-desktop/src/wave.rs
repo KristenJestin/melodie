@@ -6,7 +6,7 @@
 use crate::covers::Fetch;
 use crate::model::Player;
 use melodie_core::env::Env;
-use melodie_core::waveform;
+use melodie_core::waveform::{self, Ask};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -25,7 +25,7 @@ pub type Levels = Arc<[u8]>;
 pub struct Waves {
     levels: HashMap<String, Levels>,
     /// The tracks wanted now, the current one first.
-    wanted: Vec<String>,
+    wanted: Vec<Ask>,
     tries: HashMap<String, u32>,
     running: bool,
 }
@@ -46,20 +46,20 @@ impl Waves {
     }
 
     /// The tracks the window wants a waveform for now (what it wanted before no longer counts).
-    pub fn want(&mut self, ids: Vec<String>) {
-        self.wanted = ids;
+    pub fn want(&mut self, asks: Vec<Ask>) {
+        self.wanted = asks;
     }
 
     /// The tracks for the next round, unless one is running or nothing is missing.
-    pub fn start(&mut self) -> Option<Vec<String>> {
+    pub fn start(&mut self) -> Option<Vec<Ask>> {
         if self.running {
             return None;
         }
-        let batch: Vec<String> = self
+        let batch: Vec<Ask> = self
             .wanted
             .iter()
-            .filter(|id| !self.levels.contains_key(*id))
-            .filter(|id| self.tries.get(*id).copied().unwrap_or(0) < MAX_TRIES)
+            .filter(|a| !self.levels.contains_key(&a.id))
+            .filter(|a| self.tries.get(&a.id).copied().unwrap_or(0) < MAX_TRIES)
             .cloned()
             .collect();
         self.running = !batch.is_empty();
@@ -85,8 +85,8 @@ impl Waves {
 }
 
 /// The tracks the player wants a waveform for: the current one and the next, whatever changed
-/// (the queue, or only the current track within it).
-pub fn wanted(player: &Player) -> Vec<String> {
+/// (the queue, or only the current track within it), with their lengths.
+pub fn wanted(player: &Player) -> Vec<Ask> {
     let Some(current) = player.current else {
         return Vec::new();
     };
@@ -95,18 +95,21 @@ pub fn wanted(player: &Player) -> Vec<String> {
         .iter()
         .skip(current)
         .take(2)
-        .map(|t| t.id.clone())
+        .map(|t| Ask {
+            id: t.id.clone(),
+            duration: (t.duration > 0.0).then_some(t.duration),
+        })
         .collect()
 }
 
 /// Reads `batch` on disk, has `fetch` compute what is missing, and reads again. Reads files and
 /// waits for the fetch: run it away from the window's thread.
-pub fn round(env: &Env, batch: &[String], fetch: impl FnOnce(&[String]) -> Fetch) -> Round {
+pub fn round(env: &Env, batch: &[Ask], fetch: impl FnOnce(&[Ask]) -> Fetch) -> Round {
     let (mut found, missing) = read(env, batch);
     if missing.is_empty() {
         return Round {
             found,
-            missing,
+            missing: Vec::new(),
             fetch: None,
         };
     }
@@ -115,19 +118,19 @@ pub fn round(env: &Env, batch: &[String], fetch: impl FnOnce(&[String]) -> Fetch
     found.extend(arrived);
     Round {
         found,
-        missing,
+        missing: missing.into_iter().map(|a| a.id).collect(),
         fetch: Some(fetch),
     }
 }
 
-/// The waveforms of `ids` kept on disk, and the ids without one.
-fn read(env: &Env, ids: &[String]) -> (Vec<(String, Levels)>, Vec<String>) {
+/// The waveforms of `asks` kept on disk, and the tracks without one.
+fn read(env: &Env, asks: &[Ask]) -> (Vec<(String, Levels)>, Vec<Ask>) {
     let mut found = Vec::new();
     let mut missing = Vec::new();
-    for id in ids {
-        match waveform::read(env, id) {
-            Some(levels) => found.push((id.clone(), Levels::from(levels))),
-            None => missing.push(id.clone()),
+    for ask in asks {
+        match waveform::read(env, &ask.id) {
+            Some(levels) => found.push((ask.id.clone(), Levels::from(levels))),
+            None => missing.push(ask.clone()),
         }
     }
     (found, missing)
@@ -194,6 +197,15 @@ mod tests {
         list.iter().map(|s| s.to_string()).collect()
     }
 
+    fn asks(list: &[&str]) -> Vec<Ask> {
+        list.iter()
+            .map(|s| Ask {
+                id: s.to_string(),
+                duration: None,
+            })
+            .collect()
+    }
+
     fn found(id: &str) -> (String, Levels) {
         (id.to_string(), Arc::from(vec![9; LEVELS]))
     }
@@ -201,10 +213,10 @@ mod tests {
     #[test]
     fn the_current_track_and_the_next_one_are_asked_and_nothing_else() {
         let mut w = Waves::default();
-        w.want(ids(&["t1", "t2"]));
-        assert_eq!(w.start(), Some(ids(&["t1", "t2"])));
+        w.want(asks(&["t1", "t2"]));
+        assert_eq!(w.start(), Some(asks(&["t1", "t2"])));
         // one round at a time
-        w.want(ids(&["t2", "t3"]));
+        w.want(asks(&["t2", "t3"]));
         assert_eq!(w.start(), None);
         let wait = w.finish(Round {
             found: vec![found("t1"), found("t2")],
@@ -213,7 +225,7 @@ mod tests {
         });
         assert!(!wait);
         // the next track became current: only what is still missing of what is wanted now
-        assert_eq!(w.start(), Some(ids(&["t3"])));
+        assert_eq!(w.start(), Some(asks(&["t3"])));
     }
 
     #[test]
@@ -222,11 +234,13 @@ mod tests {
             .map(|n| QueueEntry {
                 entry: n,
                 id: format!("t{n}"),
+                duration: if n == 2 { 0.0 } else { 200.0 + n as f64 },
                 ..QueueEntry::default()
             })
             .collect();
         let (mut p, mut c, at) = (Player::default(), Clock::default(), Instant::now());
-        assert_eq!(wanted(&p), Vec::<String>::new());
+        let wanted_ids = |p: &Player| wanted(p).into_iter().map(|a| a.id).collect::<Vec<_>>();
+        assert_eq!(wanted(&p), vec![]);
         p.apply(
             &Event::Queue {
                 queue: QueueView {
@@ -237,7 +251,9 @@ mod tests {
             &mut c,
             at,
         );
-        assert_eq!(wanted(&p), ids(&["t1", "t2"]));
+        // with their lengths, when they are known
+        let durations: Vec<_> = wanted(&p).into_iter().map(|a| a.duration).collect();
+        assert_eq!(durations, vec![Some(201.0), None]);
         let queue = p.tracks.clone();
         // the album goes on, then a later track is clicked: the queue itself does not change
         for (index, want) in [(2, ["t3", "t4"]), (6, ["t7", "t8"])] {
@@ -250,7 +266,7 @@ mod tests {
                 at,
             );
             assert!(Arc::ptr_eq(&queue, &p.tracks));
-            assert_eq!(wanted(&p), ids(&want));
+            assert_eq!(wanted_ids(&p), ids(&want));
         }
         // the last track: no next one
         p.apply(
@@ -261,30 +277,30 @@ mod tests {
             &mut c,
             at,
         );
-        assert_eq!(wanted(&p), ids(&["t10"]));
+        assert_eq!(wanted_ids(&p), ids(&["t10"]));
     }
 
     #[test]
     fn a_waveform_in_hand_is_not_asked_again() {
         let mut w = Waves::default();
-        w.want(ids(&["t1"]));
+        w.want(asks(&["t1"]));
         let batch = w.start().unwrap();
         w.finish(Round {
-            found: vec![found(&batch[0])],
+            found: vec![found(&batch[0].id)],
             missing: vec![],
             fetch: None,
         });
         assert!(w.get("t1").is_some());
-        w.want(ids(&["t1"]));
+        w.want(asks(&["t1"]));
         assert_eq!(w.start(), None);
     }
 
     #[test]
     fn a_waveform_that_cannot_be_computed_is_tried_a_bounded_number_of_times() {
         let mut w = Waves::default();
-        w.want(ids(&["t1"]));
+        w.want(asks(&["t1"]));
         for _ in 0..MAX_TRIES {
-            assert_eq!(w.start(), Some(ids(&["t1"])));
+            assert_eq!(w.start(), Some(asks(&["t1"])));
             w.finish(Round {
                 found: vec![],
                 missing: ids(&["t1"]),
@@ -298,16 +314,16 @@ mod tests {
     #[test]
     fn a_locked_fetch_is_asked_again_without_using_up_the_tries() {
         let mut w = Waves::default();
-        w.want(ids(&["t1"]));
+        w.want(asks(&["t1"]));
         for _ in 0..MAX_TRIES + 2 {
-            assert_eq!(w.start(), Some(ids(&["t1"])));
+            assert_eq!(w.start(), Some(asks(&["t1"])));
             assert!(w.finish(Round {
                 found: vec![],
                 missing: ids(&["t1"]),
                 fetch: Some(Fetch::Locked),
             }));
         }
-        assert_eq!(w.start(), Some(ids(&["t1"])));
+        assert_eq!(w.start(), Some(asks(&["t1"])));
     }
 
     #[test]
@@ -317,7 +333,7 @@ mod tests {
         let kept: Vec<u8> = (0..LEVELS).map(|i| (i % 256) as u8).collect();
         waveform::write(&env, "t1", &kept).unwrap();
         let fetched = Cell::new(false);
-        let r = round(&env, &ids(&["t1"]), |_| {
+        let r = round(&env, &asks(&["t1"]), |_| {
             fetched.set(true);
             Fetch::Done
         });
@@ -331,8 +347,8 @@ mod tests {
     fn what_the_fetch_computed_is_read_after_it() {
         let dir = tempfile::tempdir().unwrap();
         let env = Env::with_home(dir.path());
-        let r = round(&env, &ids(&["t1", "t2"]), |missing| {
-            assert_eq!(missing, ids(&["t1", "t2"]).as_slice());
+        let r = round(&env, &asks(&["t1", "t2"]), |missing| {
+            assert_eq!(missing, asks(&["t1", "t2"]).as_slice());
             waveform::write(&env, "t2", &[5; LEVELS]).unwrap();
             Fetch::Done
         });

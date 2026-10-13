@@ -83,15 +83,51 @@ pub fn levels_from(pcm: impl Read, samples: usize) -> std::io::Result<Vec<u8>> {
         .collect())
 }
 
-/// The track ids of `waveform-fetch`'s input, one per line, each once.
-pub fn parse_ids(input: &str) -> Vec<String> {
-    let mut ids: Vec<String> = Vec::new();
-    for id in input.lines().map(str::trim).filter(|l| !l.is_empty()) {
-        if !ids.iter().any(|i| i == id) {
-            ids.push(id.to_string());
+/// A track `waveform-fetch` is asked for: one line of its input, `id` or `id<TAB>seconds`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ask {
+    pub id: String,
+    /// The length of the track, when the asker knows it: a stream that ends well before it is
+    /// not kept.
+    pub duration: Option<f64>,
+}
+
+impl Ask {
+    /// Its line of `waveform-fetch`'s input.
+    pub fn line(&self) -> String {
+        match self.duration {
+            Some(d) => format!("{}\t{d}", self.id),
+            None => self.id.clone(),
         }
     }
-    ids
+}
+
+/// The tracks of `waveform-fetch`'s input, one per line, each once.
+pub fn parse_asks(input: &str) -> Vec<Ask> {
+    let mut asks: Vec<Ask> = Vec::new();
+    for line in input.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        let (id, duration) = match line.split_once('\t') {
+            Some((id, secs)) => (
+                id.trim(),
+                secs.trim().parse().ok().filter(|d: &f64| *d > 0.0),
+            ),
+            None => (line, None),
+        };
+        if !asks.iter().any(|a| a.id == id) {
+            asks.push(Ask {
+                id: id.to_string(),
+                duration,
+            });
+        }
+    }
+    asks
+}
+
+/// Whether `decoded` seconds of audio are the whole of a track of `expected` seconds: mpv ends a
+/// stream whose connection dropped as if it were complete. Short by 2 s or 3 % at most (the
+/// larger), as the length the server gives is rounded and decoders trim a little.
+pub fn whole(decoded: f64, expected: Option<f64>) -> bool {
+    expected.is_none_or(|e| e - decoded <= (e * 0.03).max(2.0))
 }
 
 #[cfg(test)]
@@ -195,9 +231,36 @@ mod tests {
 
     #[test]
     fn each_id_is_read_once() {
+        let ask = |id: &str, duration| Ask {
+            id: id.into(),
+            duration,
+        };
         assert_eq!(
-            parse_ids(" t1\n\nt2\nt1\n"),
-            vec!["t1".to_string(), "t2".to_string()]
+            parse_asks(" t1\t241.5\n\nt2\nt1\nt3\tsoon\nt4\t0\n"),
+            vec![
+                ask("t1", Some(241.5)),
+                ask("t2", None),
+                ask("t3", None),
+                ask("t4", None)
+            ]
         );
+        let asks = vec![ask("t1", Some(200.0)), ask("t2", None)];
+        let lines: Vec<String> = asks.iter().map(Ask::line).collect();
+        assert_eq!(parse_asks(&lines.join("\n")), asks);
+    }
+
+    #[test]
+    fn a_stream_that_ended_early_is_not_whole() {
+        // a 4 minute track: 3 % (7.2 s), more than 2 s
+        assert!(whole(240.0, Some(240.0)));
+        assert!(whole(233.0, Some(240.0)));
+        assert!(!whole(232.0, Some(240.0)));
+        assert!(!whole(120.0, Some(240.0)));
+        // a short track: 2 s
+        assert!(whole(28.1, Some(30.0)));
+        assert!(!whole(27.9, Some(30.0)));
+        // longer than said, or no length to compare with
+        assert!(whole(250.0, Some(240.0)));
+        assert!(whole(3.0, None));
     }
 }

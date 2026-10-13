@@ -49,6 +49,9 @@ pub struct State {
     /// Songs whose stream is a tone growing louder, from silence to full ([`wav_ramp`]), instead
     /// of silence: a sound whose loudness is known along it.
     pub stream_ramp: Mutex<Vec<String>>,
+    /// Songs whose stream stops half way, its connection closed before the length it announced,
+    /// as when the link drops.
+    pub stream_cut: Mutex<Vec<String>>,
     pub n_requests: AtomicUsize,
     /// Délai en millisecondes avant chaque pochette servie.
     pub cover_delay_ms: AtomicUsize,
@@ -165,6 +168,7 @@ impl Fake {
             stream_secs: AtomicUsize::new(3),
             stream_secs_of: Mutex::new(HashMap::new()),
             stream_ramp: Mutex::new(Vec::new()),
+            stream_cut: Mutex::new(Vec::new()),
             n_requests: AtomicUsize::new(0),
             cover_delay_ms: AtomicUsize::new(0),
             hold: AtomicBool::new(false),
@@ -224,7 +228,11 @@ impl Fake {
                             body.len()
                         );
                         let _ = s.write_all(head.as_bytes());
-                        let _ = s.write_all(&body);
+                        let cut = method == "stream"
+                            && param(query, "id")
+                                .is_some_and(|id| st.stream_cut.lock().unwrap().contains(&id));
+                        let sent = if cut { body.len() / 2 } else { body.len() };
+                        let _ = s.write_all(&body[..sent]);
                         return;
                     }
                     let (status, body) = st.respond(&method, query);

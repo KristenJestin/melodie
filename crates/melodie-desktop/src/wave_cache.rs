@@ -5,6 +5,7 @@
 use gpui_kit::*;
 use melodie_core::cover::LOCKED_EXIT;
 use melodie_core::env::Env;
+use melodie_core::waveform::Ask;
 use melodie_desktop::covers::{Fetch, LOCK_WAIT};
 use melodie_desktop::launch;
 use melodie_desktop::wave::{self, Levels, Waves};
@@ -28,8 +29,8 @@ impl WaveCache {
     }
 
     /// The tracks to have a waveform for now: the current one, then the next.
-    pub fn want(&mut self, ids: Vec<String>, cx: &mut Context<Self>) {
-        self.waves.want(ids);
+    pub fn want(&mut self, asks: Vec<Ask>, cx: &mut Context<Self>) {
+        self.waves.want(asks);
         self.pump(cx);
     }
 
@@ -62,9 +63,9 @@ impl WaveCache {
     }
 }
 
-/// `melodie waveform-fetch` with the track ids on its standard input; waits for it. Blocking: run
-/// it away from the window.
-fn fetch_waves(ids: &[String]) -> Fetch {
+/// `melodie waveform-fetch` with the tracks on its standard input; waits for it. Blocking: run it
+/// away from the window.
+fn fetch_waves(asks: &[Ask]) -> Fetch {
     let program = launch::program(std::env::current_exe().ok().as_deref());
     let child = std::process::Command::new(program)
         .arg("waveform-fetch")
@@ -76,7 +77,8 @@ fn fetch_waves(ids: &[String]) -> Fetch {
         return Fetch::Failed;
     };
     if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(ids.join("\n").as_bytes());
+        let lines: Vec<String> = asks.iter().map(Ask::line).collect();
+        let _ = stdin.write_all(lines.join("\n").as_bytes());
     }
     match child.wait().map(|s| s.code()) {
         Ok(Some(0)) => Fetch::Done,

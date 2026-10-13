@@ -9,7 +9,7 @@ use libmpv2::{Mpv, mpv_end_file_reason};
 use melodie_core::api::{Client, SecretUrl};
 use melodie_core::cover::LOCKED_EXIT;
 use melodie_core::env::Env;
-use melodie_core::waveform::{self, RATE};
+use melodie_core::waveform::{self, Ask, RATE};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
@@ -61,37 +61,42 @@ pub fn fetch_cmd(env: &Env) -> Result<ExitCode> {
     }
     let mut input = String::new();
     std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)?;
-    let ids: Vec<String> = waveform::parse_ids(&input)
+    let asks: Vec<Ask> = waveform::parse_asks(&input)
         .into_iter()
-        .filter(|id| waveform::read(env, id).is_none())
+        .filter(|a| waveform::read(env, &a.id).is_none())
         .collect();
-    if ids.is_empty() {
+    if asks.is_empty() {
         return Ok(ExitCode::SUCCESS);
     }
     let Ok(client) = melodie_core::state::open_client(env) else {
         return Ok(ExitCode::SUCCESS);
     };
-    for id in ids {
-        match compute(&client, &dir, &id) {
-            Ok(levels) => waveform::write(env, &id, &levels)?,
-            Err(e) => eprintln!("melodie: waveform of {id}: {e:#}"),
+    for ask in asks {
+        match compute(&client, &dir, &ask) {
+            Ok(levels) => waveform::write(env, &ask.id, &levels)?,
+            Err(e) => eprintln!("melodie: waveform of {}: {e:#}", ask.id),
         }
     }
     Ok(ExitCode::SUCCESS)
 }
 
-/// The levels of the track `id`, decoded into a file of `dir` that is removed after.
-fn compute(client: &Client, dir: &Path, id: &str) -> Result<Vec<u8>> {
+/// The levels of the track asked, decoded into a file of `dir` that is removed after.
+fn compute(client: &Client, dir: &Path, ask: &Ask) -> Result<Vec<u8>> {
     let pcm = dir.join(format!(".decode-{}.pcm", std::process::id()));
-    let levels = decode(&client.stream_url(id), &pcm).and_then(|()| read_levels(&pcm));
+    let levels =
+        decode(&client.stream_url(&ask.id), &pcm).and_then(|()| read_levels(&pcm, ask.duration));
     let _ = std::fs::remove_file(&pcm);
     levels
 }
 
-/// The levels of the decoded file `pcm`, read in one pass.
-fn read_levels(pcm: &Path) -> Result<Vec<u8>> {
+/// The levels of the decoded file `pcm`, read in one pass, unless it is shorter than the track's
+/// `duration`: a stream cut short would be kept stretched for ever.
+fn read_levels(pcm: &Path, duration: Option<f64>) -> Result<Vec<u8>> {
     let file = std::fs::File::open(pcm).context("opening the decoded audio")?;
     let samples = file.metadata()?.len() as usize / 2;
+    if !waveform::whole(samples as f64 / f64::from(RATE), duration) {
+        bail!("the stream ended early");
+    }
     waveform::levels_from(file, samples).context("reading the decoded audio")
 }
 

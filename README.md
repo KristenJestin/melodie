@@ -132,7 +132,8 @@ Screenshots and a recording of the animations, made with invented data, are in
   and clicked as before. Navidrome gives none: `melodie waveform-fetch` (hidden, started by the
   window) downloads the stream a second time and decodes it with a private libmpv that writes to
   a file (`ao=pcm`, mono, 8 kHz: never a sound output, never the daemon's mpv), at the lowest
-  priority, then keeps 400 levels in `~/.cache/melodie/waveforms/<id>.wave`. It is asked for the
+  priority, then keeps 400 levels in `~/.cache/melodie/waveforms/<id>.wave`; a stream that ends
+  well before the track's length (a dropped connection) is not kept. It is asked for the
   current track and the next one only, one `waveform-fetch` at a time (lock
   `waveforms/.fetch.lock`, exit 75 when taken: the window asks again a little later); one that
   fails is tried twice, then the plain bar stays. While there is no waveform the plain bar
