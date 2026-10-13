@@ -177,6 +177,22 @@ Screenshots and a recording of the animations, made with invented data, are in
   single track), play next, add to the queue, open the album (a track), add to a playlist (a track
   or an album). The local copy is read away from the window's thread, and the answer to an older
   keystroke is never shown over a newer one; the search never touches the network.
+- **The menu of an item**: a right click on a track (any list, the search, the queue, the
+  player and the player bar), an album, an artist, a playlist (the sidebar, the home, the search)
+  or a mix card opens a menu of what can be done with it. A track: play, play next, add to the
+  queue, instant mix, add to a playlist, like or unlike, go to its album or its artist; in the
+  user's playlist, remove it from there; in the queue, play it there or remove it. An album or an
+  artist: play, shuffle, play next, add to the queue, instant mix, add to a playlist, like or
+  unlike, and an album's artist. A playlist: play, shuffle, play next, add to the queue, add to
+  another playlist, and for the user's own, rename and delete (with the confirmation). A mix:
+  play, add to the queue (`melodie mix` has no "next"). What cannot apply is left out: the track
+  playing is not offered to play, a page is not offered from that page, a heart only once the
+  local copy says whether it is a favourite. "Add to playlist" opens the user's playlists beside
+  it, and "New playlist…"; the choice goes through the same dialogs as above (an artist's or a
+  playlist's tracks are read from the local copy). The menu opens at the pointer and stays
+  inside the window; the arrows, Enter, Right and Left (the playlists) and Escape work in it; a
+  click beside it closes it and goes no further. The menu key or Shift+F10 opens it on the row
+  picked (the one clicked last), at the pointer.
 - **Keys**: Ctrl+F, or / when not typing, opens the search and puts the cursor in its field;
   Space plays or pauses (in the field, it is a space); `q` shows or hides the queue (in the field,
   it is a letter); Escape closes a dialog, else the queue laid over a narrow window or the
