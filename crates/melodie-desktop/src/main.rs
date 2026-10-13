@@ -1,4 +1,4 @@
-//! `melodie-gui`: the window. A client of the daemon like `melodie watch`; closing it never stops
+//! `melodie-desktop`: the window. A client of the daemon like `melodie watch`; closing it never stops
 //! the music, and it never plays sound itself.
 
 mod albums;
@@ -24,8 +24,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use melodie_core::env::Env;
 use melodie_core::proto::{self, Request};
-use melodie_gui::browse::Place;
-use melodie_gui::theme::{self, Active, Choice, Palette};
+use melodie_desktop::browse::Place;
+use melodie_desktop::theme::{self, Active, Choice, Palette};
 use mini::MiniPlayer;
 use pages::{HomeView, PageView};
 use player::{PlayerView, palette};
@@ -390,14 +390,14 @@ fn main() -> ExitCode {
     let env = match Env::from_process() {
         Ok(e) => e,
         Err(e) => {
-            eprintln!("melodie-gui: {e:#}");
+            eprintln!("melodie-desktop: {e:#}");
             return ExitCode::from(2);
         }
     };
     let socket = match proto::socket_path() {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("melodie-gui: {e:#}");
+            eprintln!("melodie-desktop: {e:#}");
             return ExitCode::from(2);
         }
     };
@@ -441,7 +441,7 @@ fn main() -> ExitCode {
             cx.new(|cx| Root::new(shared, catalog, views, window, cx))
         });
         if let Err(e) = opened {
-            eprintln!("melodie-gui: no window: {e:#}");
+            eprintln!("melodie-desktop: no window: {e:#}");
             cx.quit();
             return;
         }

@@ -11,8 +11,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use melodie_core::proto::Request;
 use melodie_core::track::clock;
-use melodie_gui::model::Row;
-use melodie_gui::theme::Palette;
+use melodie_desktop::model::Row;
+use melodie_desktop::theme::Palette;
 use std::path::PathBuf;
 
 const ROW: f32 = 56.0;

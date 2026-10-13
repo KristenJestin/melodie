@@ -1,10 +1,10 @@
 //! How long each view takes to read the local copy, for measuring the window (feature
-//! `frame-stats`, with `MELODIE_GUI_FRAME_STATS` set): one line on the standard error per read.
+//! `frame-stats`, with `MELODIE_DESKTOP_FRAME_STATS` set): one line on the standard error per read.
 
 use std::time::Duration;
 
 pub fn on() -> bool {
-    cfg!(feature = "frame-stats") && std::env::var_os("MELODIE_GUI_FRAME_STATS").is_some()
+    cfg!(feature = "frame-stats") && std::env::var_os("MELODIE_DESKTOP_FRAME_STATS").is_some()
 }
 
 pub fn note(what: &str, took: Duration) {

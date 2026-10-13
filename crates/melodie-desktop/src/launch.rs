@@ -242,7 +242,7 @@ mod tests {
     #[test]
     fn melodie_beside_the_window_first() {
         let dir = tempfile::tempdir().unwrap();
-        let gui = dir.path().join("melodie-gui");
+        let gui = dir.path().join("melodie-desktop");
         assert_eq!(program(Some(&gui)), PathBuf::from("melodie"));
         std::fs::write(dir.path().join("melodie"), "").unwrap();
         assert_eq!(program(Some(&gui)), dir.path().join("melodie"));

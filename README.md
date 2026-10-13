@@ -2,7 +2,7 @@
 
 A music player for a Navidrome server (Subsonic / OpenSubsonic API, tried on Navidrome 0.63) on
 Linux (Wayland), written in Rust: a background daemon, a command line, a local copy of the library
-and mixes computed locally, and a window (`melodie-gui`), one more client of the same daemon.
+and mixes computed locally, and a window (`melodie-desktop`), one more client of the same daemon.
 
 Agents read `AGENTS.md`. Work in progress: see the issues.
 
@@ -20,7 +20,7 @@ A Cargo workspace under `crates/`:
   preferences. Its `fake` feature exposes the fake local server the tests talk to.
 - `melodie`: the program: command line, daemon (libmpv), MPRIS, desktop notifications and the
   background synchronisation launcher.
-- `melodie-gui`: the window (gpui-kit on GPUI Fast, see [docs/gui-toolkit.md](docs/gui-toolkit.md)).
+- `melodie-desktop`: the window (gpui-kit on GPUI Fast, see [docs/gui-toolkit.md](docs/gui-toolkit.md)).
   A program of its own, so that the command line stays small and quick to start and does not pay
   for the window's build. Its first build is long (several minutes); without the default
   `gpui-fast` feature it builds on upstream GPUI from the same source.
@@ -88,7 +88,7 @@ have is "not found" (code 5, see "Connection states"), also without starting the
 
 ## The window
 
-`melodie-gui` opens the library, the player and its queue. It needs a Wayland or X11 session with a Vulkan
+`melodie-desktop` opens the library, the player and its queue. It needs a Wayland or X11 session with a Vulkan
 driver, and the `melodie` program beside it (same folder, as a build leaves them) or on the
 `PATH`.
 
@@ -136,7 +136,7 @@ Screenshots and a recording of the animations, made with invented data, are in
   own.
 - **Animations**: every change of view, panel or state is short and interruptible, and follows
   the desktop's reduced-motion setting. An unfocused window keeps animating at the screen's rate.
-- Measuring: built with the `frame-stats` feature and run with `MELODIE_GUI_FRAME_STATS=<file>`,
+- Measuring: built with the `frame-stats` feature and run with `MELODIE_DESKTOP_FRAME_STATS=<file>`,
   the window writes the time of each frame and how long it took to draw, and says on its error
   output how long each view took to read the local copy (for measurements only).
 

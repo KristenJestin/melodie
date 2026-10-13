@@ -1,5 +1,5 @@
 //! Frame times, to measure the window (feature `frame-stats`, not in the program people run).
-//! With `MELODIE_GUI_FRAME_STATS=<file>`, writes one line per frame from GPUI's own frame trace:
+//! With `MELODIE_DESKTOP_FRAME_STATS=<file>`, writes one line per frame from GPUI's own frame trace:
 //! the time it was presented (seconds since the window started) and how long it took to draw
 //! (milliseconds). Telling a dropped frame from a pause between two animations is left to the
 //! reader, who knows what the window was asked to do.
@@ -10,7 +10,7 @@ use std::io::Write as _;
 use std::time::{Duration, Instant};
 
 pub fn start(cx: &mut App) {
-    let Some(path) = std::env::var_os("MELODIE_GUI_FRAME_STATS") else {
+    let Some(path) = std::env::var_os("MELODIE_DESKTOP_FRAME_STATS") else {
         return;
     };
     let Ok(mut out) = std::fs::File::create(path) else {

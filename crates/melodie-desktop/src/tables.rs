@@ -13,9 +13,9 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use melodie_core::library::{Artist, ArtistBy, Sort, Track, TrackBy};
 use melodie_core::track::clock;
-use melodie_gui::browse::Place;
-use melodie_gui::launch::{Job, Kind};
-use melodie_gui::theme::Palette;
+use melodie_desktop::browse::Place;
+use melodie_desktop::launch::{Job, Kind};
+use melodie_desktop::theme::Palette;
 use std::sync::Arc;
 
 pub const TRACK_ROW: f32 = 40.0;

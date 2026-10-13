@@ -1,5 +1,5 @@
 [package]
-name = "melodie-gui"
+name = "melodie-desktop"
 description = "The window of Mélodie: the library, the player and the queue, one more client of the daemon"
 version.workspace = true
 edition.workspace = true
@@ -10,7 +10,7 @@ publish.workspace = true
 default = ["gpui-fast"]
 # GPUI Fast behind gpui-kit (docs/gui-toolkit.md); without it, upstream GPUI from the same source.
 gpui-fast = ["gpui-kit/gpui-fast"]
-# Frame statistics for measuring the window (`MELODIE_GUI_FRAME_STATS`); off in the program people run.
+# Frame statistics for measuring the window (`MELODIE_DESKTOP_FRAME_STATS`); off in the program people run.
 frame-stats = ["gpui-kit/profiler"]
 
 [dependencies]

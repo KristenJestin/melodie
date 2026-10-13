@@ -11,8 +11,8 @@ use gpui_kit::component::Icon;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use melodie_core::proto::Request;
-use melodie_gui::browse::Place;
-use melodie_gui::model::PlayState;
+use melodie_desktop::browse::Place;
+use melodie_desktop::model::PlayState;
 
 pub const HEIGHT: f32 = 68.0;
 
