@@ -785,8 +785,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let env = Env::with_home(dir.path());
         std::fs::create_dir_all(env.state_dir()).unwrap();
-        std::fs::write(Settings::path(&env), "recent = 12").unwrap();
-        assert!(Settings::load(&env).recent.is_empty());
+        // a value of the wrong kind loses the recents only, not the theme beside them
+        std::fs::write(Settings::path(&env), "theme = \"base\"\nrecent = 12\n").unwrap();
+        let s = Settings::load(&env);
+        assert!(s.recent.is_empty());
+        assert_eq!(s.theme, Some(crate::theme::Choice::Base));
+        Settings::update(&env, |s| s.recent = vec![Seen::Album("al1".into())]).unwrap();
+        assert_eq!(
+            Settings::load(&env).theme,
+            Some(crate::theme::Choice::Base),
+            "and the next write keeps the theme"
+        );
         std::fs::write(Settings::path(&env), "\u{0}\u{1} not toml").unwrap();
         assert!(Settings::load(&env).recent.is_empty());
         // one entry this version does not know is skipped; the theme and the others stay

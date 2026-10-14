@@ -278,8 +278,11 @@ pub struct Settings {
 }
 
 fn known_entries<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Seen>, D::Error> {
-    let all = Vec::<toml::Value>::deserialize(d)?;
-    Ok(all.into_iter().filter_map(|v| v.try_into().ok()).collect())
+    // anything but a list is no recents: it never takes the theme down with it
+    Ok(match toml::Value::deserialize(d)? {
+        toml::Value::Array(all) => all.into_iter().filter_map(|v| v.try_into().ok()).collect(),
+        _ => Vec::new(),
+    })
 }
 
 impl Settings {
