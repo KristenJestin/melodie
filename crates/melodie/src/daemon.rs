@@ -1428,6 +1428,64 @@ mod tests {
         );
     }
 
+    /// An mpv whose core is held before it starts its playlist, until `release` exists: mpv
+    /// waits for the first lines of its scripts to run before it goes on.
+    fn held_mpv(dir: &std::path::Path) -> (Arc<Mpv>, std::path::PathBuf) {
+        let release = dir.join("release");
+        let script = dir.join("hold.lua");
+        std::fs::write(
+            &script,
+            format!(
+                "while not io.open({:?}) do os.execute('sleep 0.01') end\n",
+                release.to_str().unwrap()
+            ),
+        )
+        .unwrap();
+        let mpv = Mpv::with_initializer(|init| {
+            init.set_option("vid", "no")?;
+            init.set_option("ao", "null")?;
+            init.set_option("idle", "yes")?;
+            init.set_option("load-scripts", "no")?;
+            init.set_option("scripts", script.to_str().unwrap())?;
+            Ok(())
+        })
+        .expect("libmpv");
+        (Arc::new(mpv), release)
+    }
+
+    /// Two endless silent tracks, the second one asked first, as `load` does with a start of
+    /// 1; appended then moved, which every mpv knows.
+    fn load_from_the_second(mpv: &Mpv) {
+        let silence = "av://lavfi:anullsrc";
+        mpv.command("loadfile", &[silence, "replace"]).unwrap();
+        mpv.command("loadfile", &[silence, "append"]).unwrap();
+        mpv.command("playlist-move", &["1", "0"]).unwrap();
+        assert_eq!(mpv.get_property::<i64>("playlist-pos").unwrap(), 1);
+    }
+
+    /// The entry mpv really started.
+    fn playing(mpv: &Mpv) -> i64 {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let p = mpv.get_property::<i64>("playlist-playing-pos").unwrap();
+            if p >= 0 || Instant::now() > deadline {
+                return p;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// The cause of #91: mpv's core, as it starts, sends its playlist back to the first entry,
+    /// so what was loaded before plays from the first track whatever was asked.
+    #[test]
+    fn mpv_plays_from_the_first_entry_what_was_loaded_before_its_core_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mpv, release) = held_mpv(dir.path());
+        load_from_the_second(&mpv);
+        std::fs::write(&release, "").unwrap();
+        assert_eq!(playing(&mpv), 0);
+    }
+
     /// The daemon has no window, terminal or key bindings: mpv's built-in Lua scripts (OSC,
     /// console, stats…) only make every start heavier.
     #[test]
