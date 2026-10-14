@@ -740,6 +740,18 @@ mod tests {
     }
 
     #[test]
+    fn a_scan_between_the_cut_and_the_resume_makes_the_next_sync_full() {
+        let (_d, env, fake, client) = setup(1203);
+        *fake.state.fail_from_song.lock().unwrap() = Some(500);
+        assert!(run(&env, &client, false).is_err());
+        *fake.state.fail_from_song.lock().unwrap() = None;
+        *fake.state.last_scan.lock().unwrap() = "2026-10-02T10:00:00Z".into();
+        run(&env, &client, false).unwrap();
+        assert_eq!(run(&env, &client, false).unwrap().kind, Kind::Full);
+        assert_eq!(run(&env, &client, false).unwrap().kind, Kind::Light);
+    }
+
+    #[test]
     fn a_reader_holding_the_copy_a_few_seconds_does_not_fail_the_first_copy() {
         let (_d, env, fake, client) = setup(1203);
         *fake.state.fail_from_song.lock().unwrap() = Some(500);
