@@ -82,6 +82,18 @@ pub fn try_lock(path: &Path) -> Result<Option<std::fs::File>> {
     }
 }
 
+/// The sync lock, tried twice: a look at whether a run holds it (`melodie status`, the window)
+/// takes it a moment, and a `melodie sync` started then is not one already running.
+pub fn lock_soon(path: &Path) -> Result<Option<std::fs::File>> {
+    match try_lock(path)? {
+        None => {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            try_lock(path)
+        }
+        held => Ok(held),
+    }
+}
+
 /// Une synchronisation tourne-t-elle ? (Verrou pris puis relâché aussitôt.)
 pub fn is_running() -> bool {
     matches!(lock_path().and_then(|p| try_lock(&p)), Ok(None))
@@ -256,6 +268,24 @@ mod tests {
         assert!(try_lock(&p).unwrap().is_none());
         drop(a);
         assert!(try_lock(&p).unwrap().is_some());
+    }
+
+    #[test]
+    fn a_lock_held_a_moment_by_a_look_is_taken_after_it() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("run/sync.lock");
+        // the window looks whether a run holds it: taken, and let go at once
+        let look = try_lock(&p).unwrap();
+        let let_go = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            drop(look);
+        });
+        assert!(lock_soon(&p).unwrap().is_some());
+        let_go.join().unwrap();
+        // a run that holds it on is still told apart
+        let run = try_lock(&p).unwrap();
+        assert!(lock_soon(&p).unwrap().is_none());
+        drop(run);
     }
 
     fn env_connecte() -> (tempfile::TempDir, Env) {

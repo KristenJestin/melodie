@@ -716,7 +716,7 @@ fn playlists_cmd(env: &Env) -> Result<Vec<search::Hit>, Failure> {
 
 fn sync_cmd(env: &Env, full: bool) -> Result<(), Failure> {
     // Une seule synchronisation à la fois, celle-ci comprise.
-    let Some(_lock) = autosync::try_lock(&autosync::lock_path()?)? else {
+    let Some(_lock) = autosync::lock_soon(&autosync::lock_path()?)? else {
         println!("Une synchronisation est déjà en cours");
         return Ok(());
     };
