@@ -236,6 +236,9 @@ fn full_into(client: &Client, path: &std::path::Path) -> Result<Report, Failure>
 /// The `lastScan` the server gave when the first copy began, stored at its end: a scan made while
 /// it ran, interruptions included, brings a full copy next.
 const COPY_SCAN: &str = "copy_scan";
+/// The server and the user a first copy is made from: it is taken up again only for them.
+const COPY_SERVER: &str = "copy_server";
+const COPY_USER: &str = "copy_user";
 
 /// Starts a first copy: an empty copy that says it is not finished, put in place at once (made
 /// aside then renamed, so that no reader ever sees half a schema).
@@ -246,12 +249,32 @@ fn start_first(client: &Client, target: &Path) -> Result<Connection, Failure> {
         let conn = db::create(&tmp)?;
         db::set_meta(&conn, db::COPYING, &format!("{}:0", KINDS[0].0))?;
         db::set_meta(&conn, COPY_SCAN, &scan)?;
+        db::set_meta(&conn, COPY_SERVER, client.url())?;
+        db::set_meta(&conn, COPY_USER, client.user())?;
     }
     std::fs::rename(&tmp, target)
-        .map_err(|e| anyhow::anyhow!("mise en place de {} : {e}", target.display()))?;
+        .map_err(|e| anyhow::anyhow!("putting {} in place: {e}", target.display()))?;
     let conn = Connection::open(target)?;
     conn.busy_timeout(std::time::Duration::from_secs(2))?;
     Ok(conn)
+}
+
+/// Where a first copy cut off goes on from: the kind (an index in `KINDS`, its length when only
+/// what follows the pages is left) and the offset. `None` when it cannot be read, or when it was
+/// made from another server or for another user: it is started again.
+fn resume_point(conn: &Connection, client: &Client) -> Option<(usize, usize)> {
+    if db::get_meta(conn, COPY_SERVER).as_deref() != Some(client.url())
+        || db::get_meta(conn, COPY_USER).as_deref() != Some(client.user())
+    {
+        return None;
+    }
+    let at = db::get_meta(conn, db::COPYING)?;
+    let (from, offset) = at.split_once(':')?;
+    let offset = offset.parse().ok()?;
+    if from == "end" {
+        return Some((KINDS.len(), 0));
+    }
+    Some((KINDS.iter().position(|k| k.0 == from)?, offset))
 }
 
 /// The first copy, made in place rather than aside: there is no previous copy to protect, and
@@ -259,18 +282,11 @@ fn start_first(client: &Client, target: &Path) -> Result<Connection, Failure> {
 /// it stands is committed with each page (`db::COPYING`): a copy cut off is taken up again there by
 /// the next run, whatever asked for it.
 fn first(env: &Env, client: &Client, partial: Option<Connection>) -> Result<Report, Failure> {
-    let mut conn = match partial {
-        Some(c) => c,
-        None => start_first(client, &db::db_path(env))?,
+    let resumed = partial.and_then(|c| Some((resume_point(&c, client)?, c)));
+    let ((start, offset), mut conn) = match resumed {
+        Some(r) => r,
+        None => ((0, 0), start_first(client, &db::db_path(env))?),
     };
-    let at = db::get_meta(&conn, db::COPYING).unwrap_or_default();
-    let (from, offset) = at.split_once(':').unwrap_or_default();
-    let offset: usize = offset.parse().unwrap_or(0);
-    // `end`, or anything not understood: only what follows the pages is left.
-    let start = KINDS
-        .iter()
-        .position(|k| k.0 == from)
-        .unwrap_or(KINDS.len());
     for (i, (kind, label, insert)) in KINDS.into_iter().enumerate().skip(start) {
         let offset = if i == start { offset } else { 0 };
         page_through(client, kind, label, offset, |items, next| {
@@ -290,8 +306,8 @@ fn first(env: &Env, client: &Client, partial: Option<Connection>) -> Result<Repo
     db::set_meta(&tx, "synced_at", &now_secs().to_string())?;
     db::set_meta(&tx, "full_synced_at", &now_secs().to_string())?;
     tx.execute(
-        "DELETE FROM meta WHERE key IN (?1, ?2)",
-        [db::COPYING, COPY_SCAN],
+        "DELETE FROM meta WHERE key IN (?1, ?2, ?3, ?4)",
+        [db::COPYING, COPY_SCAN, COPY_SERVER, COPY_USER],
     )?;
     tx.commit()?;
     Ok(Report {
@@ -662,6 +678,58 @@ mod tests {
             2,
             "one page of songs and the empty one"
         );
+    }
+
+    #[test]
+    fn a_first_copy_cut_off_for_another_server_or_user_starts_again() {
+        let (_d, env, fake, client) = setup(1203);
+        *fake.state.fail_from_song.lock().unwrap() = Some(500);
+        assert!(run(&env, &client, false).is_err());
+        *fake.state.fail_from_song.lock().unwrap() = None;
+        // the same server, another user
+        let bob = Client::new(
+            &fake.url,
+            Creds {
+                u: "bob".into(),
+                t: token("sesame", "c19b2d"),
+                s: "c19b2d".into(),
+            },
+        );
+        *fake.state.fail_from_song.lock().unwrap() = Some(500);
+        fake.clear_calls();
+        assert!(run(&env, &bob, false).is_err());
+        // artists and albums read again from the start, then the first page of songs
+        assert_eq!(fake.calls_of("search3"), 2 + 2 + 2);
+        *fake.state.fail_from_song.lock().unwrap() = None;
+        // another server, the same user
+        let other = Fake::start(1203, &token("sesame", "c19b2d"));
+        let elsewhere = Client::new(
+            &other.url,
+            Creds {
+                u: "bob".into(),
+                t: token("sesame", "c19b2d"),
+                s: "c19b2d".into(),
+            },
+        );
+        let r = run(&env, &elsewhere, false).unwrap();
+        assert_eq!(r.counts.tracks, 1203);
+        assert_eq!(other.calls_of("search3"), 2 + 2 + 4);
+        assert!(!db::is_partial(&db::open_existing(&env).unwrap().unwrap()));
+    }
+
+    #[test]
+    fn a_first_copy_whose_place_cannot_be_read_starts_again() {
+        let (_d, env, fake, client) = setup(1203);
+        *fake.state.fail_from_song.lock().unwrap() = Some(500);
+        assert!(run(&env, &client, false).is_err());
+        let conn = db::open_existing(&env).unwrap().unwrap();
+        db::set_meta(&conn, db::COPYING, "garbled").unwrap();
+        drop(conn);
+        *fake.state.fail_from_song.lock().unwrap() = None;
+        fake.clear_calls();
+        let r = run(&env, &client, false).unwrap();
+        assert_eq!(r.counts.tracks, 1203);
+        assert_eq!(fake.calls_of("search3"), 2 + 2 + 4);
     }
 
     #[test]

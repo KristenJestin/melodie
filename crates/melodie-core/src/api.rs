@@ -233,6 +233,10 @@ impl Client {
         &self.base
     }
 
+    pub fn user(&self) -> &str {
+        &self.creds.u
+    }
+
     pub fn request(&self, method: &str, extra: &[(&str, String)]) -> Request {
         let mut params = vec![
             ("u".to_string(), self.creds.u.clone()),
