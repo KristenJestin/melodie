@@ -306,12 +306,9 @@ impl Account {
                 return false;
             }
             Step::Gone => {
-                let here = f.started_here;
                 self.stop_following(cx);
                 if matches!(copy, CopyState::Complete(_)) {
                     self.read_copy(cx);
-                } else if here {
-                    self.say("The copy of the library stopped before the end", cx);
                 } else {
                     // the run the window followed is gone: it takes the copy up itself
                     self.sync_now(cx);
@@ -346,38 +343,37 @@ impl Account {
         let me = self.following;
         let env = self.env.clone();
         let program = self.program.clone();
-        let task = cx.background_spawn(async move {
+        // its own thread, not one of the window's: a first copy runs for minutes
+        let (tx, rx) = futures::channel::oneshot::channel();
+        std::thread::spawn(move || {
             let out = std::process::Command::new(program)
                 .arg("sync")
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::piped())
                 .output();
-            match out {
+            let _ = tx.send(match out {
                 Ok(o) => (
                     o.status.code(),
                     store::auth_refused_marked(&env),
                     account::failure_said(o.status.code(), &String::from_utf8_lossy(&o.stderr)),
                 ),
                 Err(e) => (None, false, format!("melodie: {}", e.kind())),
-            }
+            });
         });
         cx.spawn(async move |this, cx| {
-            let (code, refused, said) = task.await;
+            let Ok((code, refused, said)) = rx.await else {
+                return;
+            };
             let _ = this.update(cx, |a, cx| {
                 let mine = a.following == me;
                 match account::sync_end(code, refused, &said) {
                     account::SyncEnd::Done => {
-                        match a.follow.as_mut() {
-                            // another run may hold the copy ("already running"): followed as a
-                            // run the window cannot see end
-                            Some(f) if mine => f.own = false,
-                            // the follower is done: the copy it read last is shown
-                            None => {
-                                a.copy_step += 1;
-                                a.read_copy(cx);
-                            }
-                            Some(_) => {}
+                        // still followed: another run holds the copy ("already running"), or it
+                        // completed after the last look; followed as a run the window cannot see
+                        // end. Already done, the follower read the copy.
+                        if mine && let Some(f) = a.follow.as_mut() {
+                            f.own = false;
                         }
                         a.set_standing(Standing::Ok, cx);
                     }
@@ -812,8 +808,10 @@ mod tests {
     use melodie_core::env::Env;
     use melodie_desktop::account::COPY_FOR;
     use melodie_desktop::account::Standing;
+    use std::cell::RefCell;
     use std::os::unix::fs::PermissionsExt as _;
     use std::path::{Path, PathBuf};
+    use std::rc::Rc;
     use std::time::Duration;
 
     /// A `melodie` that only writes down what it was asked, in `calls`, and exits with `code`.
@@ -830,6 +828,66 @@ mod tests {
         .unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
         (program, calls)
+    }
+
+    /// A `melodie` whose `sync` runs until `stop` is there, as a first copy runs for minutes; it
+    /// writes `end` in `calls` as it exits.
+    fn long_run(dir: &Path) -> (PathBuf, PathBuf) {
+        let calls = dir.join("calls");
+        let program = dir.join("melodie");
+        let stop = dir.join("stop");
+        std::fs::write(
+            &program,
+            format!(
+                "#!/bin/sh\necho \"$@\" >> '{c}'\n[ \"$1\" = sync ] || exit 0\n\
+                 while [ ! -e '{s}' ]; do sleep 0.02; done\necho end >> '{c}'\n",
+                c = calls.display(),
+                s = stop.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (program, calls)
+    }
+
+    /// Lets the window's tasks run until `done`: a `melodie sync` runs on a thread of its own, in
+    /// real time.
+    fn settle(app: &mut TestAppContext, done: impl Fn(&mut TestAppContext) -> bool) {
+        for _ in 0..250 {
+            app.run_until_parked();
+            if done(app) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("the window never got there");
+    }
+
+    /// Lets a `melodie` the window ran, if any, end and be read.
+    fn quiet(app: &mut TestAppContext) {
+        app.run_until_parked();
+        std::thread::sleep(Duration::from_millis(150));
+        app.run_until_parked();
+    }
+
+    /// Everything the bottom of the window says from now on: a notice goes away by itself, and
+    /// the test clock runs on while the window waits.
+    fn notices(app: &mut TestAppContext, a: &Entity<Account>) -> Rc<RefCell<Vec<String>>> {
+        let said = Rc::new(RefCell::new(Vec::new()));
+        let shared = a.read_with(app, |a, _| a.shared.clone());
+        let to = said.clone();
+        app.update(|cx| {
+            cx.observe(&shared, move |s, cx| {
+                let now = s.read(cx).notice().map(|n| n.to_string());
+                if let Some(n) = now
+                    && to.borrow().last() != Some(&n)
+                {
+                    to.borrow_mut().push(n);
+                }
+            })
+            .detach()
+        });
+        said
     }
 
     fn calls(path: &Path) -> Vec<String> {
@@ -892,12 +950,11 @@ mod tests {
             "nothing before the server said yes"
         );
         a.update(&mut app, |a, cx| a.set_standing(Standing::Ok, cx));
-        app.run_until_parked();
+        settle(&mut app, |app| a.read_with(app, |a, _| !a.syncing));
         assert_eq!(calls(&said), ["sync"]);
-        assert!(a.read_with(&app, |a, _| !a.syncing));
         // the login said yes again (a check, another sign-in): no second first copy
         a.update(&mut app, |a, cx| a.set_standing(Standing::Ok, cx));
-        app.run_until_parked();
+        quiet(&mut app);
         assert_eq!(calls(&said), ["sync"]);
     }
 
@@ -915,8 +972,7 @@ mod tests {
         assert!(a.read_with(&app, |a, _| a.syncing && a.filling()));
         // "Sync now" is not a no-op meanwhile
         a.update(&mut app, |a, cx| a.sync_now(cx));
-        app.run_until_parked();
-        assert_eq!(calls(&said), ["sync"]);
+        settle(&mut app, |_| calls(&said) == ["sync"]);
     }
 
     #[test]
@@ -924,12 +980,11 @@ mod tests {
         let mut app = TestAppContext::single();
         let d = tempfile::tempdir().unwrap();
         let env = Env::with_home(d.path());
-        let (program, said) = recorder(d.path(), 0);
-        let _lock = hold_lock(d.path());
+        let (program, said) = long_run(d.path());
         let a = account(&mut app, &env, &program);
+        let notices = notices(&mut app, &a);
         a.update(&mut app, |a, cx| a.set_standing(Standing::Ok, cx));
-        app.run_until_parked();
-        assert_eq!(calls(&said), ["sync"]);
+        settle(&mut app, |_| calls(&said) == ["sync"]);
         let step = a.read_with(&app, |a, _| a.copy_step);
         partial_copy(&env, 3);
         look(&mut app, Duration::from_secs(1));
@@ -938,6 +993,13 @@ mod tests {
             assert_eq!(a.copying.map(|c| c.tracks), Some(3));
             assert!(a.filling());
         });
+        // its own run stands still a while (a slow server), holding no lock the window looks at:
+        // followed until it ends, never taken for gone
+        for _ in 0..20 {
+            look(&mut app, Duration::from_secs(1));
+        }
+        assert!(a.read_with(&app, |a, _| a.syncing && a.filling()));
+        assert_eq!(calls(&said), ["sync"]);
         let step = a.read_with(&app, |a, _| a.copy_step);
         let conn = db::open_existing(&env).unwrap().unwrap();
         conn.execute("DELETE FROM meta WHERE key = ?1", [db::COPYING])
@@ -946,13 +1008,45 @@ mod tests {
         drop(conn);
         look(&mut app, Duration::from_secs(1));
         a.read_with(&app, |a, _| {
-            assert!(a.copy_step > step, "the complete copy is read");
+            assert_eq!(a.copy_step, step + 1, "the complete copy is read");
             assert!(!a.syncing && a.copying.is_none() && !a.incomplete);
             assert!(a.synced_at.is_some());
         });
+        // the run ends after it: the copy is not read a second time
+        std::fs::write(d.path().join("stop"), "").unwrap();
+        settle(&mut app, |_| calls(&said) == ["sync", "end"]);
+        quiet(&mut app);
+        assert_eq!(a.read_with(&app, |a, _| a.copy_step), step + 1);
+        assert!(notices.borrow().is_empty(), "{:?}", notices.borrow());
         // a routine "Sync now" over a complete copy is no first copy filling the library
         a.update(&mut app, |a, cx| a.sync_now(cx));
         assert!(a.read_with(&app, |a, _| a.syncing && !a.filling()));
+        quiet(&mut app);
+    }
+
+    #[test]
+    fn a_sync_now_that_found_a_run_going_follows_that_run() {
+        let mut app = TestAppContext::single();
+        let d = tempfile::tempdir().unwrap();
+        let env = Env::with_home(d.path());
+        // `melodie sync` answers at once: a run is already going
+        let (program, said) = recorder(d.path(), 0);
+        let lock = hold_lock(d.path());
+        partial_copy(&env, 3);
+        let a = account(&mut app, &env, &program);
+        let notices = notices(&mut app, &a);
+        a.update(&mut app, |a, cx| a.set_standing(Standing::Ok, cx));
+        settle(&mut app, |_| calls(&said) == ["sync"]);
+        quiet(&mut app);
+        assert!(a.read_with(&app, |a, _| a.syncing));
+        // that run goes away without finishing: the window takes the copy up, it never says its
+        // own run stopped
+        drop(lock);
+        for _ in 0..5 {
+            look(&mut app, Duration::from_secs(1));
+        }
+        settle(&mut app, |_| calls(&said) == ["sync", "sync"]);
+        assert!(notices.borrow().is_empty(), "{:?}", notices.borrow());
     }
 
     #[test]
@@ -969,9 +1063,10 @@ mod tests {
         for _ in 0..4 {
             look(&mut app, Duration::from_secs(1));
         }
+        quiet(&mut app);
         assert!(calls(&said).is_empty(), "not before a few looks");
         look(&mut app, Duration::from_secs(1));
-        assert_eq!(calls(&said), ["sync"]);
+        settle(&mut app, |_| calls(&said) == ["sync"]);
     }
 
     #[test]
@@ -991,6 +1086,6 @@ mod tests {
         assert!(a.read_with(&app, |a, _| a.syncing));
         look(&mut app, COPY_FOR);
         // the server is asked why; the login holds, so the window takes the copy up itself
-        assert_eq!(calls(&said), ["status", "sync"]);
+        settle(&mut app, |_| calls(&said) == ["status", "sync"]);
     }
 }

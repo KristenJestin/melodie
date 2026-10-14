@@ -289,9 +289,6 @@ pub struct Follower {
     since: u64,
     /// The window's own `melodie sync` runs: its end says when the copy stops, not the clock.
     pub own: bool,
-    /// The window started a run while following: when the copy is left behind, it says so rather
-    /// than start another.
-    pub started_here: bool,
     seen: Option<CopyState>,
     /// The copy grew since the library was last read again.
     unshown: bool,
@@ -322,7 +319,6 @@ impl Follower {
         Self {
             since,
             own,
-            started_here: own,
             seen: None,
             unshown: false,
             still: 0,
