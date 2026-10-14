@@ -240,6 +240,9 @@ const COPY_SCAN: &str = "copy_scan";
 const COPY_SERVER: &str = "copy_server";
 const COPY_USER: &str = "copy_user";
 
+/// How long the copy waits for the readers (the window reads it again while it fills).
+const BUSY: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Starts a first copy: an empty copy that says it is not finished, put in place at once (made
 /// aside then renamed, so that no reader ever sees half a schema).
 fn start_first(client: &Client, target: &Path) -> Result<Connection, Failure> {
@@ -255,7 +258,7 @@ fn start_first(client: &Client, target: &Path) -> Result<Connection, Failure> {
     std::fs::rename(&tmp, target)
         .map_err(|e| anyhow::anyhow!("putting {} in place: {e}", target.display()))?;
     let conn = Connection::open(target)?;
-    conn.busy_timeout(std::time::Duration::from_secs(2))?;
+    conn.busy_timeout(BUSY)?;
     Ok(conn)
 }
 
@@ -284,7 +287,10 @@ fn resume_point(conn: &Connection, client: &Client) -> Option<(usize, usize)> {
 fn first(env: &Env, client: &Client, partial: Option<Connection>) -> Result<Report, Failure> {
     let resumed = partial.and_then(|c| Some((resume_point(&c, client)?, c)));
     let ((start, offset), mut conn) = match resumed {
-        Some(r) => r,
+        Some((at, c)) => {
+            c.busy_timeout(BUSY)?;
+            (at, c)
+        }
         None => ((0, 0), start_first(client, &db::db_path(env))?),
     };
     for (i, (kind, label, insert)) in KINDS.into_iter().enumerate().skip(start) {
@@ -360,6 +366,7 @@ pub fn run(env: &Env, client: &Client, force_full: bool) -> Result<Report, Failu
         Ok(Some(c)) => c,
         Err(e) => return Err(e.into()),
     };
+    conn.busy_timeout(BUSY)?;
     let stored = db::get_meta(&conn, "lastScan").unwrap_or_default();
     let current = last_scan(client)?;
     if current.is_empty() || current != stored {
@@ -730,6 +737,27 @@ mod tests {
         let r = run(&env, &client, false).unwrap();
         assert_eq!(r.counts.tracks, 1203);
         assert_eq!(fake.calls_of("search3"), 2 + 2 + 4);
+    }
+
+    #[test]
+    fn a_reader_holding_the_copy_a_few_seconds_does_not_fail_the_first_copy() {
+        let (_d, env, fake, client) = setup(1203);
+        *fake.state.fail_from_song.lock().unwrap() = Some(500);
+        assert!(run(&env, &client, false).is_err());
+        *fake.state.fail_from_song.lock().unwrap() = None;
+        let (held, wait) = std::sync::mpsc::channel();
+        let path = db::db_path(&env);
+        let reader = std::thread::spawn(move || {
+            let conn = Connection::open(path).unwrap();
+            conn.execute_batch("BEGIN; SELECT COUNT(*) FROM tracks;")
+                .unwrap();
+            held.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            conn.execute_batch("COMMIT").unwrap();
+        });
+        wait.recv().unwrap();
+        assert_eq!(run(&env, &client, false).unwrap().counts.tracks, 1203);
+        reader.join().unwrap();
     }
 
     #[test]
