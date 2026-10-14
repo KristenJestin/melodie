@@ -452,10 +452,10 @@ exposed), and keeps the queue in step with mpv's playlist. The daemon does not l
   service removed, socket deleted). SIGTERM too. Clients following the event stream do not keep
   it alive.
 - Log: `~/.local/state/melodie/melodie.log`, overwritten at every start, without token.
-- Variables: `MELODIE_AO` sets mpv's audio output (`null` for tests). `MELODIE_NO_NOTIFY` silences
-  the desktop notification of a failure; the window sets it on every `melodie` it runs, so a
-  failure is told in its own toast and not twice (the daemon such a command starts does not
-  inherit it). Reserved for tests:
+- Variables: `MELODIE_AO` sets mpv's audio output (`null` for tests). `MELODIE_QUIET_FAILURES`
+  silences the desktop notification of a failure, never of a success; the window sets it on every
+  `melodie` it runs, so a failure is told in its own toast and not twice, while a like or a
+  playlist edit still notifies (the daemon such a command starts does not inherit it). Reserved for tests:
   `MELODIE_TEST_SECRET` (a file standing for the keyring; with it set, no notification is sent),
   `MELODIE_MPRIS_NAME` (replaces the bus name suffix), `MELODIE_IDLE_SECS` (the idle delay) and
   `MELODIE_OPEN_URI_HOLD_MS` (holds the MPRIS `OpenUri` answer back).

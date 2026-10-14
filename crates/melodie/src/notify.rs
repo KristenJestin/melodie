@@ -1,21 +1,32 @@
 //! Notifications de bureau de l'application « Mélodie ».
 
-use melodie_core::env::NO_NOTIFY_VAR;
+use melodie_core::env::QUIET_FAILURES_VAR;
 use melodie_core::store::TEST_SECRET_VAR;
 use std::ffi::OsString;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 
-/// No real notification in tests (test secret set), nor for a command the window ran (it tells
-/// the failure itself).
+fn is_set(var: &impl Fn(&str) -> Option<OsString>, name: &str) -> bool {
+    var(name).is_some_and(|v| !v.is_empty())
+}
+
+/// No real notification in tests (test secret set).
 fn muted() -> bool {
     muted_by(|k| std::env::var_os(k))
 }
 
 fn muted_by(var: impl Fn(&str) -> Option<OsString>) -> bool {
-    [TEST_SECRET_VAR, NO_NOTIFY_VAR]
-        .iter()
-        .any(|k| var(k).is_some_and(|v| !v.is_empty()))
+    is_set(&var, TEST_SECRET_VAR)
+}
+
+/// A failure is also left out for a command the window ran: it tells the failure in its own
+/// toast. A success is not, the window does not tell it.
+fn failure_muted() -> bool {
+    failure_muted_by(|k| std::env::var_os(k))
+}
+
+fn failure_muted_by(var: impl Fn(&str) -> Option<OsString>) -> bool {
+    muted_by(&var) || is_set(&var, QUIET_FAILURES_VAR)
 }
 
 /// `notify-send -a Mélodie -- <résumé> <corps>`.
@@ -37,6 +48,14 @@ pub fn command_with_glyph(summary: &str, body: &str, glyph: char) -> Command {
 
 /// Notification simple ; un échec de `notify-send` est sans conséquence.
 pub fn send(summary: &str, body: &str) {
+    run(command(summary, body));
+}
+
+/// Notification d'un échec, que la fenêtre dit elle-même dans son toast.
+pub fn send_failure(summary: &str, body: &str) {
+    if failure_muted() {
+        return;
+    }
     run(command(summary, body));
 }
 
@@ -98,16 +117,26 @@ pub fn reconnect_required() {
 mod tests {
     use super::*;
 
+    fn set(names: &'static [&'static str]) -> impl Fn(&str) -> Option<OsString> {
+        move |k: &str| names.contains(&k).then(|| OsString::from("1"))
+    }
+
     #[test]
-    fn a_command_started_by_the_window_sends_no_notification() {
-        let set = |names: &'static [&'static str]| {
-            move |k: &str| names.contains(&k).then(|| std::ffi::OsString::from("1"))
-        };
+    fn a_command_started_by_the_window_still_notifies_a_success_but_not_a_failure() {
+        // without the variable, both notify
         assert!(!muted_by(set(&[])));
-        assert!(muted_by(set(&[NO_NOTIFY_VAR])));
-        assert!(muted_by(set(&[TEST_SECRET_VAR])));
+        assert!(!failure_muted_by(set(&[])));
+        // with it, a success notifies and a failure does not
+        assert!(!muted_by(set(&[QUIET_FAILURES_VAR])));
+        assert!(failure_muted_by(set(&[QUIET_FAILURES_VAR])));
         // set but empty: as if unset
-        assert!(!muted_by(|_| Some(std::ffi::OsString::new())));
+        assert!(!failure_muted_by(|_| Some(OsString::new())));
+    }
+
+    #[test]
+    fn no_real_notification_in_tests() {
+        assert!(muted_by(set(&[TEST_SECRET_VAR])));
+        assert!(failure_muted_by(set(&[TEST_SECRET_VAR])));
     }
 
     #[test]
