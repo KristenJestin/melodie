@@ -264,6 +264,30 @@ pub fn fetch(program: &Path, wants: &[Want], limit: Duration) -> Fetch {
     }
 }
 
+/// How old a temporary file of the covers folders is before it is taken for one left by a
+/// process stopped while writing (none takes this long to write a picture).
+const TMP_LEFT: Duration = Duration::from_secs(3600);
+
+/// Removes the temporary files a `cover-fetch` stopped while writing left behind (see
+/// [`ROUND_LIMIT`]). Reads folders: run it away from the window's thread.
+pub fn sweep(env: &Env, now: std::time::SystemTime) {
+    for tier in Tier::ALL {
+        let file = melodie_core::cover::tier_path(env, "x", tier);
+        let Some(Ok(entries)) = file.parent().map(std::fs::read_dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let old = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .is_ok_and(|at| now.duration_since(at).is_ok_and(|age| age > TMP_LEFT));
+            if old && entry.file_name().to_string_lossy().ends_with(".tmp") {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+}
+
 /// The covers asked, and those still to get.
 #[derive(Default)]
 pub struct Queue {
@@ -643,6 +667,36 @@ mod tests {
             Fetch::Done
         });
         assert!(found.contains_key("a"));
+    }
+
+    /// Review of #84: a `cover-fetch` stopped while it wrote a cover leaves its temporary file.
+    #[test]
+    fn temporary_files_left_by_a_stopped_fetch_are_removed() {
+        let (_d, env) = env();
+        let now = std::time::SystemTime::now();
+        let file = |tier: Tier, name: &str, age: Duration| {
+            let dir = cover::tier_path(&env, "x", tier)
+                .parent()
+                .unwrap()
+                .to_path_buf();
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join(name);
+            std::fs::write(&path, "").unwrap();
+            let f = std::fs::File::options().write(true).open(&path).unwrap();
+            f.set_modified(now - age).unwrap();
+            path
+        };
+        let hours = Duration::from_secs(2 * 3600);
+        let old: Vec<PathBuf> = Tier::ALL
+            .iter()
+            .map(|t| file(*t, "a.img.123-4.tmp", hours))
+            .collect();
+        let writing = file(Tier::Row, "b.img.123-5.tmp", Duration::from_secs(60));
+        let cover = file(Tier::Row, "c.img", hours);
+        sweep(&env, now);
+        assert!(old.iter().all(|p| !p.exists()), "left over: removed");
+        assert!(writing.exists(), "maybe being written: kept");
+        assert!(cover.exists(), "a cover: kept");
     }
 
     #[test]

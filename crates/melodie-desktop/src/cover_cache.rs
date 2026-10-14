@@ -21,6 +21,8 @@ pub struct CoverCache {
     /// The screen's scale factor: a cover is asked at the pixels it is drawn with.
     scale: f32,
     retries: Retries,
+    /// The temporary files left by a stopped fetch are removed before the first round.
+    swept: bool,
 }
 
 impl CoverCache {
@@ -31,6 +33,7 @@ impl CoverCache {
             files: Arc::default(),
             scale,
             retries: Retries::default(),
+            swept: false,
         }
     }
 
@@ -104,9 +107,15 @@ impl CoverCache {
             return;
         };
         let env = self.env.clone();
+        let sweep = !std::mem::replace(&mut self.swept, true);
         let task = cx.background_spawn({
             let batch = batch.clone();
-            async move { covers::round(&env, &batch, fetch_covers) }
+            async move {
+                if sweep {
+                    covers::sweep(&env, std::time::SystemTime::now());
+                }
+                covers::round(&env, &batch, fetch_covers)
+            }
         });
         cx.spawn(async move |this, cx| {
             let round = task.await;
