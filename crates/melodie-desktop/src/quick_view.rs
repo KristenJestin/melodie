@@ -60,11 +60,16 @@ pub struct QuickSearch {
     /// Numbers the openings: what an earlier one is still reading is not wanted.
     openings: Latest,
     recent: Recent,
+    /// A write of the recents is waiting for its moment.
+    waiting: bool,
     scroll: ScrollHandle,
     /// What had the focus before it opened: it gets it back.
     before: Option<FocusHandle>,
     _subs: Vec<Subscription>,
 }
+
+/// How long after a change the recents are written; the changes in between go in the same write.
+const SAVE_AFTER: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl QuickSearch {
     pub fn new(
@@ -94,12 +99,17 @@ impl QuickSearch {
                 }
                 step = Some(c.nav.step);
                 if let Some(seen) = Seen::of_place(c.here()) {
-                    this.note(seen);
+                    this.note(seen, cx);
                 }
             }),
             // and what the user starts playing: not what the daemon goes on to play by itself
-            cx.subscribe(&shared, |this, _, Started(seen): &Started, _| {
-                this.note(seen.clone())
+            cx.subscribe(&shared, |this, _, Started(seen): &Started, cx| {
+                this.note(seen.clone(), cx)
+            }),
+            // the last changes are not lost to the delay
+            cx.on_app_quit(|this, _| {
+                this.flush();
+                async {}
             }),
         ];
         let field = cx.new(|_| Field {
@@ -121,6 +131,7 @@ impl QuickSearch {
             genres: None,
             openings: Latest::default(),
             recent: saved,
+            waiting: false,
             scroll: ScrollHandle::new(),
             before: None,
             _subs: subs,
@@ -129,16 +140,38 @@ impl QuickSearch {
         this
     }
 
-    /// Remembers it, and keeps the list for the next launch when it changed.
-    fn note(&mut self, seen: Seen) {
+    /// Remembers it; the list is kept for the next launch a moment later, when it changed.
+    fn note(&mut self, seen: Seen, cx: &mut Context<Self>) {
         if self.recent.note(seen) {
-            self.keep();
+            self.keep(cx);
+        }
+    }
+
+    /// Has the list written `SAVE_AFTER` from now, unless a write is already waiting: a run of
+    /// page changes is one write. It happens on the window's thread, like the theme's and the
+    /// queue's, so that none of them races another.
+    fn keep(&mut self, cx: &mut Context<Self>) {
+        if self.waiting {
+            return;
+        }
+        self.waiting = true;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SAVE_AFTER).await;
+            let _ = this.update(cx, |this, _| this.flush());
+        })
+        .detach();
+    }
+
+    /// Writes the list now if a write is waiting (also when the window closes).
+    fn flush(&mut self) {
+        if std::mem::take(&mut self.waiting) {
+            self.write();
         }
     }
 
     /// Writes the list with the window's other state. Silent when it fails: the list is a
     /// convenience, and the window would have nothing to do about it.
-    fn keep(&self) {
+    fn write(&self) {
         let list = self.recent.list().to_vec();
         let _ = Settings::update(&self.env, |s| s.recent = list);
     }
@@ -163,7 +196,7 @@ impl QuickSearch {
             let gone = task.await;
             let _ = this.update(cx, |this, _| {
                 if this.recent.forget(&gone) {
-                    this.keep()
+                    this.write()
                 }
             });
         })
@@ -652,7 +685,8 @@ mod tests {
     use gpui_kit::{AppContext as _, Entity, TestAppContext, VisualTestContext};
     use melodie_core::db;
     use melodie_core::env::Env;
-    use melodie_desktop::quick::Section;
+    use melodie_desktop::quick::{Section, Seen};
+    use melodie_desktop::theme::Settings;
     use serde_json::json;
 
     /// The real palette on a small local copy, in a window without a screen.
@@ -747,5 +781,66 @@ mod tests {
             quick.read_with(cx, |q, _| genres(q)),
             "and again once reopened on the same text"
         );
+    }
+
+    #[test]
+    fn the_recents_the_copy_no_longer_holds_are_dropped_from_the_file_at_the_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        library(&env);
+        std::fs::create_dir_all(env.state_dir()).unwrap();
+        std::fs::write(
+            Settings::path(&env),
+            "theme = \"base\"\nrecent = [{ album = \"gone\" }, { album = \"al1\" }]\n",
+        )
+        .unwrap();
+        let mut app = TestAppContext::single();
+        let (_quick, cx) = palette(&env, &mut app);
+        cx.run_until_parked();
+        let s = Settings::load(&env);
+        assert_eq!(
+            s.recent,
+            [Seen::Album("al1".into())],
+            "only the present one"
+        );
+        assert_eq!(s.theme, Some(melodie_desktop::theme::Choice::Base));
+    }
+
+    #[test]
+    fn what_the_palette_notes_is_written_a_few_seconds_after_the_last_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        library(&env);
+        let mut app = TestAppContext::single();
+        let (quick, cx) = palette(&env, &mut app);
+        quick.update(cx, |q, cx| q.note(Seen::Album("al1".into()), cx));
+        quick.update(cx, |q, cx| q.note(Seen::Artist("ar1".into()), cx));
+        cx.run_until_parked();
+        assert!(
+            Settings::load(&env).recent.is_empty(),
+            "not at every page change"
+        );
+        cx.executor().advance_clock(super::SAVE_AFTER);
+        cx.run_until_parked();
+        assert_eq!(
+            Settings::load(&env).recent,
+            [Seen::Artist("ar1".into()), Seen::Album("al1".into())],
+            "both, in one write"
+        );
+    }
+
+    #[test]
+    fn what_is_waiting_to_be_written_is_written_when_the_window_closes() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        library(&env);
+        let mut app = TestAppContext::single();
+        let (quick, cx) = palette(&env, &mut app);
+        quick.update(cx, |q, cx| q.note(Seen::Album("al1".into()), cx));
+        cx.run_until_parked();
+        assert!(Settings::load(&env).recent.is_empty());
+        // the window is gone with the shutdown: nothing more to do through it
+        app.update(|cx| cx.shutdown());
+        assert_eq!(Settings::load(&env).recent, [Seen::Album("al1".into())]);
     }
 }
