@@ -68,9 +68,9 @@ fn insert_all(tx: &Transaction, items: &[Value], insert: Insert) -> Result<usize
     Ok(fresh)
 }
 
-/// Parcourt `search3` avec une requête vide, par pages de 500, à partir de `offset`, jusqu'à
-/// épuisement. `kind` : `artist`, `album` ou `song`. `keep` garde une page, avec le décalage de la
-/// suivante, et renvoie combien d'éléments étaient nouveaux.
+/// Pages through `search3` with an empty query, 500 at a time, from `offset` until nothing is
+/// left. `kind`: `artist`, `album` or `song`. `keep` keeps a page, given the offset of the next
+/// one, and says how many of its items were new.
 fn page_through(
     client: &Client,
     kind: &str,
@@ -355,8 +355,8 @@ fn light(client: &Client, conn: &mut Connection) -> Result<Report, Failure> {
     })
 }
 
-/// Met la copie à jour. `force_full` : copie complète sans comparer `lastScan`. Without a copy, or
-/// with a first copy left unfinished, the first copy (see `first`).
+/// Brings the copy up to date. `force_full`: a full copy without comparing `lastScan`. Without a
+/// copy, or with a first copy left unfinished, the first copy (see `first`).
 pub fn run(env: &Env, client: &Client, force_full: bool) -> Result<Report, Failure> {
     let mut conn = match db::open_existing(env) {
         Ok(None) => return first(env, client, None),
