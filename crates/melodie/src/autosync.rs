@@ -82,6 +82,18 @@ pub fn try_lock(path: &Path) -> Result<Option<std::fs::File>> {
     }
 }
 
+/// The sync lock, tried twice: a look at whether a run holds it (`melodie status`, the window)
+/// takes it a moment, and a `melodie sync` started then is not one already running.
+pub fn lock_soon(path: &Path) -> Result<Option<std::fs::File>> {
+    match try_lock(path)? {
+        None => {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            try_lock(path)
+        }
+        held => Ok(held),
+    }
+}
+
 /// Une synchronisation tourne-t-elle ? (Verrou pris puis relâché aussitôt.)
 pub fn is_running() -> bool {
     matches!(lock_path().and_then(|p| try_lock(&p)), Ok(None))
@@ -163,7 +175,7 @@ pub fn log_line(env: &Env, msg: &str) {
 /// Corps de `sync --background` : une seule à la fois, erreurs au journal,
 /// refus d'authentification noté par le marqueur habituel.
 pub fn run_background(env: &Env, full: bool) -> Result<()> {
-    let Some(_lock) = try_lock(&lock_path()?)? else {
+    let Some(_lock) = lock_soon(&lock_path()?)? else {
         return Ok(());
     };
     let r = state::open_client(env).and_then(|c| sync::run(env, &c, full));
@@ -198,16 +210,18 @@ pub fn launch(plan: Plan, spawn: &dyn Fn(bool) -> Result<()>) -> Result<()> {
     }
 }
 
-/// Copie locale pour les commandes de lecture : l'existante, tout de suite, avec une
-/// synchronisation de fond si elle est trop vieille ; sinon `Failure::Syncing`
-/// après avoir lancé la première copie.
+/// The local copy for the reading commands: the existing one, at once, with a background sync
+/// when it is too old; otherwise `Failure::Syncing`, once the first copy is started (or one left
+/// unfinished taken up again).
 pub fn library_with(
     env: &Env,
     running: bool,
     spawn: &dyn Fn(bool) -> Result<()>,
 ) -> Result<Connection, Failure> {
     state::quick_check(env)?;
-    let conn = db::open_existing(env)?;
+    // A first copy not finished is read by the window only: here it is taken up again, and the
+    // answer stays the one the launcher and the voice assistant know until it is complete.
+    let conn = db::open_existing(env)?.filter(|c| !db::is_partial(c));
     let age = conn.as_ref().map(age_secs);
     let p = plan(age, running, stale_secs());
     match conn {
@@ -256,6 +270,24 @@ mod tests {
         assert!(try_lock(&p).unwrap().is_some());
     }
 
+    #[test]
+    fn a_lock_held_a_moment_by_a_look_is_taken_after_it() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("run/sync.lock");
+        // the window looks whether a run holds it: taken, and let go at once
+        let look = try_lock(&p).unwrap();
+        let let_go = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            drop(look);
+        });
+        assert!(lock_soon(&p).unwrap().is_some());
+        let_go.join().unwrap();
+        // a run that holds it on is still told apart
+        let run = try_lock(&p).unwrap();
+        assert!(lock_soon(&p).unwrap().is_none());
+        drop(run);
+    }
+
     fn env_connecte() -> (tempfile::TempDir, Env) {
         let d = tempfile::tempdir().unwrap();
         let env = Env::with_home(d.path());
@@ -291,6 +323,21 @@ mod tests {
         assert!(matches!(r, Err(Failure::Syncing)));
         assert_eq!(calls, [true]);
         // Une sync déjà en cours : rien de plus lancé, même réponse.
+        let (r, calls) = essai(&env, true);
+        assert!(matches!(r, Err(Failure::Syncing)));
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn a_first_copy_not_finished_answers_syncing_and_takes_it_up_again() {
+        let (_d, env) = env_connecte();
+        copie(&env, now_secs());
+        let conn = db::open_existing(&env).unwrap().unwrap();
+        db::set_meta(&conn, db::COPYING, "song:500").unwrap();
+        drop(conn);
+        let (r, calls) = essai(&env, false);
+        assert!(matches!(r, Err(Failure::Syncing)));
+        assert_eq!(calls, [true]);
         let (r, calls) = essai(&env, true);
         assert!(matches!(r, Err(Failure::Syncing)));
         assert!(calls.is_empty());

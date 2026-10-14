@@ -293,6 +293,19 @@ Screenshots and a recording of the animations, made with invented data, are in
   connection state, with "Sign out" (`melodie logout`: the address stays for the next sign-in);
   when the local copy was last made, with "Sync now" (`melodie sync`). The library is read again
   when a new copy is there, the first one after a sign-in included.
+- **First copy**: signed in with no complete local copy (however the login was made: in the
+  window, with `melodie login`, or a keyring brought from another machine), the window starts
+  the first copy itself (`melodie sync`), once, as soon as `melodie status` says the login
+  holds. The views fill while it runs (read again every few seconds, the scroll position kept, a
+  selection cleared when the rows of its list changed), and the bottom of the window says how
+  far it is ("Copying the library: 120 albums, 1500 tracks so far"). A copy that fails says why
+  (`no-login` and `auth-refused` bring the sign-in screen, `unreachable` says "Navidrome is
+  unreachable"; the settings say the copy is not finished); one cut off is taken up again by the
+  next. A copy the window did not start (the one `melodie login` starts, or one already running
+  when the window asked) is taken up by the window once it stands still and no `melodie sync`
+  runs; one that stands still a quarter of an hour while a run holds it is said ("The copy of
+  the library is not moving"). A local copy made for another server or user is made again in
+  full by the next `melodie sync`.
 - **Colours**: the button at the top right chooses the theme. "Mélodie", the base theme, takes its
   colours from the cover and follows the desktop's dark or light setting. "Omarchy" is offered
   only on Omarchy (`ID=omarchy` in `/etc/os-release` and a readable
@@ -574,7 +587,14 @@ once "Copie de la bibliothèque en cours…" (see "Automatic synchronisation").
 
 - Full sync: `search3` with an empty query, in pages of 500 (artists, albums with the date each
   was added, tracks), `getPlaylists` and the tracks of each playlist (`getPlaylist`), `getStarred2`,
-  all in one transaction on a temporary file.
+  all in one transaction on a temporary file: a full sync that fails keeps the previous copy.
+- First copy (no copy yet): there is nothing to keep, so it is made in place and each page of 500
+  is committed as it comes; the copy is readable while it fills (the window shows it growing), and
+  `meta` says it is not finished (`copying`, where it goes on from). Cut off, it is taken up again
+  where it stopped by the next synchronisation, whatever starts it, from the same server for the
+  same user (otherwise it starts again). Only the window reads it
+  before it is finished: until then, the command line answers "Copie de la bibliothèque en
+  cours…" as when there is no copy, and takes the copy up again in the background.
 - Incremental sync: `getScanStatus` (`lastScan`) compared with the stored value; unchanged:
   playlists (the tracks of a playlist are read again only when its `changed` date moved),
   favourites, play counters (`getAlbumList2` `recent` and `frequent`, 500; the tracks of an album

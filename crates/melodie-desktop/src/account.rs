@@ -9,6 +9,7 @@ use melodie_core::{api, db, store};
 use std::io::Write as _;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 /// What the window knows of the login.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -223,6 +224,209 @@ pub fn sync_end(code: Option<i32>, refused_marked: bool, said: &str) -> SyncEnd 
 pub fn synced_at(env: &Env) -> Option<u64> {
     let conn = db::open_existing(env).ok()??;
     db::get_meta(&conn, "synced_at")?.parse().ok()
+}
+
+/// The local copy, as the window follows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyState {
+    Missing,
+    /// A first copy not finished yet (still running, or cut off): what it holds so far.
+    Partial(db::Counts),
+    /// Made at this date, in seconds since the epoch (0 when the copy does not say).
+    Complete(u64),
+}
+
+/// Where the local copy stands; `None` when its counts could not be read this time (a copy busy
+/// being written): no news, not a change. A file that cannot be opened is `Missing`: it is
+/// not going to be read, whatever the wait. Blocking: run it away from the window.
+pub fn copy_state(env: &Env) -> Option<CopyState> {
+    let Ok(Some(conn)) = db::open_existing(env) else {
+        return Some(CopyState::Missing);
+    };
+    if db::is_partial(&conn) {
+        return db::counts(&conn).ok().map(CopyState::Partial);
+    }
+    Some(CopyState::Complete(
+        db::get_meta(&conn, "synced_at")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0),
+    ))
+}
+
+/// Whether the window starts the first copy itself: the server said the login holds, there is no
+/// complete copy, and the window did not start one yet. However the login came: in the window,
+/// with `melodie login`, or a keyring brought from another machine.
+pub fn starts_first_copy(standing: Standing, copy: CopyState, started: bool) -> bool {
+    standing == Standing::Ok && !started && !matches!(copy, CopyState::Complete(_))
+}
+
+/// What the bottom of the window says while a first copy fills the library.
+pub fn copy_notice(c: db::Counts) -> String {
+    let n = |n: i64, one: &str| format!("{n} {one}{}", if n == 1 { "" } else { "s" });
+    // the artists come first and are few: the albums and the tracks say how far it is
+    match (c.albums, c.tracks) {
+        (0, 0) => "Copying the library…".into(),
+        (a, 0) => format!("Copying the library: {} so far", n(a, "album")),
+        (a, t) => format!(
+            "Copying the library: {}, {} so far",
+            n(a, "album"),
+            n(t, "track")
+        ),
+    }
+}
+
+/// A copy the window follows waits this long without moving before the window asks the server why.
+pub const COPY_FOR: Duration = Duration::from_secs(15 * 60);
+/// Looks at the copy that did not move, after this many looks in a row, ask whether a run still
+/// holds the sync lock.
+const STILL_LOOKS: u32 = 5;
+/// The library is read again at most this often while a first copy fills: each read takes the
+/// whole current view, the playlists and Home.
+pub const RELOAD_EVERY: Duration = Duration::from_secs(4);
+
+/// What the window knows of a copy it follows, look after look.
+#[derive(Debug)]
+pub struct Follower {
+    since: u64,
+    /// The window's own `melodie sync` runs: its end says when the copy stops, not the clock.
+    pub own: bool,
+    seen: Option<CopyState>,
+    /// The copy grew since the library was last read again.
+    unshown: bool,
+    still: u32,
+    moved: Instant,
+    shown: Option<Instant>,
+}
+
+/// What a look at the copy gives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    Wait,
+    /// The first copy grew: said at the bottom of the window.
+    Moved(db::Counts),
+    /// It grew, and the last read of the library is old enough: read it again.
+    Grew(db::Counts),
+    /// A copy made since the following began is complete, at this date.
+    Done(u64),
+    /// A copy the window did not start has not moved for `COPY_FOR`.
+    Late,
+    /// It has not moved for a while, and no run holds the sync lock: no one is making it.
+    Gone,
+}
+
+impl Follower {
+    /// Follows from `now`: a copy complete since `since` (seconds since the epoch) ends it.
+    pub fn new(since: u64, own: bool, now: Instant) -> Self {
+        Self {
+            since,
+            own,
+            seen: None,
+            unshown: false,
+            still: 0,
+            moved: now,
+            shown: None,
+        }
+    }
+
+    /// The last copy seen.
+    pub fn seen(&self) -> Option<CopyState> {
+        self.seen
+    }
+
+    /// Whether the next look should ask if a run holds the sync lock: only for a run the window
+    /// cannot see end, once the copy has stood still for a few looks.
+    pub fn probe_due(&self) -> bool {
+        !self.own && (self.still + 1).is_multiple_of(STILL_LOOKS)
+    }
+
+    /// One look at the copy, at `now`; `running` says whether a run holds the sync lock, when it
+    /// was asked (`probe_due`).
+    pub fn step(&mut self, copy: CopyState, now: Instant, running: Option<bool>) -> Step {
+        if let CopyState::Complete(at) = copy
+            && is_new_copy(Some(at), self.since)
+        {
+            self.seen = Some(copy);
+            return Step::Done(at);
+        }
+        if self.seen != Some(copy) {
+            self.seen = Some(copy);
+            self.still = 0;
+            self.moved = now;
+            let CopyState::Partial(c) = copy else {
+                return Step::Wait;
+            };
+            if self
+                .shown
+                .is_some_and(|at| now.duration_since(at) < RELOAD_EVERY)
+            {
+                self.unshown = true;
+                return Step::Moved(c);
+            }
+            self.shown = Some(now);
+            self.unshown = false;
+            return Step::Grew(c);
+        }
+        self.still += 1;
+        // the last pages came too soon after a read: shown once it is old enough, not at the end
+        if let CopyState::Partial(c) = copy
+            && self.unshown
+            && self
+                .shown
+                .is_some_and(|at| now.duration_since(at) >= RELOAD_EVERY)
+        {
+            self.shown = Some(now);
+            self.unshown = false;
+            return Step::Grew(c);
+        }
+        if self.own {
+            return Step::Wait;
+        }
+        if running == Some(false) && self.still >= STILL_LOOKS {
+            return Step::Gone;
+        }
+        if now.duration_since(self.moved) > COPY_FOR {
+            return Step::Late;
+        }
+        Step::Wait
+    }
+}
+
+/// Whether a `melodie sync` holds the lock at `path` (`$XDG_RUNTIME_DIR/melodie/sync.lock`).
+pub fn sync_running_at(path: &Path) -> bool {
+    use std::os::fd::AsRawFd as _;
+    let Ok(f) = std::fs::File::open(path) else {
+        return false;
+    };
+    // shared and let go at once: a run starting in between would only find it taken a moment,
+    // as with `melodie status`
+    // SAFETY: a valid descriptor, owned by `f`.
+    unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) != 0 }
+}
+
+/// The lock a running `melodie sync` holds, whoever started it.
+pub fn sync_lock() -> Option<std::path::PathBuf> {
+    melodie_core::proto::runtime_dir()
+        .ok()
+        .map(|d| d.join("sync.lock"))
+}
+
+/// What a `melodie sync` that exited with `code` said of its failure. Killed (no code), it said
+/// nothing: its last lines are progress.
+pub fn failure_said(code: Option<i32>, stderr: &str) -> String {
+    if code.is_none() {
+        return String::new();
+    }
+    last_said(stderr)
+}
+
+/// What a failed `melodie sync` said: its last line, the progress lines come before.
+pub fn last_said(stderr: &str) -> String {
+    stderr
+        .lines()
+        .map(str::trim)
+        .rfind(|l| !l.is_empty())
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// "Synced 5 min ago", for the settings.
@@ -538,6 +742,219 @@ mod tests {
         db::set_meta(&tx, "synced_at", "1760000000").unwrap();
         tx.commit().unwrap();
         assert_eq!(synced_at(&env), Some(1_760_000_000));
+    }
+
+    #[test]
+    fn signed_in_with_no_local_copy_one_first_copy_starts() {
+        assert!(starts_first_copy(Standing::Ok, CopyState::Missing, false));
+        // once
+        assert!(!starts_first_copy(Standing::Ok, CopyState::Missing, true));
+        // a first copy cut off is taken up again
+        let some = db::Counts {
+            tracks: 500,
+            albums: 1,
+            artists: 2,
+            playlists: 0,
+        };
+        assert!(starts_first_copy(
+            Standing::Ok,
+            CopyState::Partial(some),
+            false
+        ));
+        // not before the server said yes, nor when it cannot
+        for s in [
+            Standing::Checking,
+            Standing::NoLogin,
+            Standing::AuthRefused,
+            Standing::Unreachable,
+        ] {
+            assert!(!starts_first_copy(s, CopyState::Missing, false), "{s:?}");
+        }
+    }
+
+    #[test]
+    fn with_a_local_copy_no_first_copy_starts() {
+        assert!(!starts_first_copy(
+            Standing::Ok,
+            CopyState::Complete(1_760_000_000),
+            false
+        ));
+    }
+
+    #[test]
+    fn a_first_copy_is_followed_as_it_fills() {
+        use melodie_core::api::{Client, Creds, token};
+        use melodie_core::{fake::Fake, sync};
+        let d = tempfile::tempdir().unwrap();
+        let env = Env::with_home(d.path());
+        assert_eq!(copy_state(&env), Some(CopyState::Missing));
+        let creds = Creds {
+            u: "alice".into(),
+            t: token("sesame", "c19b2d"),
+            s: "c19b2d".into(),
+        };
+        let fake = Fake::start(1203, &creds.t);
+        let client = Client::new(&fake.url, creds);
+        *fake.state.fail_from_song.lock().unwrap() = Some(500);
+        assert!(sync::run(&env, &client, true).is_err());
+        let so_far = db::Counts {
+            tracks: 500,
+            albums: 1,
+            artists: 2,
+            playlists: 0,
+        };
+        assert_eq!(copy_state(&env), Some(CopyState::Partial(so_far)));
+        assert_eq!(
+            copy_notice(so_far),
+            "Copying the library: 1 album, 500 tracks so far"
+        );
+        *fake.state.fail_from_song.lock().unwrap() = None;
+        sync::run(&env, &client, false).unwrap();
+        assert!(matches!(copy_state(&env), Some(CopyState::Complete(at)) if at > 0));
+    }
+
+    #[test]
+    fn a_count_that_cannot_be_read_is_no_news_of_the_copy() {
+        let d = tempfile::tempdir().unwrap();
+        let env = Env::with_home(d.path());
+        let conn = db::create(&db::db_path(&env)).unwrap();
+        db::set_meta(&conn, db::COPYING, "song:0").unwrap();
+        assert!(matches!(copy_state(&env), Some(CopyState::Partial(_))));
+        conn.execute("DROP TABLE playlists", []).unwrap();
+        assert_eq!(copy_state(&env), None);
+    }
+
+    #[test]
+    fn the_last_pages_are_shown_once_the_last_read_is_old_enough_not_at_the_end() {
+        let t0 = Instant::now();
+        let at = |s: f32| t0 + Duration::from_secs_f32(s);
+        let mut f = Follower::new(1_760_000_000, true, t0);
+        assert!(matches!(f.step(grown(500), at(1.), None), Step::Grew(_)));
+        assert!(matches!(f.step(grown(1000), at(2.), None), Step::Moved(_)));
+        assert_eq!(f.step(grown(1000), at(3.), None), Step::Wait);
+        assert!(matches!(f.step(grown(1000), at(5.), None), Step::Grew(c) if c.tracks == 1000));
+        // shown: nothing more until it grows
+        assert_eq!(f.step(grown(1000), at(10.), None), Step::Wait);
+    }
+
+    fn grown(tracks: i64) -> CopyState {
+        CopyState::Partial(db::Counts {
+            tracks,
+            albums: 1,
+            artists: 2,
+            playlists: 0,
+        })
+    }
+
+    #[test]
+    fn the_follower_reads_the_library_again_as_it_grows_at_most_every_few_seconds() {
+        let t0 = Instant::now();
+        let at = |s: f32| t0 + Duration::from_secs_f32(s);
+        let mut f = Follower::new(1_760_000_000, true, t0);
+        assert_eq!(f.step(CopyState::Missing, at(0.), None), Step::Wait);
+        assert!(matches!(f.step(grown(500), at(1.), None), Step::Grew(c) if c.tracks == 500));
+        assert!(matches!(f.step(grown(1000), at(2.), None), Step::Moved(c) if c.tracks == 1000));
+        assert_eq!(f.step(grown(1000), at(3.), None), Step::Wait);
+        assert!(matches!(f.step(grown(1500), at(5.5), None), Step::Grew(c) if c.tracks == 1500));
+        // an older complete copy is not the one awaited
+        assert_eq!(
+            f.step(CopyState::Complete(1_700_000_000), at(6.), None),
+            Step::Wait
+        );
+        assert_eq!(
+            f.step(CopyState::Complete(1_760_000_001), at(7.), None),
+            Step::Done(1_760_000_001)
+        );
+    }
+
+    #[test]
+    fn the_follower_of_a_run_it_cannot_see_stops_when_no_run_holds_the_lock() {
+        let t0 = Instant::now();
+        let mut f = Follower::new(1_760_000_000, false, t0);
+        assert!(matches!(f.step(grown(500), t0, None), Step::Grew(_)));
+        let mut probes = Vec::new();
+        let mut last = Step::Wait;
+        for i in 1..=10 {
+            let due = f.probe_due();
+            probes.push(due);
+            // the run holds the lock at the first probe, not at the second
+            let running = due.then_some(probes.iter().filter(|p| **p).count() < 2);
+            last = f.step(grown(500), t0 + Duration::from_secs(i), running);
+            if last != Step::Wait {
+                break;
+            }
+        }
+        assert_eq!(last, Step::Gone);
+        assert_eq!(probes.iter().filter(|p| **p).count(), 2);
+        // its own run is followed until it ends: never asked
+        let mut f = Follower::new(1_760_000_000, true, t0);
+        f.step(grown(500), t0, None);
+        assert!((1..=20).all(|_| !f.probe_due() && f.step(grown(500), t0, None) == Step::Wait));
+    }
+
+    #[test]
+    fn the_follower_of_a_run_it_cannot_see_is_late_after_a_quarter_of_an_hour_still() {
+        let t0 = Instant::now();
+        let mut f = Follower::new(1_760_000_000, false, t0);
+        f.step(grown(500), t0, None);
+        // the limit counts from the last step, not from the start
+        let later = t0 + COPY_FOR - Duration::from_secs(1);
+        assert!(matches!(f.step(grown(1000), later, None), Step::Grew(_)));
+        assert_eq!(
+            f.step(grown(1000), later + Duration::from_secs(2), None),
+            Step::Wait
+        );
+        assert_eq!(
+            f.step(grown(1000), later + COPY_FOR + Duration::from_secs(1), None),
+            Step::Late
+        );
+        let mut own = Follower::new(1_760_000_000, true, t0);
+        own.step(grown(500), t0, None);
+        assert_eq!(own.step(grown(500), t0 + COPY_FOR * 2, None), Step::Wait);
+    }
+
+    #[test]
+    fn the_sync_lock_says_whether_a_run_holds_it() {
+        use std::os::fd::AsRawFd as _;
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("sync.lock");
+        // the other tests start processes: one forked while a lock is open holds it until it
+        // runs its program, so what is let go may still be held a moment
+        let soon = |ok: &dyn Fn() -> bool| {
+            (0..100).any(|_| {
+                let done = ok();
+                if !done {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                done
+            })
+        };
+        assert!(!sync_running_at(&path));
+        let f = std::fs::File::create(&path).unwrap();
+        assert!(soon(&|| !sync_running_at(&path)));
+        assert!(soon(&|| unsafe {
+            libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0
+        }));
+        assert!(sync_running_at(&path));
+        drop(f);
+        assert!(soon(&|| !sync_running_at(&path)));
+    }
+
+    #[test]
+    fn a_failure_mid_copy_says_its_last_line_not_the_progress() {
+        let said = "Artistes : 2\nAlbums : 1\nerreur : boom\n\n";
+        assert_eq!(last_said(said), "erreur : boom");
+        assert_eq!(last_said(""), "");
+    }
+
+    #[test]
+    fn a_sync_killed_mid_copy_says_none_of_its_progress() {
+        let said = "Artistes : 2\nAlbums : 720\n";
+        assert_eq!(failure_said(None, said), "");
+        assert_eq!(
+            failure_said(Some(3), "Albums : 1\nerreur : boom\n"),
+            "erreur : boom"
+        );
     }
 
     #[test]

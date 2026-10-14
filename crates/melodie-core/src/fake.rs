@@ -37,6 +37,9 @@ pub struct State {
     pub fail_code: Mutex<Option<i64>>,
     /// Réponse HTTP brute à renvoyer pour tout (état, corps), si présente.
     pub raw: Mutex<Option<(u16, String)>>,
+    /// When set, a `search3` asking for songs from this offset on fails (HTTP 500): a copy cut
+    /// off halfway.
+    pub fail_from_song: Mutex<Option<usize>>,
     pub calls: Mutex<Vec<String>>,
     /// The methods that came as a posted form, in order.
     pub posted: Mutex<Vec<String>>,
@@ -163,6 +166,7 @@ impl Fake {
             password: Mutex::new(None),
             fail_code: Mutex::new(None),
             raw: Mutex::new(None),
+            fail_from_song: Mutex::new(None),
             calls: Mutex::new(Vec::new()),
             posted: Mutex::new(Vec::new()),
             tokens_seen: Mutex::new(Vec::new()),
@@ -309,6 +313,12 @@ impl State {
             "getScanStatus" => ok(json!({"scanStatus": {"scanning": false, "count": 1,
                 "lastScan": self.last_scan.lock().unwrap().clone()}})),
             "search3" => {
+                let from: Option<usize> = param(query, "songOffset").and_then(|v| v.parse().ok());
+                if let (Some(cut), Some(from)) = (*self.fail_from_song.lock().unwrap(), from)
+                    && from >= cut
+                {
+                    return (500, "boom".into());
+                }
                 let artists = vec![
                     json!({"id":"ar1","name":"Daft Punk","albumCount":1,"coverArt":"ar-ar1"}),
                     json!({"id":"ar2","name":"Beyoncé","albumCount":1}),
