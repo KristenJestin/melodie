@@ -251,14 +251,33 @@ impl Queue {
     }
 
     /// Asks for covers drawn as `usage` on a screen of this scale factor: those not asked before
-    /// at that tier, to look up on disk.
-    pub fn ask(&mut self, ids: Vec<String>, usage: Use, scale: f32, now: Instant) -> Vec<Want> {
+    /// at that tier, to look up on disk. With `first` (they are on screen), those already waiting
+    /// go before the rest: asked long ago, they would wait behind everything asked since.
+    pub fn ask(
+        &mut self,
+        ids: Vec<String>,
+        usage: Use,
+        scale: f32,
+        now: Instant,
+        first: bool,
+    ) -> Vec<Want> {
         let tier = usage.tier(scale);
         for id in &ids {
             let largest = self.asked.entry(id.clone()).or_insert(usage);
             *largest = (*largest).max_side(usage);
         }
-        self.see(ids.into_iter().map(|id| Want::new(id, tier)), now)
+        let wants: Vec<Want> = ids.into_iter().map(|id| Want::new(id, tier)).collect();
+        if first {
+            let waiting: Vec<Want> = wants
+                .iter()
+                .filter(|w| self.waiting.contains(w))
+                .cloned()
+                .collect();
+            if !waiting.is_empty() {
+                self.missing_first(waiting);
+            }
+        }
+        self.see(wants, now)
     }
 
     /// The screen's scale factor changed: what was asked, at the tier that suits it now (what the
@@ -541,7 +560,7 @@ mod tests {
         let (_d, env) = env();
         let mut q = Queue::default();
         let t0 = Instant::now();
-        let row = |q: &mut Queue, at: Instant| q.ask(vec!["c1".into()], Use::SMALL, 1.0, at);
+        let row = |q: &mut Queue, at: Instant| q.ask(vec!["c1".into()], Use::SMALL, 1.0, at, false);
         let new = row(&mut q, t0);
         q.missing(new);
         let (fetches, _) = drain_at(&env, &mut q, t0, |_| Fetch::Done);
@@ -569,7 +588,8 @@ mod tests {
         let (_d, env) = env();
         let mut q = Queue::default();
         let mut now = Instant::now();
-        let row = |q: &mut Queue, at: Instant| q.ask(vec!["bad".into()], Use::SMALL, 1.0, at);
+        let row =
+            |q: &mut Queue, at: Instant| q.ask(vec!["bad".into()], Use::SMALL, 1.0, at, false);
         let new = row(&mut q, now);
         q.missing(new);
         let mut waits = Vec::new();
@@ -780,12 +800,12 @@ mod tests {
         let mut q = Queue::default();
         let ids = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert_eq!(
-            q.ask(ids(&["a", "b"]), Use::TILE, 1.0, Instant::now()),
+            q.ask(ids(&["a", "b"]), Use::TILE, 1.0, Instant::now(), false),
             at(&["a", "b"], Tier::Row)
         );
-        q.ask(ids(&["s"]), Use::SMALL, 1.0, Instant::now());
+        q.ask(ids(&["s"]), Use::SMALL, 1.0, Instant::now(), false);
         assert!(
-            q.ask(ids(&["a"]), Use::TILE, 1.0, Instant::now())
+            q.ask(ids(&["a"]), Use::TILE, 1.0, Instant::now(), false)
                 .is_empty(),
             "once"
         );
@@ -811,7 +831,13 @@ mod tests {
     #[test]
     fn only_what_was_seen_is_asked_again_and_a_resize_does_not_grow_it() {
         let mut q = Queue::default();
-        q.ask(vec!["seen".to_string()], Use::TILE, 1.0, Instant::now());
+        q.ask(
+            vec!["seen".to_string()],
+            Use::TILE,
+            1.0,
+            Instant::now(),
+            false,
+        );
         assert_eq!(q.ask_again(2.0, Instant::now()), at(&["seen"], Tier::Large));
         // a window being resized draws its grid at a different side at every step
         for side in 160..260 {
@@ -820,6 +846,7 @@ mod tests {
                 Use::of(side as f32),
                 1.0,
                 Instant::now(),
+                false,
             );
         }
         assert_eq!(q.asked.len(), 1);
@@ -846,6 +873,24 @@ mod tests {
         q.missing(at(&["old"], Tier::Row));
         q.missing_first(at(&["new"], Tier::Row));
         assert_eq!(q.start().unwrap(), at(&["new", "old"], Tier::Row));
+    }
+
+    /// Issue #84: a long queue left a thousand covers waiting; a short queue played next showed
+    /// some of them, which waited behind all the rest (and behind every grid asked since).
+    #[test]
+    fn a_cover_already_waiting_jumps_ahead_when_it_shows() {
+        let (mut q, now) = (Queue::default(), Instant::now());
+        let long: Vec<String> = (0..1000).map(|i| format!("t{i}")).collect();
+        let new = q.ask(long, Use::SMALL, 1.0, now, false);
+        q.missing(new);
+        let shown = vec!["t900".to_string(), "t950".to_string()];
+        assert!(
+            q.ask(shown, Use::SMALL, 1.0, now, true).is_empty(),
+            "looked up already"
+        );
+        let batch = q.start().unwrap();
+        assert_eq!(batch[..2], at(&["t900", "t950"], Tier::Thumb));
+        assert_eq!(batch[2], Want::new("t0", Tier::Thumb), "the rest follows");
     }
 
     #[test]

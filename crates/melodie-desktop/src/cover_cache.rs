@@ -58,9 +58,13 @@ impl CoverCache {
         first: bool,
         cx: &mut Context<Self>,
     ) {
-        let new = self
-            .queue
-            .ask(ids.into_iter().collect(), usage, self.scale, Instant::now());
+        let new = self.queue.ask(
+            ids.into_iter().collect(),
+            usage,
+            self.scale,
+            Instant::now(),
+            first,
+        );
         self.look_up(new, first, cx);
     }
 
