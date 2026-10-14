@@ -527,6 +527,26 @@ fn stop_puis_inactivite_arrete_le_demon() {
     wait_until(10, "arrêt après inactivité", || !sb.socket().exists());
 }
 
+// The install script stops the old player with it: it has to end the daemon, and to say so (exit 1)
+// instead of starting one when none runs.
+#[test]
+fn quit_stops_the_running_daemon_and_never_starts_one() {
+    let sb = Sandbox::new(true);
+    assert_eq!(sb.run(&["quit"]).status.code(), Some(1));
+    assert!(!sb.socket().exists());
+
+    // The daemon sometimes closes the connection before it answers: that is still a success, so
+    // the same again a few times.
+    for _ in 0..5 {
+        sb.ok(&["play", "track", "t2"]);
+        wait_until(5, "playback", || {
+            sb.try_now().is_some_and(|v| v["state"] == "playing")
+        });
+        sb.ok(&["quit"]);
+        wait_until(10, "daemon stopped", || !sb.socket().exists());
+    }
+}
+
 #[test]
 fn jeton_refuse_pendant_la_lecture() {
     let sb = Sandbox::new(true);

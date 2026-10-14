@@ -426,6 +426,37 @@ pub fn control(req: Request) -> ExitCode {
     }
 }
 
+/// `quit`: the daemon may close the connection before it answers, which is the goal reached; it
+/// is a failure only if the daemon is still there afterwards. Never starts the daemon.
+pub fn quit() -> ExitCode {
+    let Some(stream) = connect() else {
+        eprintln!("No player is running");
+        return ExitCode::from(1);
+    };
+    match exchange(&stream, &Request::Quit) {
+        Ok(r) if !r.ok => {
+            eprintln!(
+                "{}",
+                r.error.unwrap_or_else(|| "refused by the player".into())
+            );
+            ExitCode::from(1)
+        }
+        Ok(_) => ExitCode::SUCCESS,
+        Err(e) => {
+            let gone = (0..40).any(|_| {
+                std::thread::sleep(Duration::from_millis(50));
+                connect().is_none()
+            });
+            if gone {
+                ExitCode::SUCCESS
+            } else {
+                eprintln!("melodie: {e:#}");
+                ExitCode::from(1)
+            }
+        }
+    }
+}
+
 /// `volume` : sans démon, lit et écrit seulement le volume mémorisé (appliqué au
 /// prochain démarrage) ; avec démon, le règle tout de suite. Ne démarre jamais le démon.
 pub fn volume(env: &Env, change: Option<&str>) -> ExitCode {

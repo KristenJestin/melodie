@@ -76,9 +76,10 @@ configuration (see `AGENTS.md`). The daemon integration test starts its own priv
 - `melodie watch`: follows what the player does, one JSON event per line (state, track,
   position, volume, queue, favourites, connection). Never starts the daemon; without one, prints
   `{"type":"gone"}` and waits for it. The format is in [docs/events.md](docs/events.md).
-- `melodie toggle | pause | resume | next | prev | stop`: controls. They never start the daemon
+- `melodie toggle | pause | resume | next | prev | stop | quit`: controls. They never start the daemon
   (without a daemon: "Rien en lecture", code 1). `prev` restarts the track after 3 s of playing,
-  else goes back to the previous one. `next` on the last track ends the queue.
+  else goes back to the previous one. `next` on the last track ends the queue. `quit` ends the
+  daemon whatever it plays (an update asks for it; the next `play` starts the new one).
 - `melodie volume [<0-100> | +5 | -5]`: without argument, shows the volume; otherwise sets it
   (0 to 130 %, `+5` and `-5` are relative). The volume is remembered in
   `~/.local/state/melodie/state.toml` (written about 1 s after the last change, whether it comes
