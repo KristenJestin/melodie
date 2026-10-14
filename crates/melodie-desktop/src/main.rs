@@ -3,6 +3,7 @@
 
 mod albums;
 mod app;
+mod artist_links;
 mod catalog;
 mod context_menu;
 mod cover_cache;

@@ -5,6 +5,7 @@
 
 use crate::albums::{PAD, artist_play, content_width, cover_box, empty_state};
 use crate::app::Shared;
+use crate::artist_links;
 use crate::catalog::Catalog;
 use crate::context_menu::{self, Menued as _};
 use crate::dialogs::{self, Dialog};
@@ -354,13 +355,19 @@ pub fn track_row(
                             Some(_) => c.truncate().text_color(accent).child(t.title.clone()),
                             None => c.truncate().text_color(pal.fg).child(t.title.clone()),
                         },
-                        Col::Artist => c.child(link(
-                            key("artist"),
-                            t.artist.clone(),
-                            t.artist_id.clone().map(Place::Artist),
-                            pal,
-                            catalog,
-                        )),
+                        Col::Artist => c.child(artist_links::line(&t.artists, |i, a| {
+                            let id = format!("{}-{i}", key("artist"));
+                            link(
+                                ElementId::Name(id.clone().into()),
+                                a.name.clone(),
+                                a.id.clone().map(Place::Artist),
+                                pal,
+                                catalog,
+                            )
+                            .min_w_0()
+                            .debug_selector(move || id.clone())
+                            .into_any_element()
+                        })),
                         Col::Album => c.child(link(
                             key("album"),
                             t.album.clone(),
@@ -788,8 +795,9 @@ mod tests {
         Window, div, point, px,
     };
     use melodie_core::env::Env;
-    use melodie_core::library::Track;
+    use melodie_core::library::{Credit, Track};
     use melodie_core::proto::QueueEntry;
+    use melodie_desktop::browse::Place;
     use melodie_desktop::menu::Item;
     use melodie_desktop::model::{PlayState, Player};
     use melodie_desktop::playing::Playing;
@@ -963,6 +971,7 @@ mod tests {
         catalog: Entity<Catalog>,
         shown: Shown,
         playing: Playing,
+        table: Table,
     }
 
     impl Render for Tracks {
@@ -971,7 +980,7 @@ mod tests {
                 let c = self.catalog.read(cx);
                 (c.here().clone(), c.selection.clone())
             };
-            let cols = Table::Album.cols(1200.);
+            let cols = self.table.cols(1200.);
             let pal = Palette::base(None, true);
             let marks = self.playing.marks(&here, &self.shown.tracks);
             div()
@@ -1009,6 +1018,7 @@ mod tests {
                 catalog,
                 shown: Shown::new(tracks, None),
                 playing: Playing::default(),
+                table: Table::Album,
             }
         });
         cx.run_until_parked();
@@ -1090,6 +1100,7 @@ mod tests {
                 catalog,
                 shown: Shown::new(tracks, None),
                 playing: Playing::default(),
+                table: Table::Album,
             }
         });
         let marked = |cx: &mut VisualTestContext| {
@@ -1118,5 +1129,81 @@ mod tests {
         assert_eq!(marked(cx), [2], "and on the next track at once");
         follow(cx, Player::default());
         assert_eq!(marked(cx), Vec::<i32>::new(), "gone with the player");
+    }
+
+    fn credit(id: &str, name: &str) -> Credit {
+        Credit {
+            id: Some(id.into()),
+            name: name.into(),
+        }
+    }
+
+    #[test]
+    fn a_track_of_three_artists_shows_three_links_in_order_each_to_its_own_page() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = crate::app::fake_melodie(dir.path());
+        let env = Env::with_home(dir.path().join("home"));
+        let mut app = TestAppContext::single();
+        let (view, cx): (Entity<Tracks>, _) = app.add_window_view(|_, cx| {
+            let shared = crate::app::bare(env.clone(), program.clone(), cx);
+            let catalog = cx.new(|cx| Catalog::new(env.clone(), shared, cx));
+            let tracks: Arc<[Track]> = [
+                Track {
+                    id: "t0".into(),
+                    title: "Crossing".into(),
+                    artist: "Nova Reyes, Lior Castell, Ada Marlow".into(),
+                    artist_id: Some("ar5".into()),
+                    artists: vec![
+                        credit("ar5", "Nova Reyes"),
+                        credit("ar1", "Lior Castell"),
+                        credit("ar3", "Ada Marlow"),
+                    ],
+                    ..Track::default()
+                },
+                Track {
+                    id: "t1".into(),
+                    title: "Alone".into(),
+                    artist: "Ilse Varga".into(),
+                    artist_id: Some("ar2".into()),
+                    artists: vec![credit("ar2", "Ilse Varga")],
+                    ..Track::default()
+                },
+            ]
+            .into();
+            Tracks {
+                catalog,
+                shown: Shown::new(tracks, None),
+                playing: Playing::default(),
+                table: Table::Search,
+            }
+        });
+        cx.run_until_parked();
+        let catalog = view.read_with(cx, |v, _| v.catalog.clone());
+        let link = |cx: &mut VisualTestContext, row: usize, ix: usize| {
+            cx.debug_bounds(Box::leak(format!("t-artist-{row}-{ix}").into_boxed_str()))
+        };
+        let (first, second) = (link(cx, 0, 0).unwrap(), link(cx, 0, 1).unwrap());
+        assert!(link(cx, 0, 2).is_some(), "the third artist");
+        assert!(link(cx, 0, 3).is_none());
+        assert!(first.right() < second.left(), "in order, side by side");
+        // a track of one artist: one link, as before
+        assert!(link(cx, 1, 0).is_some());
+        assert!(link(cx, 1, 1).is_none());
+
+        // the separator between two names is no link: the click picks the row
+        let between = point((first.right() + second.left()) / 2., first.center().y);
+        cx.simulate_click(between, Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(catalog.read_with(cx, |c, _| c.here().clone()), Place::Home);
+        let picked = catalog.read_with(cx, |c, _| c.selection.ranks(c.here()));
+        assert_eq!(picked, [0]);
+        // each name leads to its own page
+        for (ix, id) in [(0, "ar5"), (1, "ar1"), (2, "ar3")] {
+            let at = link(cx, 0, ix).unwrap().center();
+            cx.simulate_click(at, Modifiers::none());
+            cx.run_until_parked();
+            let here = catalog.read_with(cx, |c, _| c.here().clone());
+            assert_eq!(here, Place::Artist(id.into()), "artist {ix}");
+        }
     }
 }

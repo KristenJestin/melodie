@@ -4,6 +4,7 @@
 //! is not one of these tables: its order is the play order.
 
 use crate::browse::{Nav, Place};
+use crate::credits::{self, Credits};
 use crate::launch::Kind;
 use crate::selection::Selection;
 use melodie_core::library::{Sort, Track, TrackBy};
@@ -336,9 +337,11 @@ impl Shown {
     }
 }
 
-/// A track found by the search, as a table row holds it. The search does not read the plays.
-pub fn track_of(hit: &Hit) -> Track {
+/// A track found by the search, as a table row holds it, with the artists `credits` holds for it.
+/// The search does not read the plays.
+pub fn track_of(hit: &Hit, credits: &Credits) -> Track {
     Track {
+        artists: credits::of(credits, &hit.id, &hit.artist, hit.artist_id.as_deref()),
         id: hit.id.clone(),
         title: hit.name.clone(),
         artist: hit.artist.clone(),
@@ -797,7 +800,7 @@ mod tests {
             album_id: Some("al9".into()),
             artist_id: Some("ar9".into()),
         };
-        let t = track_of(&hit);
+        let t = track_of(&hit, &Credits::new());
         assert_eq!(
             (
                 t.id.as_str(),
