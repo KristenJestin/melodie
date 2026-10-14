@@ -357,10 +357,20 @@ impl Queue {
     /// Queues covers that have no file yet, before those already waiting: what is playing, what
     /// is on screen.
     pub fn missing_first(&mut self, wants: Vec<Want>) {
-        let rest = std::mem::take(&mut self.pending);
-        self.waiting.clear();
-        self.missing(wants);
-        self.missing(rest);
+        let mut front = Vec::with_capacity(wants.len());
+        let mut moved = HashSet::with_capacity(wants.len());
+        for w in wants {
+            if moved.insert(w.clone()) {
+                front.push(w);
+            }
+        }
+        // a view asking again for the rows it shows: they are ahead already
+        if self.pending.starts_with(&front) {
+            return;
+        }
+        self.pending.retain(|w| !moved.contains(w));
+        self.waiting.extend(moved);
+        self.pending.splice(0..0, front);
     }
 
     fn forget(&mut self, gone: impl Fn(&Want) -> bool) {
@@ -1081,6 +1091,23 @@ mod tests {
         let batch = q.start().unwrap();
         assert_eq!(batch[..2], at(&["t900", "t950"], Tier::Thumb));
         assert_eq!(batch[2], Want::new("t0", Tier::Thumb), "the rest follows");
+    }
+
+    /// Review of #84: the queue panel asks for the covers of its rows on screen at every frame
+    /// that changes them; asking for those already ahead rebuilt the whole waiting list (a
+    /// thousand covers cloned, twice a frame, while hovering).
+    #[test]
+    fn an_ask_for_covers_already_ahead_leaves_the_waiting_list_as_it_is() {
+        let (mut q, now) = (Queue::default(), Instant::now());
+        let long: Vec<String> = (0..1000).map(|i| format!("t{i}")).collect();
+        let new = q.ask(long, Use::SMALL, 1.0, now, false);
+        q.missing(new);
+        let shown = || vec!["t900".to_string(), "t950".to_string()];
+        q.ask(shown(), Use::SMALL, 1.0, now, true);
+        let (list, order) = (q.pending.as_ptr(), q.pending.clone());
+        q.ask(shown(), Use::SMALL, 1.0, now, true);
+        assert_eq!(q.pending, order, "nothing moves");
+        assert_eq!(q.pending.as_ptr(), list, "nothing is rebuilt");
     }
 
     #[test]
