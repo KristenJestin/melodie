@@ -256,7 +256,14 @@ impl Catalog {
     fn show(&mut self, place: &Place) {
         let tracks = match self.pages.get(place).map(Arc::as_ref) {
             Some(Page::Album { tracks, .. } | Page::Playlist { tracks, .. }) => tracks.clone(),
-            Some(Page::Artist { top, .. }) => top.clone(),
+            Some(Page::Artist { top, appears, .. }) => {
+                if let Place::Artist(id) = place {
+                    let list = Place::Appearances(id.clone());
+                    self.selection
+                        .read_again(&list, &Shown::new(appears.clone(), None));
+                }
+                top.clone()
+            }
             _ => {
                 self.views.remove(place);
                 return;
@@ -755,6 +762,54 @@ mod tests {
         });
         assert!(!page(&mut app, "ar8").playable(), "nothing to play");
         assert!(page(&mut app, "ar1").playable());
+    }
+
+    #[test]
+    fn a_row_picked_among_the_appearances_stays_picked_while_the_list_is_the_same() {
+        let mut app = TestAppContext::single();
+        let d = tempfile::tempdir().unwrap();
+        let env = Env::with_home(d.path());
+        let conn = db::create(&db::db_path(&env)).unwrap();
+        conn.execute_batch(
+            "INSERT INTO artists(id, name, albumCount) VALUES ('ar1', 'Ada Marlow', 1),
+               ('ar9', 'Lior Castell', 0);
+             INSERT INTO albums(id, name, artistId) VALUES ('al1', 'Lanterns', 'ar1');
+             INSERT INTO tracks(id, title, artistId, albumId, track) VALUES
+               ('t1', 'Harbour Lights', 'ar1', 'al1', 1), ('t2', 'Slow Tide', 'ar1', 'al1', 2),
+               ('t3', 'Paper Boats', 'ar1', 'al1', 3);
+             INSERT INTO track_artists(track, artist) VALUES ('t1', 'ar9'), ('t3', 'ar9');",
+        )
+        .unwrap();
+        let catalog = app.update(|cx| {
+            let shared = crate::app::for_tests(env.clone(), cx);
+            cx.new(|cx| Catalog::new(env.clone(), shared, cx))
+        });
+        let here = Place::Artist("ar9".into());
+        catalog.update(&mut app, |c, cx| c.start_at(here.clone(), cx));
+        app.run_until_parked();
+        let list = Place::Appearances("ar9".into());
+        let picked = |app: &TestAppContext| catalog.read_with(app, |c, _| c.selection.count(&list));
+        catalog.update(&mut app, |c, cx| {
+            let Page::Artist { appears, .. } = c.pages[&here].as_ref() else {
+                panic!("not an artist page")
+            };
+            let shown = Shown::new(appears.clone(), None);
+            c.left_click(&list, &shown, 1, Click::of(false, false, 1), cx)
+        });
+        assert_eq!(picked(&app), 1);
+        // read again, nothing changed: the row stays picked
+        catalog.update(&mut app, |c, cx| c.reload(cx));
+        app.run_until_parked();
+        assert_eq!(picked(&app), 1);
+        // a track came in among them: the ranks now hold other tracks
+        conn.execute(
+            "INSERT INTO track_artists(track, artist) VALUES ('t2', 'ar9')",
+            [],
+        )
+        .unwrap();
+        catalog.update(&mut app, |c, cx| c.reload(cx));
+        app.run_until_parked();
+        assert_eq!(picked(&app), 0);
     }
 
     /// A local copy holding the tracks `ids`.
