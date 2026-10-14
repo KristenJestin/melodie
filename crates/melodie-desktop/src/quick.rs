@@ -9,6 +9,8 @@ use melodie_core::db;
 use melodie_core::env::Env;
 use melodie_core::library as lib;
 use melodie_core::search::{self, Genre, Hit};
+use rusqlite::Connection;
+use serde::{Deserialize, Serialize};
 
 /// Genres shown, as many as the results of each kind.
 pub const GENRES: usize = crate::find::SHOWN;
@@ -150,7 +152,8 @@ pub fn hints(item: Option<&Item>) -> Vec<(&'static str, &'static str)> {
 }
 
 /// Something opened or played lately.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Seen {
     Album(String),
     Artist(String),
@@ -196,15 +199,103 @@ pub struct Recent {
 }
 
 impl Recent {
-    pub fn note(&mut self, seen: Seen) {
+    /// What the last launch left, the last one first: short and without repeats whatever the
+    /// file holds.
+    pub fn from_saved(saved: Vec<Seen>) -> Self {
+        let mut list: Vec<Seen> = Vec::new();
+        for seen in saved {
+            if !list.contains(&seen) {
+                list.push(seen);
+            }
+        }
+        list.truncate(RECENT);
+        Self { list }
+    }
+
+    /// Whether the list changed: what is already first is not worth a write.
+    pub fn note(&mut self, seen: Seen) -> bool {
+        if self.list.first() == Some(&seen) {
+            return false;
+        }
         self.list.retain(|s| *s != seen);
         self.list.insert(0, seen);
         self.list.truncate(RECENT);
+        true
+    }
+
+    /// Takes `gone` out of the list; whether any of it was there.
+    pub fn forget(&mut self, gone: &[Seen]) -> bool {
+        let before = self.list.len();
+        self.list.retain(|s| !gone.contains(s));
+        self.list.len() != before
     }
 
     pub fn list(&self) -> &[Seen] {
         &self.list
     }
+}
+
+/// The row `seen` names in the local copy; `None` when it left. `genres` is read once, when the
+/// first genre asks for it.
+fn find(
+    conn: &Connection,
+    genres: &mut Option<Vec<Genre>>,
+    seen: &Seen,
+) -> anyhow::Result<Option<Item>> {
+    Ok(match seen {
+        Seen::Album(id) => lib::album(conn, id)?.map(album).map(Item::Found),
+        Seen::Artist(id) => lib::artist(conn, id)?
+            .map(|a| Hit {
+                count: a.albums,
+                cover: a.cover,
+                ..blank(search::Kind::Artist, a.id, a.name)
+            })
+            .map(Item::Found),
+        Seen::Playlist(id) => lib::playlist(conn, id)?
+            .map(|p| Hit {
+                count: p.songs,
+                duration: p.duration,
+                cover: p.cover,
+                ..blank(search::Kind::Playlist, p.id, p.name)
+            })
+            .map(Item::Found),
+        Seen::Track(id) => lib::track(conn, id)?
+            .map(|t| Hit {
+                artist: t.artist,
+                album: t.album,
+                year: t.year,
+                duration: t.duration,
+                cover: t.cover,
+                album_id: t.album_id,
+                artist_id: t.artist_id,
+                ..blank(search::Kind::Track, t.id, t.title)
+            })
+            .map(Item::Found),
+        Seen::Genre(name) => {
+            let all = match genres {
+                Some(all) => all,
+                None => genres.insert(search::genres(conn)?),
+            };
+            all.iter()
+                .find(|g| g.name == *name)
+                .cloned()
+                .map(Item::Genre)
+        }
+    })
+}
+
+/// What of `seen` the local copy still holds, in the same order. All of it when there is no
+/// copy or it cannot be read: nothing can be said to be gone then. Blocking: run it away from the
+/// window.
+pub fn existing(env: &Env, seen: &[Seen]) -> Vec<Seen> {
+    let Ok(Some(conn)) = db::open_existing(env) else {
+        return seen.to_vec();
+    };
+    let mut genres = None;
+    seen.iter()
+        .filter(|s| !matches!(find(&conn, &mut genres, s), Ok(None)))
+        .cloned()
+        .collect()
 }
 
 /// The rows before anything is typed: what was opened or played in the window, named from the
@@ -217,40 +308,7 @@ pub fn recent(env: &Env, seen: &[Seen]) -> anyhow::Result<Option<Vec<Item>>> {
     let mut genres = None;
     let mut out = Vec::new();
     for s in seen {
-        let item = match s {
-            Seen::Album(id) => lib::album(&conn, id)?.map(album),
-            Seen::Artist(id) => lib::artist(&conn, id)?.map(|a| Hit {
-                count: a.albums,
-                cover: a.cover,
-                ..blank(search::Kind::Artist, a.id, a.name)
-            }),
-            Seen::Playlist(id) => lib::playlist(&conn, id)?.map(|p| Hit {
-                count: p.songs,
-                duration: p.duration,
-                cover: p.cover,
-                ..blank(search::Kind::Playlist, p.id, p.name)
-            }),
-            Seen::Track(id) => lib::track(&conn, id)?.map(|t| Hit {
-                artist: t.artist,
-                album: t.album,
-                year: t.year,
-                duration: t.duration,
-                cover: t.cover,
-                album_id: t.album_id,
-                artist_id: t.artist_id,
-                ..blank(search::Kind::Track, t.id, t.title)
-            }),
-            Seen::Genre(name) => {
-                let all = match &genres {
-                    Some(all) => all,
-                    None => genres.insert(search::genres(&conn)?),
-                };
-                let found = all.iter().find(|g: &&Genre| g.name == *name);
-                out.extend(found.cloned().map(Item::Genre));
-                continue;
-            }
-        };
-        out.extend(item.map(Item::Found));
+        out.extend(find(&conn, &mut genres, s)?);
     }
     // more than are missing: some are already there
     for a in lib::recently_played(&conn, RECENT * 2)? {
@@ -298,6 +356,7 @@ fn album(a: lib::Album) -> Hit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::Settings;
     use serde_json::json;
 
     fn hit(kind: search::Kind, id: &str) -> Hit {
@@ -664,5 +723,146 @@ mod tests {
             panic!("an album")
         };
         assert_eq!(album.cover.as_deref(), Some("c11"), "with its cover");
+    }
+
+    /// A local copy holding `al1` (and its artist `ar1`), the track `t1`, and the genre Ambient.
+    fn library(env: &Env) {
+        let path = db::db_path(env);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut conn = db::create(&path).unwrap();
+        let tx = conn.transaction().unwrap();
+        db::insert_artist(&tx, &json!({"id":"ar1","name":"Nightfall","albumCount":1})).unwrap();
+        db::insert_album(
+            &tx,
+            &json!({"id":"al1","name":"Album 1","artist":"Nightfall","artistId":"ar1"}),
+        )
+        .unwrap();
+        db::insert_track(&tx, &json!({"id":"t1","title":"Low Tide","artist":"Nightfall","album":"Album 1","albumId":"al1","genres":[{"name":"Ambient"}]})).unwrap();
+        db::replace_playlists(&tx, &[json!({"id":"p1","name":"Evening","songCount":4})]).unwrap();
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn the_recents_are_written_and_read_back_after_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        assert!(Settings::load(&env).recent.is_empty(), "nothing yet");
+        let mut r = Recent::default();
+        r.note(Seen::Album("al1".into()));
+        r.note(Seen::Genre("Ambient".into()));
+        r.note(Seen::Track("t1".into()));
+        Settings::update(&env, |s| s.recent = r.list().to_vec()).unwrap();
+        // another launch: the same home, nothing in memory
+        let again = Env::with_home(dir.path());
+        let back = Recent::from_saved(Settings::load(&again).recent);
+        assert_eq!(back.list(), r.list(), "same entries, same order");
+        // they live with the window's other state, not in the configuration
+        assert!(
+            std::fs::read_to_string(Settings::path(&again))
+                .unwrap()
+                .contains("recent")
+        );
+        assert!(
+            !dir.path().join(".config").exists(),
+            "the configuration is not touched"
+        );
+    }
+
+    #[test]
+    fn the_saved_recents_are_capped_and_have_no_repeats() {
+        let mut saved: Vec<Seen> = (0..RECENT + 5)
+            .map(|n| Seen::Album(format!("al{n}")))
+            .collect();
+        saved.insert(1, Seen::Album("al0".into()));
+        let r = Recent::from_saved(saved);
+        assert_eq!(r.list().len(), RECENT, "a hand-edited file stays short");
+        assert_eq!(r.list()[0], Seen::Album("al0".into()));
+        assert_eq!(r.list()[1], Seen::Album("al1".into()), "al0 kept once");
+    }
+
+    #[test]
+    fn a_missing_or_unreadable_file_gives_no_recents_and_keeps_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        std::fs::create_dir_all(env.state_dir()).unwrap();
+        // a value of the wrong kind loses the recents only, not the theme beside them
+        std::fs::write(Settings::path(&env), "theme = \"base\"\nrecent = 12\n").unwrap();
+        let s = Settings::load(&env);
+        assert!(s.recent.is_empty());
+        assert_eq!(s.theme, Some(crate::theme::Choice::Base));
+        Settings::update(&env, |s| s.recent = vec![Seen::Album("al1".into())]).unwrap();
+        assert_eq!(
+            Settings::load(&env).theme,
+            Some(crate::theme::Choice::Base),
+            "and the next write keeps the theme"
+        );
+        std::fs::write(Settings::path(&env), "\u{0}\u{1} not toml").unwrap();
+        assert!(Settings::load(&env).recent.is_empty());
+        // one entry this version does not know is skipped; the theme and the others stay
+        std::fs::write(
+            Settings::path(&env),
+            "theme = \"base\"\nrecent = [{ album = \"al1\" }, { podcast = \"x\" }, { track = \"t1\" }]\n",
+        )
+        .unwrap();
+        let s = Settings::load(&env);
+        assert_eq!(s.theme, Some(crate::theme::Choice::Base));
+        assert_eq!(
+            s.recent,
+            [Seen::Album("al1".into()), Seen::Track("t1".into())]
+        );
+    }
+
+    #[test]
+    fn what_the_local_copy_no_longer_holds_is_dropped_on_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        let saved = vec![
+            Seen::Album("gone".into()),
+            Seen::Track("t1".into()),
+            Seen::Artist("gone".into()),
+            Seen::Playlist("p1".into()),
+            Seen::Genre("Vanished".into()),
+            Seen::Genre("Ambient".into()),
+            Seen::Playlist("gone".into()),
+            Seen::Track("gone".into()),
+            Seen::Album("al1".into()),
+            Seen::Artist("ar1".into()),
+        ];
+        // no copy yet: nothing can be said to be gone
+        assert_eq!(existing(&env, &saved), saved);
+        library(&env);
+        assert_eq!(
+            existing(&env, &saved),
+            [
+                Seen::Track("t1".into()),
+                Seen::Playlist("p1".into()),
+                Seen::Genre("Ambient".into()),
+                Seen::Album("al1".into()),
+                Seen::Artist("ar1".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn noting_what_is_already_first_changes_nothing() {
+        let mut r = Recent::default();
+        assert!(r.note(Seen::Album("al1".into())), "a new one");
+        assert!(!r.note(Seen::Album("al1".into())), "the same, still first");
+        assert!(r.note(Seen::Album("al2".into())));
+        assert!(r.note(Seen::Album("al1".into())), "moved back to the top");
+    }
+
+    #[test]
+    fn forgetting_removes_only_what_is_named() {
+        let mut r = Recent::default();
+        for id in ["a", "b", "c"] {
+            r.note(Seen::Album(id.into()));
+        }
+        assert!(r.forget(&[Seen::Album("b".into()), Seen::Album("zz".into())]));
+        assert_eq!(r.list(), [Seen::Album("c".into()), Seen::Album("a".into())]);
+        assert!(
+            !r.forget(&[Seen::Album("b".into())]),
+            "nothing left to forget"
+        );
     }
 }

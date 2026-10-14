@@ -23,7 +23,7 @@ use melodie_desktop::find::{self, Latest};
 use melodie_desktop::keys::{self, PaletteClick};
 use melodie_desktop::launch::Job;
 use melodie_desktop::quick::{self, Do, Group, How, Item, Recent, Section, Seen};
-use melodie_desktop::theme::Palette;
+use melodie_desktop::theme::{Palette, Settings};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -50,6 +50,9 @@ pub struct QuickSearch {
     field: Entity<Field>,
     pub open: bool,
     text: String,
+    /// The last text searched that was not empty: Escape empties the field but not this, so the
+    /// next opening still finds it.
+    last: String,
     latest: Latest,
     shown: Shown,
     /// The row chosen, counted across the groups.
@@ -60,11 +63,16 @@ pub struct QuickSearch {
     /// Numbers the openings: what an earlier one is still reading is not wanted.
     openings: Latest,
     recent: Recent,
+    /// A write of the recents is waiting for its moment.
+    waiting: bool,
     scroll: ScrollHandle,
     /// What had the focus before it opened: it gets it back.
     before: Option<FocusHandle>,
     _subs: Vec<Subscription>,
 }
+
+/// How long after a change the recents are written; the changes in between go in the same write.
+const SAVE_AFTER: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl QuickSearch {
     pub fn new(
@@ -83,6 +91,9 @@ impl QuickSearch {
             cx.subscribe(&input, |this, input, ev: &InputEvent, cx| {
                 if matches!(ev, InputEvent::Change) {
                     this.text = input.read(cx).value().to_string();
+                    if !this.text.trim().is_empty() {
+                        this.last = this.text.clone();
+                    }
                     this.ask(None, cx)
                 }
             }),
@@ -94,19 +105,25 @@ impl QuickSearch {
                 }
                 step = Some(c.nav.step);
                 if let Some(seen) = Seen::of_place(c.here()) {
-                    this.recent.note(seen);
+                    this.note(seen, cx);
                 }
             }),
             // and what the user starts playing: not what the daemon goes on to play by itself
-            cx.subscribe(&shared, |this, _, Started(seen): &Started, _| {
-                this.recent.note(seen.clone())
+            cx.subscribe(&shared, |this, _, Started(seen): &Started, cx| {
+                this.note(seen.clone(), cx)
+            }),
+            // the last changes are not lost to the delay
+            cx.on_app_quit(|this, _| {
+                this.flush();
+                async {}
             }),
         ];
         let field = cx.new(|_| Field {
             input: input.clone(),
             shared: shared.clone(),
         });
-        Self {
+        let saved = Recent::from_saved(Settings::load(&env).recent);
+        let mut this = Self {
             shared,
             catalog,
             env,
@@ -114,16 +131,83 @@ impl QuickSearch {
             field,
             open: false,
             text: String::new(),
+            last: String::new(),
             latest: Latest::default(),
             shown: Shown::Rows(Arc::from([])),
             chosen: 0,
             genres: None,
             openings: Latest::default(),
-            recent: Recent::default(),
+            recent: saved,
+            waiting: false,
             scroll: ScrollHandle::new(),
             before: None,
             _subs: subs,
+        };
+        this.drop_what_left(cx);
+        this
+    }
+
+    /// Remembers it; the list is kept for the next launch a moment later, when it changed.
+    fn note(&mut self, seen: Seen, cx: &mut Context<Self>) {
+        if self.recent.note(seen) {
+            self.keep(cx);
         }
+    }
+
+    /// Has the list written `SAVE_AFTER` from now, unless a write is already waiting: a run of
+    /// page changes is one write. It happens on the window's thread, like the theme's and the
+    /// queue's, so that none of them races another.
+    fn keep(&mut self, cx: &mut Context<Self>) {
+        if self.waiting {
+            return;
+        }
+        self.waiting = true;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SAVE_AFTER).await;
+            let _ = this.update(cx, |this, _| this.flush());
+        })
+        .detach();
+    }
+
+    /// Writes the list now if a write is waiting (also when the window closes).
+    fn flush(&mut self) {
+        if std::mem::take(&mut self.waiting) {
+            self.write();
+        }
+    }
+
+    /// Writes the list with the window's other state. Silent when it fails: the list is a
+    /// convenience, and the window would have nothing to do about it.
+    fn write(&self) {
+        let list = self.recent.list().to_vec();
+        let _ = Settings::update(&self.env, |s| s.recent = list);
+    }
+
+    /// What the last launch left may have left the local copy since: read away from the window,
+    /// then dropped from the list (and from the file). Only what is named is dropped, so what
+    /// was noted meanwhile stays.
+    fn drop_what_left(&mut self, cx: &mut Context<Self>) {
+        let saved = self.recent.list().to_vec();
+        if saved.is_empty() {
+            return;
+        }
+        let env = self.env.clone();
+        let task = cx.background_spawn(async move {
+            let kept = quick::existing(&env, &saved);
+            saved
+                .into_iter()
+                .filter(|s| !kept.contains(s))
+                .collect::<Vec<_>>()
+        });
+        cx.spawn(async move |this, cx| {
+            let gone = task.await;
+            let _ = this.update(cx, |this, _| {
+                if this.recent.forget(&gone) {
+                    this.write()
+                }
+            });
+        })
+        .detach();
     }
 
     pub fn has_focus(&self, window: &Window, cx: &App) -> bool {
@@ -138,22 +222,39 @@ impl QuickSearch {
         }
     }
 
-    /// Opens it empty, on what was seen lately. What the last opening left is gone: Enter has
-    /// nothing to run until this opening's own answer is in.
+    /// Opens it on the last text searched, selected so that typing replaces it and Enter runs the
+    /// same search again; on what was seen lately when there is none. What the last opening left
+    /// is gone: Enter has nothing to run until this opening's own answer is in.
     fn show(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open = true;
         self.before = window.focused(cx);
         self.genres = None;
         self.shown = Shown::Rows(Arc::from([]));
         self.chosen = 0;
-        self.text.clear();
+        self.text = self.last.clone();
+        let text = self.text.clone();
         // no change event for this one
         self.input.update(cx, |i, cx| {
-            i.set_value("", window, cx);
-            i.focus(window, cx)
+            i.set_value(text, window, cx);
+            i.focus(window, cx);
+            i.select_all(window, cx)
         });
         let opening = self.openings.ask();
         self.ask(Some(opening), cx);
+        cx.notify();
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.text.is_empty()
+    }
+
+    /// Empties the field, as Escape does on the search page: the palette stays open on what was
+    /// seen lately. The last text searched is kept for the next opening.
+    pub fn clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.text.clear();
+        // no change event for this one
+        self.input.update(cx, |i, cx| i.set_value("", window, cx));
+        self.ask(None, cx);
         cx.notify();
     }
 
@@ -183,8 +284,11 @@ impl QuickSearch {
         let known = self.genres.clone().unwrap_or_else(|| Arc::from([]));
         let started = Instant::now();
         let task = cx.background_spawn(async move {
-            let genres = opening.map(|_| load_genres(&env));
-            (genres, read(&env, &text, &seen, &known))
+            let fresh = opening.map(|_| load_genres(&env));
+            // an opening has cleared the genres: the text it opens on matches the ones it reads
+            let genres = fresh.as_deref().unwrap_or(&known);
+            let shown = read(&env, &text, &seen, genres);
+            (fresh, shown)
         });
         cx.spawn(async move |this, cx| {
             let (genres, shown) = task.await;
@@ -591,5 +695,234 @@ impl Render for QuickSearch {
                     ),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // not `super::*`: it would bring the `test` macro of GPUI along
+    use super::{QuickSearch, Shown};
+    use crate::app;
+    use crate::catalog::Catalog;
+    use gpui_kit::{AppContext as _, Entity, TestAppContext, VisualTestContext};
+    use melodie_core::db;
+    use melodie_core::env::Env;
+    use melodie_desktop::quick::{Section, Seen};
+    use melodie_desktop::theme::Settings;
+    use serde_json::json;
+
+    /// The real palette on a small local copy, in a window without a screen.
+    fn palette<'a>(
+        env: &Env,
+        app: &'a mut TestAppContext,
+    ) -> (Entity<QuickSearch>, &'a mut VisualTestContext) {
+        let env = env.clone();
+        let (quick, cx) = app.add_window_view(move |window, cx| {
+            gpui_kit::init(cx);
+            let (shared, _) = app::start(env.clone(), env.state_dir().join("no.sock"), window, cx);
+            let catalog = cx.new(|cx| Catalog::new(env.clone(), shared.clone(), cx));
+            QuickSearch::new(shared, catalog, env, window, cx)
+        });
+        (quick, cx)
+    }
+
+    fn library(env: &Env) {
+        let path = db::db_path(env);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut conn = db::create(&path).unwrap();
+        let tx = conn.transaction().unwrap();
+        db::insert_artist(&tx, &json!({"id":"ar1","name":"Nightfall","albumCount":1})).unwrap();
+        db::insert_album(
+            &tx,
+            &json!({"id":"al1","name":"Low Tide","artist":"Nightfall","artistId":"ar1"}),
+        )
+        .unwrap();
+        db::insert_track(&tx, &json!({"id":"t1","title":"Drift","artist":"Nightfall","album":"Elsewhere","albumId":"al1","genres":[{"name":"Ambient"}]})).unwrap();
+        tx.commit().unwrap();
+    }
+
+    fn toggle(quick: &Entity<QuickSearch>, cx: &mut VisualTestContext) {
+        quick.update_in(cx, |q, window, cx| q.toggle(window, cx));
+        cx.run_until_parked();
+    }
+
+    #[test]
+    fn reopening_shows_the_last_text_selected_and_its_results_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        library(&env);
+        let mut app = TestAppContext::single();
+        let (quick, cx) = palette(&env, &mut app);
+        toggle(&quick, cx);
+        cx.simulate_input("low");
+        cx.run_until_parked();
+        let rows = |q: &QuickSearch| match &q.shown {
+            Shown::Rows(g) => g.iter().map(|g| g.section).collect::<Vec<_>>(),
+            _ => Vec::new(),
+        };
+        assert_eq!(quick.read_with(cx, |q, _| rows(q)).len(), 1);
+        // closed, then opened again
+        toggle(&quick, cx);
+        assert!(!quick.read_with(cx, |q, _| q.open));
+        toggle(&quick, cx);
+        let (value, sections) = quick.read_with(cx, |q, cx| (q.input.read(cx).value(), rows(q)));
+        assert_eq!(value, "low", "the field has the last text");
+        assert_eq!(sections.len(), 1, "its results are back");
+        assert!(
+            !sections.contains(&Section::Recent),
+            "the results of the text, not the recent list"
+        );
+        assert!(
+            quick.read_with(cx, |q, _| q.ready()),
+            "Enter runs the same search again"
+        );
+        // selected: typing replaces it
+        cx.simulate_input("ti");
+        cx.run_until_parked();
+        assert_eq!(quick.read_with(cx, |q, cx| q.input.read(cx).value()), "ti");
+    }
+
+    #[test]
+    fn reopening_on_a_genre_name_still_shows_the_genres() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        library(&env);
+        let mut app = TestAppContext::single();
+        let (quick, cx) = palette(&env, &mut app);
+        toggle(&quick, cx);
+        cx.simulate_input("ambient");
+        cx.run_until_parked();
+        let genres = |q: &QuickSearch| match &q.shown {
+            Shown::Rows(g) => g.iter().any(|g| g.section == Section::Genres),
+            _ => false,
+        };
+        assert!(quick.read_with(cx, |q, _| genres(q)), "found when typed");
+        toggle(&quick, cx);
+        toggle(&quick, cx);
+        assert!(
+            quick.read_with(cx, |q, _| genres(q)),
+            "and again once reopened on the same text"
+        );
+    }
+
+    #[test]
+    fn the_recents_the_copy_no_longer_holds_are_dropped_from_the_file_at_the_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        library(&env);
+        std::fs::create_dir_all(env.state_dir()).unwrap();
+        std::fs::write(
+            Settings::path(&env),
+            "theme = \"base\"\nrecent = [{ album = \"gone\" }, { album = \"al1\" }]\n",
+        )
+        .unwrap();
+        let mut app = TestAppContext::single();
+        let (_quick, cx) = palette(&env, &mut app);
+        cx.run_until_parked();
+        let s = Settings::load(&env);
+        assert_eq!(
+            s.recent,
+            [Seen::Album("al1".into())],
+            "only the present one"
+        );
+        assert_eq!(s.theme, Some(melodie_desktop::theme::Choice::Base));
+    }
+
+    #[test]
+    fn what_the_palette_notes_is_written_a_few_seconds_after_the_last_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        library(&env);
+        let mut app = TestAppContext::single();
+        let (quick, cx) = palette(&env, &mut app);
+        quick.update(cx, |q, cx| q.note(Seen::Album("al1".into()), cx));
+        quick.update(cx, |q, cx| q.note(Seen::Artist("ar1".into()), cx));
+        cx.run_until_parked();
+        assert!(
+            Settings::load(&env).recent.is_empty(),
+            "not at every page change"
+        );
+        cx.executor().advance_clock(super::SAVE_AFTER);
+        cx.run_until_parked();
+        assert_eq!(
+            Settings::load(&env).recent,
+            [Seen::Artist("ar1".into()), Seen::Album("al1".into())],
+            "both, in one write"
+        );
+    }
+
+    #[test]
+    fn what_is_waiting_to_be_written_is_written_when_the_window_closes() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        library(&env);
+        let mut app = TestAppContext::single();
+        let (quick, cx) = palette(&env, &mut app);
+        quick.update(cx, |q, cx| q.note(Seen::Album("al1".into()), cx));
+        cx.run_until_parked();
+        assert!(Settings::load(&env).recent.is_empty());
+        // the window is gone with the shutdown: nothing more to do through it
+        app.update(|cx| cx.shutdown());
+        assert_eq!(Settings::load(&env).recent, [Seen::Album("al1".into())]);
+    }
+
+    #[test]
+    fn clearing_empties_the_field_and_shows_what_was_seen_lately() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        library(&env);
+        let mut app = TestAppContext::single();
+        let (quick, cx) = palette(&env, &mut app);
+        toggle(&quick, cx);
+        assert!(quick.read_with(cx, |q, _| q.is_empty()));
+        cx.simulate_input("low");
+        cx.run_until_parked();
+        assert!(!quick.read_with(cx, |q, _| q.is_empty()));
+        let sections = |q: &QuickSearch| match &q.shown {
+            Shown::Rows(g) => g.len(),
+            _ => 0,
+        };
+        assert_eq!(quick.read_with(cx, |q, _| sections(q)), 1, "the results");
+        quick.update_in(cx, |q, window, cx| q.clear(window, cx));
+        cx.run_until_parked();
+        let (value, empty, open, rows) = quick.read_with(cx, |q, cx| {
+            (q.input.read(cx).value(), q.is_empty(), q.open, sections(q))
+        });
+        assert_eq!(value, "", "the field is empty");
+        assert!(empty && open, "and it stays open");
+        assert_eq!(rows, 0, "the results of the text are gone");
+    }
+
+    #[test]
+    fn escape_twice_does_not_make_the_palette_forget_its_last_search() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        library(&env);
+        let mut app = TestAppContext::single();
+        let (quick, cx) = palette(&env, &mut app);
+        toggle(&quick, cx);
+        cx.simulate_input("low");
+        cx.run_until_parked();
+        // the first Escape empties the field, the second closes the palette
+        quick.update_in(cx, |q, window, cx| q.clear(window, cx));
+        cx.run_until_parked();
+        toggle(&quick, cx);
+        assert!(!quick.read_with(cx, |q, _| q.open));
+        toggle(&quick, cx);
+        let (value, sections) = quick.read_with(cx, |q, cx| {
+            let sections = match &q.shown {
+                Shown::Rows(g) => g.iter().map(|g| g.section).collect::<Vec<_>>(),
+                _ => Vec::new(),
+            };
+            (q.input.read(cx).value(), sections)
+        });
+        assert_eq!(value, "low", "the last text searched is back");
+        assert_eq!(sections.len(), 1, "with its results");
+        assert!(!sections.contains(&Section::Recent), "not the recent list");
+        assert!(quick.read_with(cx, |q, _| q.ready()), "Enter runs it again");
+        // selected: typing replaces it
+        cx.simulate_input("ti");
+        cx.run_until_parked();
+        assert_eq!(quick.read_with(cx, |q, cx| q.input.read(cx).value()), "ti");
     }
 }

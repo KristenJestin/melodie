@@ -226,6 +226,7 @@ impl Root {
             dialog_open: self.views.dialogs.read(cx).is_open(),
             selection: c.selection.count(c.here()) > 0,
             field_empty: v.is_empty(),
+            palette_empty: self.views.quick.read(cx).is_empty(),
             sign_in: self.account.read(cx).screen(cx) == Screen::SignIn,
             sign_in_field_focused: self.views.sign_in.read(cx).has_focus(window, cx),
         })
@@ -282,6 +283,7 @@ impl Root {
             Act::ClearField => {
                 self.views.search.update(cx, |v, cx| v.clear(window, cx));
             }
+            Act::ClearPalette => self.views.quick.update(cx, |q, cx| q.clear(window, cx)),
             Act::Back => self.catalog.update(cx, |c, cx| c.back(cx)),
             Act::Forward => self.catalog.update(cx, |c, cx| c.forward(cx)),
             Act::PlayPause => self.shared.update(cx, |s, cx| {
