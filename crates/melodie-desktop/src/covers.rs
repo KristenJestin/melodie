@@ -295,6 +295,15 @@ impl Queue {
             .collect()
     }
 
+    /// The first time after `after` (or from now on) a cover given up may be asked again.
+    pub fn next_retry(&self, after: Option<Instant>) -> Option<Instant> {
+        self.retry_at
+            .values()
+            .filter(|at| after.is_none_or(|after| **at > after))
+            .min()
+            .copied()
+    }
+
     /// A cover given up whose wait is over: true once.
     fn due(&mut self, w: &Want, now: Instant) -> bool {
         let due = self.retry_at.get(w).is_some_and(|at| *at <= now);
@@ -442,6 +451,46 @@ impl Queue {
             }
         }
         None
+    }
+}
+
+/// When the views ask again for the covers they show: a view asks only when what it shows
+/// changes, so a cover given up while on screen would wait on the glyph until a scroll. A timer
+/// rings when the first wait is over; each ring is a new [`Retries::round`], which the views
+/// showing covers take as a change.
+#[derive(Default)]
+pub struct Retries {
+    planned: Option<Instant>,
+    last: Option<Instant>,
+    round: u64,
+}
+
+impl Retries {
+    /// When to set a timer for, if one is needed: one is set for the next wait to end, unless a
+    /// timer rings sooner. A wait that ended at a ring already is left to the views (a cover no
+    /// longer shown is asked again only when shown).
+    pub fn plan(&mut self, queue: &Queue) -> Option<Instant> {
+        let next = queue.next_retry(self.last)?;
+        if self.planned.is_some_and(|planned| planned <= next) {
+            return None;
+        }
+        self.planned = Some(next);
+        Some(next)
+    }
+
+    /// The timer set for `at` rang; false when another one replaced it.
+    pub fn rang(&mut self, at: Instant) -> bool {
+        if self.planned != Some(at) {
+            return false;
+        }
+        self.planned = None;
+        self.last = Some(at);
+        self.round += 1;
+        true
+    }
+
+    pub fn round(&self) -> u64 {
+        self.round
     }
 }
 
@@ -753,6 +802,59 @@ mod tests {
         });
         assert_eq!(fetches, 1);
         assert!(found.contains_key("c1"), "the row gets its cover back");
+    }
+
+    /// Review of #84: the server fails two minutes, the 30 covers of the queue on screen are
+    /// given up, it comes back; the queue stays open, nobody scrolls. Asking again was left to a
+    /// view asking again, which it does only when its rows change: they stayed on the glyph.
+    #[test]
+    fn covers_given_up_on_screen_come_back_without_a_scroll() {
+        let (_d, env) = env();
+        let (mut q, mut retries, t0) = (Queue::default(), Retries::default(), Instant::now());
+        let rows: Vec<String> = (0..30).map(|i| format!("c{i}")).collect();
+        let shown = |q: &mut Queue, at: Instant| q.ask(rows.clone(), Use::SMALL, 1.0, at, true);
+        let new = shown(&mut q, t0);
+        q.missing_first(new);
+        drain_at(&env, &mut q, t0, |_| Fetch::Failed);
+        assert!(q.start().is_none(), "all given up");
+
+        let at = retries.plan(&q).expect("a timer is set");
+        assert_eq!(at, t0 + RETRY_AFTER);
+        assert_eq!(retries.plan(&q), None, "one timer, not one per round");
+        assert_eq!(retries.round(), 0);
+        assert!(retries.rang(at));
+        assert_eq!(retries.round(), 1, "the views showing covers ask again");
+        let again = shown(&mut q, at);
+        assert_eq!(again.len(), 30);
+        q.missing_first(again);
+        let (_, found) = drain_at(&env, &mut q, at, |wants| {
+            wants.iter().for_each(|w| put_want(&env, w));
+            Fetch::Done
+        });
+        assert_eq!(found.len(), 30, "every row gets its cover back");
+        assert_eq!(retries.plan(&q), None, "nothing left to wait for");
+    }
+
+    #[test]
+    fn a_cover_given_up_and_no_longer_shown_does_not_ring_again() {
+        let (_d, env) = env();
+        let (mut q, mut retries, t0) = (Queue::default(), Retries::default(), Instant::now());
+        q.missing(ids(&["gone"]));
+        drain_at(&env, &mut q, t0, |_| Fetch::Failed);
+        let t1 = t0 + Duration::from_secs(10);
+        q.missing(ids(&["later"]));
+        drain_at(&env, &mut q, t1, |_| Fetch::Failed);
+
+        let first = retries.plan(&q).unwrap();
+        assert_eq!(first, t0 + RETRY_AFTER);
+        assert!(retries.rang(first));
+        // nobody shows `gone` any more: it waits, due, for a view to ask for it
+        let second = retries.plan(&q).unwrap();
+        assert_eq!(second, t1 + RETRY_AFTER, "the next one, not `gone` again");
+        assert!(!retries.rang(first), "a timer replaced is ignored");
+        assert!(retries.rang(second));
+        assert_eq!(retries.plan(&q), None);
+        assert_eq!(retries.round(), 2);
     }
 
     #[test]

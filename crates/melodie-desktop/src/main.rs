@@ -186,7 +186,7 @@ impl Root {
             cx.observe(&shared, move |this, shared, cx| {
                 let open = shared.read(cx).queue_open;
                 if open && !was_open {
-                    this.views.queue.read(cx).reveal_current(cx);
+                    this.views.queue.read(cx).opened(cx);
                 }
                 was_open = open;
             }),

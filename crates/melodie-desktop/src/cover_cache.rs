@@ -5,7 +5,9 @@
 use gpui_kit::*;
 use melodie_core::cover::{Disk, Want};
 use melodie_core::env::Env;
-use melodie_desktop::covers::{self, FADE_KEEP, Fetch, Files, Queue, ROUND_LIMIT, Use, resolve};
+use melodie_desktop::covers::{
+    self, FADE_KEEP, Fetch, Files, Queue, ROUND_LIMIT, Retries, Use, resolve,
+};
 use melodie_desktop::launch;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -18,6 +20,7 @@ pub struct CoverCache {
     pub files: Arc<Files>,
     /// The screen's scale factor: a cover is asked at the pixels it is drawn with.
     scale: f32,
+    retries: Retries,
 }
 
 impl CoverCache {
@@ -27,11 +30,18 @@ impl CoverCache {
             queue: Queue::default(),
             files: Arc::default(),
             scale,
+            retries: Retries::default(),
         }
     }
 
     pub fn scale(&self) -> f32 {
         self.scale
+    }
+
+    /// Grows when covers given up may be asked again: a view that asks for the covers it shows
+    /// only when they change takes it as a change (see [`Retries`]).
+    pub fn retry_round(&self) -> u64 {
+        self.retries.round()
     }
 
     /// The window moved to a screen of another scale factor: what was asked is asked again at
@@ -45,9 +55,9 @@ impl CoverCache {
         self.look_up(new, false, cx);
     }
 
-    /// Looks up the covers not asked before; those with no file as large as `usage` draws them
-    /// are fetched, a few at a time, until they are on disk, are the server's default image or
-    /// have failed for good. With `first`, the missing ones go before those already waiting:
+    /// Looks up the covers not asked before, and those given up whose wait is over; those with
+    /// no file as large as `usage` draws them are fetched, a few at a time, until they are on
+    /// disk, are the server's default image or have failed a few times in a row. With `first`, the missing ones go before those already waiting:
     /// what is on screen does not wait for a library.
     pub fn want(
         &mut self,
@@ -103,6 +113,7 @@ impl CoverCache {
             let Ok(wait) = this.update(cx, |this, cx| {
                 let wait = this.queue.finish(&batch, &round, Instant::now());
                 this.add(round.found, cx);
+                this.plan_retry(cx);
                 wait
             }) else {
                 return;
@@ -113,6 +124,23 @@ impl CoverCache {
             let _ = this.update(cx, |this, cx| {
                 this.queue.resume();
                 this.pump(cx)
+            });
+        })
+        .detach();
+    }
+
+    fn plan_retry(&mut self, cx: &mut Context<Self>) {
+        let Some(at) = self.retries.plan(&self.queue) else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let wait = at.saturating_duration_since(Instant::now());
+            cx.background_executor().timer(wait).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.retries.rang(at) {
+                    cx.notify();
+                    this.plan_retry(cx);
+                }
             });
         })
         .detach();
