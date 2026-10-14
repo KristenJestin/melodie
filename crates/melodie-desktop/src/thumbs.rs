@@ -159,6 +159,7 @@ mod tests {
             wanted(&tracks)
                 .into_iter()
                 .map(|id| Want::new(id, Tier::Thumb)),
+            std::time::Instant::now(),
         );
         queue.missing(new);
         let batch = queue.start().unwrap();
@@ -170,7 +171,7 @@ mod tests {
             }
             Fetch::Done
         });
-        queue.finish(&batch, &r);
+        queue.finish(&batch, &r, std::time::Instant::now());
         let thumbs = resolve(&env, &tracks);
         assert_eq!(thumbs.len(), 3, "every row has its picture, no restart");
         assert_eq!(thumbs[&1], cover::thumb_path(&env, "c1"));

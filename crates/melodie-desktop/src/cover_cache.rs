@@ -43,7 +43,7 @@ impl CoverCache {
             return;
         }
         self.scale = scale;
-        let new = self.queue.ask_again(scale);
+        let new = self.queue.ask_again(scale, Instant::now());
         self.look_up(new, false, cx);
     }
 
@@ -58,7 +58,9 @@ impl CoverCache {
         first: bool,
         cx: &mut Context<Self>,
     ) {
-        let new = self.queue.ask(ids.into_iter().collect(), usage, self.scale);
+        let new = self
+            .queue
+            .ask(ids.into_iter().collect(), usage, self.scale, Instant::now());
         self.look_up(new, first, cx);
     }
 
@@ -97,7 +99,7 @@ impl CoverCache {
         cx.spawn(async move |this, cx| {
             let round = task.await;
             let Ok(wait) = this.update(cx, |this, cx| {
-                let wait = this.queue.finish(&batch, &round);
+                let wait = this.queue.finish(&batch, &round, Instant::now());
                 this.add(round.found, cx);
                 wait
             }) else {
