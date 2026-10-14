@@ -236,6 +236,20 @@ impl QuickSearch {
         cx.notify();
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.text.is_empty()
+    }
+
+    /// Empties the field, as Escape does on the search page: the palette stays open on what was
+    /// seen lately.
+    pub fn clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.text.clear();
+        // no change event for this one
+        self.input.update(cx, |i, cx| i.set_value("", window, cx));
+        self.ask(None, cx);
+        cx.notify();
+    }
+
     /// Closes it; the focus goes back where it was.
     pub fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open = false;
@@ -842,5 +856,36 @@ mod tests {
         // the window is gone with the shutdown: nothing more to do through it
         app.update(|cx| cx.shutdown());
         assert_eq!(Settings::load(&env).recent, [Seen::Album("al1".into())]);
+    }
+
+    #[test]
+    fn clearing_empties_the_field_and_shows_what_was_seen_lately() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        library(&env);
+        let mut app = TestAppContext::single();
+        let (quick, cx) = palette(&env, &mut app);
+        toggle(&quick, cx);
+        assert!(quick.read_with(cx, |q, _| q.is_empty()));
+        cx.simulate_input("low");
+        cx.run_until_parked();
+        assert!(!quick.read_with(cx, |q, _| q.is_empty()));
+        let sections = |q: &QuickSearch| match &q.shown {
+            Shown::Rows(g) => g.len(),
+            _ => 0,
+        };
+        assert_eq!(quick.read_with(cx, |q, _| sections(q)), 1, "the results");
+        quick.update_in(cx, |q, window, cx| q.clear(window, cx));
+        cx.run_until_parked();
+        let (value, empty, open, rows) = quick.read_with(cx, |q, cx| {
+            (q.input.read(cx).value(), q.is_empty(), q.open, sections(q))
+        });
+        assert_eq!(value, "", "the field is empty");
+        assert!(empty && open, "and it stays open");
+        assert_eq!(rows, 0, "the results of the text are gone");
+        // closed and opened again: the recents, not the old text
+        toggle(&quick, cx);
+        toggle(&quick, cx);
+        assert_eq!(quick.read_with(cx, |q, cx| q.input.read(cx).value()), "");
     }
 }

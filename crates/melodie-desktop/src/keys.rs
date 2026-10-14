@@ -90,6 +90,8 @@ pub struct Situation<'a> {
     /// Rows of the current list are picked.
     pub selection: bool,
     pub field_empty: bool,
+    /// The palette's field holds no text.
+    pub palette_empty: bool,
     /// The sign-in screen covers the window.
     pub sign_in: bool,
     /// The focus is in one of the sign-in screen's fields.
@@ -117,6 +119,8 @@ pub enum Act {
     Confirm,
     ClearSelection,
     ClearField,
+    /// Empties the palette's field, which stays open.
+    ClearPalette,
     Back,
     Forward,
     PlayPause,
@@ -184,6 +188,8 @@ pub fn act(key: Key, s: Situation) -> Act {
     // over the current place: its keys first, and what is typed goes to its field
     if s.palette_open {
         return match key {
+            // like the search page: the text goes first, then the palette closes
+            Key::Escape if !s.palette_empty => Act::ClearPalette,
             Key::Palette | Key::Escape => Act::TogglePalette,
             Key::Up => Act::PaletteUp,
             Key::Down => Act::PaletteDown,
@@ -238,6 +244,7 @@ mod tests {
             dialog_open: false,
             selection: false,
             field_empty: true,
+            palette_empty: true,
             sign_in: false,
             sign_in_field_focused: false,
         }
@@ -625,6 +632,24 @@ mod tests {
                 ..menu
             };
             assert_eq!(act(Key::Escape, palette), Act::TogglePalette, "{here:?}");
+        }
+    }
+
+    #[test]
+    fn escape_in_the_palette_empties_a_filled_field_then_closes_it() {
+        for here in places() {
+            let open = Situation {
+                palette_open: true,
+                ..at(&here, false)
+            };
+            assert_eq!(act(Key::Escape, open), Act::TogglePalette, "{here:?}");
+            let filled = Situation {
+                palette_empty: false,
+                ..open
+            };
+            assert_eq!(act(Key::Escape, filled), Act::ClearPalette, "{here:?}");
+            // Ctrl+K still closes it, whatever the field holds
+            assert_eq!(act(Key::Palette, filled), Act::TogglePalette, "{here:?}");
         }
     }
 }
