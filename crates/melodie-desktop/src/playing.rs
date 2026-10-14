@@ -43,7 +43,7 @@ pub const BARS: usize = 3;
 /// meeting the start so that it repeats without a jump): from a fifth of its room to all of it.
 /// Each bar goes at its own pace and from its own place, so that they do not rise together.
 pub fn level(bar: usize, t: f32) -> f32 {
-    const TURNS: [f32; BARS] = [2.0, 3.0, 1.0];
+    const TURNS: [f32; BARS] = [4.0, 3.0, 2.0];
     const FROM: [f32; BARS] = [0.0, 0.35, 0.7];
     let wave = (std::f32::consts::TAU * (TURNS[bar] * t + FROM[bar])).sin();
     0.2 + 0.8 * (0.5 + 0.5 * wave)
