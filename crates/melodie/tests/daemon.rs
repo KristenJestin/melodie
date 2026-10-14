@@ -1382,6 +1382,33 @@ fn sans_copie_entree_en_cours_puis_copie_en_fond() {
 }
 
 #[test]
+fn a_first_copy_cut_off_still_answers_that_the_copy_runs_and_says_it_is_not_finished() {
+    let sb = Sandbox::new(true);
+    // the songs come in one page; the next one, which would say there are no more, fails
+    *sb.fake.state.fail_from_song.lock().unwrap() = Some(1);
+    assert!(!sb.run(&["sync"]).status.success());
+    let st = sb.ok(&["status"]);
+    assert!(st.contains("première copie pas finie"), "{st}");
+    // the launcher and the voice assistant keep the answer they know until the copy is complete
+    let out = sb.ok(&["search", "--json", "titre"]);
+    let v: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v.as_array().unwrap().len(), 1, "{out}");
+    assert_eq!(v[0]["name"], "Copie de la bibliothèque en cours…");
+    *sb.fake.state.fail_from_song.lock().unwrap() = None;
+    // `search` took the copy up again in the background; a `sync` may find it still running
+    wait_until(10, "the first copy complete", || {
+        let st = sb.ok(&["status"]);
+        if st.contains("Synchro     : aucune en cours") && st.contains("pas finie") {
+            sb.ok(&["sync"]);
+        }
+        let st = sb.ok(&["status"]);
+        !st.contains("pas finie") && st.contains("synchronisée le")
+    });
+    let out = sb.ok(&["search", "--json", "titre"]);
+    assert!(out.contains("track:t1"), "{out}");
+}
+
+#[test]
 fn copie_vieille_repond_tout_de_suite_et_se_met_a_jour() {
     let sb = Sandbox::new(true);
     sb.ok(&["sync", "--full"]);
@@ -2194,7 +2221,19 @@ const MALFORMED: [&str; 9] = [
 fn wait_for_the_first_copy(sb: &Sandbox) {
     let db = sb.home().join(".cache/melodie/library.db");
     let end = Instant::now() + Duration::from_secs(20);
-    while !db.exists() {
+    // the first copy is made in place: the file is there from its start, `synced_at` at its end
+    let complete = || {
+        rusqlite::Connection::open(&db)
+            .and_then(|c| {
+                c.query_row(
+                    "SELECT count(*) FROM meta WHERE key = 'synced_at'",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )
+            })
+            .is_ok_and(|n| n == 1)
+    };
+    while !db.exists() || !complete() {
         assert!(Instant::now() < end, "no local copy was made");
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -2828,4 +2867,68 @@ fn a_start_past_the_end_changes_nothing_on_a_live_queue() {
     assert_eq!(r["ok"], false, "{r}");
     assert_eq!(sb.queue_list(), before);
     assert_eq!(sb.now()["id"], "t1");
+}
+
+/// The ids of the mix `args` would play, computed alone with `--json` (same seed, same mix).
+fn mix_ids(sb: &Sandbox, args: &[&str]) -> Vec<String> {
+    let list: Value = serde_json::from_str(&sb.ok(&[args, &["--json"]].concat())).unwrap();
+    list.as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            let c = e["action"]["command"].as_str().unwrap();
+            c.rsplit(' ').next().unwrap().to_string()
+        })
+        .collect()
+}
+
+#[test]
+fn a_mix_played_next_goes_after_the_current_track_without_interrupting_it() {
+    let sb = Sandbox::new(true);
+    long_album_copied(&sb);
+    let mix = ["mix", "me", "--seed", "1", "--size", "3"];
+    let picked = mix_ids(&sb, &mix);
+    assert_eq!(picked.len(), 3);
+    sb.ok(&["play", "track", "--", "t1", "t2"]);
+    wait_until(5, "t1 playing", || sb.now()["state"] == "playing");
+    let out = sb.ok(&[&mix[..], &["--next"]].concat());
+    assert!(out.contains("3 morceaux"), "{out}");
+    let mut expected = ids_of(&["t1"]);
+    expected.extend(picked);
+    expected.push("t2".into());
+    assert_eq!(queue_ids(&sb), expected);
+    let now = sb.now();
+    assert_eq!(
+        (now["id"].as_str(), now["state"].as_str()),
+        (Some("t1"), Some("playing"))
+    );
+    assert_eq!(sb.queue_list()["current"], 0);
+}
+
+#[test]
+fn a_mix_added_to_the_queue_goes_at_its_end() {
+    let sb = Sandbox::new(true);
+    long_album_copied(&sb);
+    let mix = ["mix", "me", "--seed", "2", "--size", "2"];
+    let picked = mix_ids(&sb, &mix);
+    sb.ok(&["play", "track", "--", "t1", "t2"]);
+    wait_until(5, "t1 playing", || sb.now()["state"] == "playing");
+    sb.ok(&[&mix[..], &["--queue"]].concat());
+    let mut expected = ids_of(&["t1", "t2"]);
+    expected.extend(picked);
+    assert_eq!(queue_ids(&sb), expected);
+    assert_eq!(sb.now()["id"], "t1");
+}
+
+#[test]
+fn a_mix_played_next_with_nothing_playing_plays() {
+    let sb = Sandbox::new(true);
+    long_album_copied(&sb);
+    let mix = ["mix", "me", "--seed", "3", "--size", "3"];
+    let picked = mix_ids(&sb, &mix);
+    sb.ok(&[&mix[..], &["--next"]].concat());
+    assert_eq!(queue_ids(&sb), picked);
+    wait_until(5, "the mix playing", || {
+        sb.now()["id"] == picked[0].as_str()
+    });
 }

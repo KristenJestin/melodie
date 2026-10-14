@@ -61,6 +61,8 @@ pub enum Empty {
     Loading,
     /// No local copy yet.
     NoCopy,
+    /// The library is being copied: what is not there yet is on its way.
+    Copying,
     Failed,
 }
 
@@ -90,6 +92,8 @@ pub struct Catalog {
     cover_cache: Entity<CoverCache>,
     /// The last read of the local copy failed this way.
     pub empty: Empty,
+    /// A copy of the library runs: an empty view says it is coming.
+    pub copying: bool,
     /// The user logged in: the playlists that are theirs can be added to.
     pub user: Option<String>,
     /// The rows picked in the current list.
@@ -128,6 +132,7 @@ impl Catalog {
             covers: Arc::default(),
             cover_cache,
             empty: Empty::Loading,
+            copying: false,
             user,
             selection: Selection::default(),
             shared,
@@ -409,9 +414,14 @@ impl Catalog {
             let _ = this.update(cx, |this, cx| {
                 match answer {
                     Ok(Some(v)) => {
-                        this.empty = Empty::Loading;
+                        this.empty = if this.copying {
+                            Empty::Copying
+                        } else {
+                            Empty::Loading
+                        };
                         apply(this, v, cx);
                     }
+                    Ok(None) if this.copying => this.empty = Empty::Copying,
                     Ok(None) => this.empty = Empty::NoCopy,
                     Err(_) => this.empty = Empty::Failed,
                 }
@@ -645,5 +655,63 @@ impl Catalog {
     /// Runs `melodie` for an action; what it says is said in the window.
     pub fn run(&self, job: launch::Job, cx: &mut App) {
         self.shared.update(cx, |s, cx| s.run(job, cx));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // not `super::*`: it would bring the `test` macro of GPUI along
+    use super::Catalog;
+    use gpui_kit::{AppContext as _, TestAppContext};
+    use melodie_core::db;
+    use melodie_core::env::Env;
+    use melodie_desktop::browse::Place;
+    use melodie_desktop::selection::How;
+
+    /// A local copy holding the tracks `ids`.
+    fn copy_of(env: &Env, ids: &[&str]) {
+        let path = db::db_path(env);
+        let conn = db::open_existing(env)
+            .unwrap()
+            .unwrap_or_else(|| db::create(&path).unwrap());
+        for id in ids {
+            conn.execute("INSERT INTO tracks(id, title) VALUES (?1, ?1)", [id])
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn a_new_step_of_the_copy_keeps_the_selection_unless_its_rows_may_shift() {
+        let mut app = TestAppContext::single();
+        let d = tempfile::tempdir().unwrap();
+        let env = Env::with_home(d.path());
+        copy_of(&env, &["b", "d", "f", "h", "j", "l"]);
+        let catalog = app.update(|cx| {
+            let shared = crate::app::for_tests(env.clone(), cx);
+            cx.new(|cx| Catalog::new(env.clone(), shared, cx))
+        });
+        catalog.update(&mut app, |c, cx| c.start_at(Place::Tracks, cx));
+        app.run_until_parked();
+        catalog.update(&mut app, |c, _| {
+            let shown = c.views[&Place::Tracks].clone();
+            c.selection.click(&Place::Tracks, &shown, 2, How::Toggle);
+            c.selection.click(&Place::Tracks, &shown, 4, How::Range);
+            assert_eq!(c.selection.count(&Place::Tracks), 3);
+        });
+        // a step that brought nothing to this list: the rows stay picked
+        catalog.update(&mut app, |c, cx| c.reload(cx));
+        app.run_until_parked();
+        assert_eq!(
+            catalog.read_with(&app, |c, _| c.selection.count(&Place::Tracks)),
+            3
+        );
+        // tracks came in before the picked rows: their ranks now hold others
+        copy_of(&env, &["a", "c"]);
+        catalog.update(&mut app, |c, cx| c.reload(cx));
+        app.run_until_parked();
+        catalog.read_with(&app, |c, _| {
+            assert_eq!(c.views[&Place::Tracks].len(), 8);
+            assert_eq!(c.selection.count(&Place::Tracks), 0);
+        });
     }
 }

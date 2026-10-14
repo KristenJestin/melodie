@@ -25,6 +25,8 @@ pub enum What {
 
 pub struct Opts {
     pub queue: bool,
+    /// With `queue`: right after the current track.
+    pub next: bool,
     pub print: bool,
     pub json: bool,
     pub seed: Option<u64>,
@@ -122,7 +124,7 @@ pub fn run(env: &Env, what: &What, o: &Opts) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     let tracks = list.into_iter().map(|d| d.info).collect();
-    match ctl::play_list(env, tracks, o.queue) {
+    match ctl::play_list(env, tracks, o.queue, o.next) {
         Ok(_) => ExitCode::SUCCESS,
         Err(f) => ctl::report(&f),
     }

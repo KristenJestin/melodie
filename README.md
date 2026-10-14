@@ -225,7 +225,9 @@ Screenshots and a recording of the animations, made with invented data, are in
     there) or add them anyway.
   - Actions run `melodie` (`play`, `queue`, `mix`, `playlist add|create|rename|delete|remove|move|
     duplicates`): what needs the server still goes through it, and the window reads the local copy
-    again when it is done. The jobs of one playlist run one after the other, in the order asked. Covers come from `~/.cache/melodie/covers/`, at the size
+    again when it is done. The jobs of one playlist run one after the other, in the order asked. The jobs that change what plays
+    run one after the other too; one that replaces the queue (a play, a mix) drops those still
+    waiting, which it would wipe anyway, and the palette's recents note an item when its job runs. Covers come from `~/.cache/melodie/covers/`, at the size
     the window draws them: the window asks for the pixels a cover covers times the screen's scale
     factor and draws the smallest file that is not upscaled (128 px for list rows, 300 px for
     grids, rows and page headers, 512 px, the daemon's own file, above that, as on a screen at
@@ -256,7 +258,7 @@ Screenshots and a recording of the animations, made with invented data, are in
   artist: play, shuffle, play next, add to the queue, instant mix, add to a playlist, like or
   unlike, and an album's artist. A playlist: play, shuffle, play next, add to the queue, add to
   another playlist, and for the user's own, rename and delete (with the confirmation). A mix:
-  play, add to the queue (`melodie mix` has no "next"). What cannot apply is left out: the track
+  play, play next, add to the queue (`melodie mix --next`, `--queue`: computed once). What cannot apply is left out: the track
   playing is not offered to play, a page is not offered from that page, a heart only once the
   local copy says whether it is a favourite. "Add to playlist" opens the user's playlists beside
   it, and "New playlist…"; the choice goes through the same dialogs as above (an artist's or a
@@ -272,8 +274,8 @@ Screenshots and a recording of the animations, made with invented data, are in
   beside it closes it and gives the focus back where it was. It is the search page's search,
   with the genres of the local copy after the other kinds. Up and Down move through the results
   across the groups (round the ends); Enter plays a track, opens an album, an artist or a playlist,
-  plays a genre's mix; Shift+Enter adds to the queue; Ctrl+Enter opens a track's album, or plays
-  an album, an artist or a playlist. The keys of the row chosen are shown at the bottom. Before
+  plays a genre's mix; Shift+Enter adds to the queue (a genre's mix too); Ctrl+Enter opens a track's
+  album, plays an album, an artist or a playlist, or plays a genre's mix next. The keys of the row chosen are shown at the bottom. Before
   anything is typed it lists what was opened (album, artist and playlist pages) or played (tracks,
   genre mixes) in the window, the last eight, kept between two launches, then the albums played
   last according to the local copy; what the local copy no longer holds is dropped when the
@@ -304,6 +306,19 @@ Screenshots and a recording of the animations, made with invented data, are in
   connection state, with "Sign out" (`melodie logout`: the address stays for the next sign-in);
   when the local copy was last made, with "Sync now" (`melodie sync`). The library is read again
   when a new copy is there, the first one after a sign-in included.
+- **First copy**: signed in with no complete local copy (however the login was made: in the
+  window, with `melodie login`, or a keyring brought from another machine), the window starts
+  the first copy itself (`melodie sync`), once, as soon as `melodie status` says the login
+  holds. The views fill while it runs (read again every few seconds, the scroll position kept, a
+  selection cleared when the rows of its list changed), and the bottom of the window says how
+  far it is ("Copying the library: 120 albums, 1500 tracks so far"). A copy that fails says why
+  (`no-login` and `auth-refused` bring the sign-in screen, `unreachable` says "Navidrome is
+  unreachable"; the settings say the copy is not finished); one cut off is taken up again by the
+  next. A copy the window did not start (the one `melodie login` starts, or one already running
+  when the window asked) is taken up by the window once it stands still and no `melodie sync`
+  runs; one that stands still a quarter of an hour while a run holds it is said ("The copy of
+  the library is not moving"). A local copy made for another server or user is made again in
+  full by the next `melodie sync`.
 - **Colours**: the button at the top right chooses the theme. "Mélodie", the base theme, takes its
   colours from the cover and follows the desktop's dark or light setting. "Omarchy" is offered
   only on Omarchy (`ID=omarchy` in `/etc/os-release` and a readable
@@ -491,7 +506,8 @@ Computed on `library.db`, without network and without radio, in about twenty mil
 call per track) and sends them to the daemon like `play`; the stream address is still built by the
 daemon.
 
-Options of `mix`: `--queue` (appends to the queue), `--print` (prints the list without playing),
+Options of `mix`: `--queue` (appends to the queue), `--next` (puts the tracks right after the
+current one without stopping it; with nothing playing, plays them), `--print` (prints the list without playing),
 `--json` (track entries in the launcher format, without playing), `--seed N` (reproducible
 result), `--size N` (50 by default).
 
@@ -584,7 +600,14 @@ once "Copie de la bibliothèque en cours…" (see "Automatic synchronisation").
 
 - Full sync: `search3` with an empty query, in pages of 500 (artists, albums with the date each
   was added, tracks), `getPlaylists` and the tracks of each playlist (`getPlaylist`), `getStarred2`,
-  all in one transaction on a temporary file.
+  all in one transaction on a temporary file: a full sync that fails keeps the previous copy.
+- First copy (no copy yet): there is nothing to keep, so it is made in place and each page of 500
+  is committed as it comes; the copy is readable while it fills (the window shows it growing), and
+  `meta` says it is not finished (`copying`, where it goes on from). Cut off, it is taken up again
+  where it stopped by the next synchronisation, whatever starts it, from the same server for the
+  same user (otherwise it starts again). Only the window reads it
+  before it is finished: until then, the command line answers "Copie de la bibliothèque en
+  cours…" as when there is no copy, and takes the copy up again in the background.
 - Incremental sync: `getScanStatus` (`lastScan`) compared with the stored value; unchanged:
   playlists (the tracks of a playlist are read again only when its `changed` date moved),
   favourites, play counters (`getAlbumList2` `recent` and `frequent`, 500; the tracks of an album

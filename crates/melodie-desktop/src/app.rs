@@ -88,6 +88,8 @@ pub struct Shared {
     pub player: Player,
     /// Which rows of the lists are the music playing now.
     pub playing: Playing,
+    /// The play of some rows asked from a playlist's page, until it runs.
+    played_from: Option<(Job, String)>,
     pub art: Art,
     /// The picture of each row of the queue, by entry; kept up to date away from the render path.
     pub thumbs: Arc<Thumbs>,
@@ -195,19 +197,12 @@ impl Shared {
 
     /// Runs `melodie` for what needs the server; its first error line is said in the window.
     pub fn run(&mut self, job: Job, cx: &mut Context<Self>) {
-        if let Some(seen) = Seen::of_job(&job) {
-            cx.emit(Started(seen));
-        }
-        if let Job::Play {
-            kind: Kind::Playlist,
-            id,
-            ..
-        } = &job
-        {
-            self.playing.start_playlist(id);
-        }
         if !job.plays() {
             return self.spawn_run(job, cx);
+        }
+        // at most one job runs ahead of the newest click
+        if job.replaces() {
+            self.play_jobs.drop_waiting(PLAYER);
         }
         if let Some(job) = self.play_jobs.start(PLAYER, job) {
             self.spawn_run(job, cx);
@@ -218,13 +213,30 @@ impl Shared {
     /// the queue it makes is the playlist's (`playing` marks the playlist, and which occurrence).
     pub fn play_from(&mut self, here: &Place, job: Job, cx: &mut Context<Self>) {
         if let (Place::Playlist(id), Job::PlayTracks { .. }) = (here, &job) {
-            self.playing.start_playlist(id);
+            self.played_from = Some((job.clone(), id.clone()));
         }
         self.run(job, cx);
     }
 
     /// Runs `job` now; when it is done, the next job that changes what plays, if it is one.
-    fn spawn_run(&self, job: Job, cx: &mut Context<Self>) {
+    fn spawn_run(&mut self, job: Job, cx: &mut Context<Self>) {
+        // noted when it runs: a job dropped while it waited was never played
+        if let Some(seen) = Seen::of_job(&job) {
+            cx.emit(Started(seen));
+        }
+        match &job {
+            Job::Play {
+                kind: Kind::Playlist,
+                id,
+                ..
+            } => self.playing.start_playlist(id),
+            Job::PlayTracks { .. } => {
+                if let Some((_, id)) = self.played_from.take_if(|(from, _)| *from == job) {
+                    self.playing.start_playlist(&id);
+                }
+            }
+            _ => {}
+        }
         let lane = job.plays();
         let program = self.program.clone();
         let what = match &job {
@@ -236,7 +248,7 @@ impl Shared {
             Job::Mix { .. } => "Could not make the mix",
             Job::AddToPlaylist { .. } => "Could not add to the playlist",
             Job::MixGenre { .. } => "Could not make the mix",
-            Job::QueueMix(_) => "Could not add the mix to the queue",
+            Job::QueueMix { .. } => "Could not add the mix to the queue",
             // run by `run_then`, which says what they did
             Job::CheckAdd { .. }
             | Job::CreatePlaylist { .. }
@@ -580,6 +592,7 @@ pub fn bare(env: Env, program: PathBuf, cx: &mut App) -> Entity<Shared> {
     cx.new(|_| Shared {
         player: Player::default(),
         playing: Playing::default(),
+        played_from: None,
         art: Art::default(),
         thumbs: Arc::default(),
         thumbs_of: None,
@@ -627,6 +640,42 @@ pub fn is_dark(a: WindowAppearance) -> bool {
     matches!(a, WindowAppearance::Dark | WindowAppearance::VibrantDark)
 }
 
+/// The state of a window without a screen nor a daemon, for the window's own tests.
+#[cfg(test)]
+pub fn for_tests(env: Env, cx: &mut App) -> Entity<Shared> {
+    let covers = cx.new(|_| CoverCache::new(env.clone(), 1.));
+    let waves = cx.new(|_| WaveCache::new(env.clone()));
+    cx.new(|_| Shared {
+        player: Player::default(),
+        playing: Playing::default(),
+        played_from: None,
+        art: Art::default(),
+        thumbs: Arc::default(),
+        thumbs_of: None,
+        thumbs_gen: 0,
+        covers,
+        waves,
+        theme: ThemeState {
+            omarchy: Omarchy::system(&env),
+            stored: None,
+            detected: false,
+            palette: None,
+        },
+        dark: true,
+        queue_open: false,
+        settings_open: false,
+        failure: None,
+        failures: 0,
+        socket: env.state_dir().join("no-daemon.sock"),
+        // never a real `melodie`
+        program: env.state_dir().join("no-melodie"),
+        env,
+        _watch: None,
+        playlist_jobs: Lanes::default(),
+        play_jobs: Lanes::default(),
+    })
+}
+
 /// Builds the state and starts following the daemon and the theme.
 pub fn start(
     env: Env,
@@ -656,6 +705,7 @@ pub fn start(
     let shared = cx.new(|_| Shared {
         player: Player::default(),
         playing: Playing::default(),
+        played_from: None,
         art: Art::default(),
         thumbs: Arc::default(),
         thumbs_of: None,
@@ -741,7 +791,7 @@ pub fn start(
 
 #[cfg(test)]
 mod tests {
-    use super::{Shared, bare, fake_melodie, ran};
+    use super::{Seen, Shared, Started, bare, fake_melodie, ran};
     use gpui_kit::Entity;
     use gpui_kit::{TestAppContext, TestDispatcher};
     use melodie_core::db;
@@ -751,6 +801,8 @@ mod tests {
     use melodie_desktop::launch::Job;
     use melodie_desktop::launch::Kind;
     use melodie_desktop::model::{PlayState, Player};
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
     #[test]
     fn the_plays_run_one_after_the_other_in_the_order_clicked() {
@@ -780,8 +832,8 @@ mod tests {
             app.run_until_parked();
             assert_eq!(
                 ran(&program),
-                "play album -- first\nqueue track --next -\nsecond\nplay album -- third\n",
-                "seed {seed}: the last click wins"
+                "play album -- first\nplay album -- third\n",
+                "seed {seed}: the last click wins, and what it replaces never runs"
             );
         }
     }
@@ -834,18 +886,20 @@ mod tests {
                 cx,
             )
         });
+        app.run_until_parked();
         assert!(marked(&mut app, &shared, playing_queue(1, &["a", "b"])));
         // a double click on a row of an album does not make it the playlist's
         shared.update(&mut app, |s, cx| {
             s.play_from(&Place::Album("al1".into()), tracks(), cx)
         });
+        app.run_until_parked();
         assert!(!marked(&mut app, &shared, playing_queue(3, &["a", "b"])));
         // a double click on a row of the playlist's page does
         shared.update(&mut app, |s, cx| {
             s.play_from(&Place::Playlist("pl1".into()), tracks(), cx)
         });
-        assert!(marked(&mut app, &shared, playing_queue(5, &["a", "b"])));
         app.run_until_parked();
+        assert!(marked(&mut app, &shared, playing_queue(5, &["a", "b"])));
     }
 
     #[test]
@@ -878,5 +932,60 @@ mod tests {
             assert!(s.playing.artist("ar1").is_some());
             assert!(s.playing.album("al2").is_none());
         });
+    }
+
+    #[test]
+    fn a_job_that_adds_after_a_running_play_still_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = fake_melodie(dir.path());
+        let env = Env::with_home(dir.path().join("home"));
+        let mut app = TestAppContext::build(TestDispatcher::new(0), None);
+        let shared = app.update(|cx| bare(env, program.clone(), cx));
+        shared.update(&mut app, |s, cx| {
+            s.run(Job::PlayMix, cx);
+            s.run(
+                Job::QueueMix {
+                    mix: Box::new(Job::Rediscover),
+                    next: true,
+                },
+                cx,
+            );
+        });
+        app.run_until_parked();
+        assert_eq!(ran(&program), "mix me\nmix --next rediscover\n");
+    }
+
+    #[test]
+    fn the_recents_note_what_ran_not_what_was_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = fake_melodie(dir.path());
+        let env = Env::with_home(dir.path().join("home"));
+        let mut app = TestAppContext::build(TestDispatcher::new(0), None);
+        let shared = app.update(|cx| bare(env, program.clone(), cx));
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        app.update(|cx| {
+            let seen = seen.clone();
+            cx.subscribe(&shared, move |_, Started(s): &Started, _| {
+                seen.borrow_mut().push(s.clone())
+            })
+            .detach();
+        });
+        let play = |id: &str| Job::Play {
+            kind: Kind::Album,
+            id: id.into(),
+            shuffle: false,
+        };
+        shared.update(&mut app, |s, cx| {
+            s.run(play("first"), cx);
+            s.run(play("second"), cx);
+        });
+        // the second waits behind the first: not noted yet
+        assert_eq!(*seen.borrow(), [Seen::Album("first".into())]);
+        shared.update(&mut app, |s, cx| s.run(play("third"), cx));
+        app.run_until_parked();
+        assert_eq!(
+            *seen.borrow(),
+            [Seen::Album("first".into()), Seen::Album("third".into())]
+        );
     }
 }

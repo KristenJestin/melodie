@@ -388,9 +388,10 @@ pub fn play_list(
     env: &Env,
     tracks: Vec<melodie_core::track::TrackInfo>,
     queue: bool,
+    next: bool,
 ) -> Result<usize, Failure> {
     let (_client, ready) = prepare(env)?;
-    let n = deliver(env, ready, tracks, false, queue, false)?;
+    let n = deliver(env, ready, tracks, false, queue, next)?;
     announce(n, queue);
     Ok(n)
 }

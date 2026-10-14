@@ -191,6 +191,16 @@ pub fn set_meta(conn: &Connection, key: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+/// The `meta` key of a first copy that is not finished: where it goes on from (`song:1000`, see
+/// `sync`). Its absence means the copy is complete.
+pub const COPYING: &str = "copying";
+
+/// Whether the copy is a first copy still being made (or cut off): what it holds is readable, but
+/// not all of the library.
+pub fn is_partial(conn: &Connection) -> bool {
+    get_meta(conn, COPYING).is_some()
+}
+
 pub fn get_meta(conn: &Connection, key: &str) -> Option<String> {
     conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
         .ok()
@@ -644,7 +654,7 @@ pub fn playlist_delete(conn: &Connection, id: &str) -> Result<()> {
 }
 
 /// Effectifs de la copie.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Counts {
     pub tracks: i64,
     pub albums: i64,
