@@ -261,12 +261,9 @@ impl Account {
                         (account::copy_state(&env), probe.then(running))
                     })
                     .await;
-                // unread: looked at again next time
-                if let Some(copy) = copy {
-                    let go_on = this.update(cx, |a, cx| a.look(me, copy, running, cx));
-                    if !matches!(go_on, Ok(true)) {
-                        return;
-                    }
+                let go_on = this.update(cx, |a, cx| a.look(me, copy, running, cx));
+                if !matches!(go_on, Ok(true)) {
+                    return;
                 }
                 cx.background_executor().timer(COPY_EVERY).await;
             }
@@ -274,16 +271,20 @@ impl Account {
         .detach();
     }
 
-    /// One look at the copy followed; whether to look again.
+    /// One look at the copy followed; whether to look again. A copy that could not be read (`None`)
+    /// counts as the last one seen: no news, but time passing.
     fn look(
         &mut self,
         me: u64,
-        copy: CopyState,
+        copy: Option<CopyState>,
         running: Option<bool>,
         cx: &mut Context<Self>,
     ) -> bool {
         let Some(f) = self.follow.as_mut().filter(|_| self.following == me) else {
             return false;
+        };
+        let Some(copy) = copy.or(f.seen()) else {
+            return true;
         };
         match f.step(copy, cx.background_executor().now(), running) {
             Step::Wait => return true,
@@ -1090,5 +1091,48 @@ mod tests {
         assert_eq!(*notices.borrow(), ["The copy of the library is not moving"]);
         // the server is asked why; the login holds, so the window takes the copy up itself
         settle(&mut app, |_| calls(&said) == ["status", "sync"]);
+    }
+
+    #[test]
+    fn a_followed_copy_that_cannot_be_opened_is_not_followed_forever() {
+        let mut app = TestAppContext::single();
+        let d = tempfile::tempdir().unwrap();
+        let env = Env::with_home(d.path());
+        // the run that made it failed and left a file that is no database
+        let (program, said) = recorder(d.path(), 3);
+        std::fs::create_dir_all(db::db_path(&env).parent().unwrap()).unwrap();
+        std::fs::write(db::db_path(&env), "not a database, not even close").unwrap();
+        let a = account(&mut app, &env, &program);
+        let notices = notices(&mut app, &a);
+        a.update(&mut app, |a, cx| a.signed_in(now_secs(), cx));
+        app.run_until_parked();
+        for _ in 0..6 {
+            look(&mut app, Duration::from_secs(1));
+        }
+        // no run holds the lock and nothing moves: the window takes the copy up, and says why it
+        // cannot
+        settle(&mut app, |_| calls(&said) == ["sync"]);
+        settle(&mut app, |app| a.read_with(app, |a, _| !a.syncing));
+        assert_eq!(*notices.borrow(), ["Could not sync the library"]);
+    }
+
+    #[test]
+    fn a_followed_copy_whose_counts_cannot_be_read_counts_as_standing_still() {
+        let mut app = TestAppContext::single();
+        let d = tempfile::tempdir().unwrap();
+        let env = Env::with_home(d.path());
+        let (program, said) = recorder(d.path(), 0);
+        let a = account(&mut app, &env, &program);
+        partial_copy(&env, 3);
+        a.update(&mut app, |a, cx| a.signed_in(now_secs(), cx));
+        app.run_until_parked();
+        look(&mut app, Duration::from_secs(1));
+        // the copy opens, its counts do not: no news, and no one is making it
+        let conn = db::open_existing(&env).unwrap().unwrap();
+        conn.execute("DROP TABLE playlists", []).unwrap();
+        for _ in 0..6 {
+            look(&mut app, Duration::from_secs(1));
+        }
+        settle(&mut app, |_| calls(&said) == ["sync"]);
     }
 }

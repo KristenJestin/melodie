@@ -236,10 +236,11 @@ pub enum CopyState {
     Complete(u64),
 }
 
-/// Where the local copy stands; `None` when it could not be read this time (a copy busy being
-/// written): no news, not a change. Blocking: run it away from the window.
+/// Where the local copy stands; `None` when its counts could not be read this time (a copy busy
+/// being written): no news, not a change. A file that cannot be opened is `Missing`: it is
+/// not going to be read, whatever the wait. Blocking: run it away from the window.
 pub fn copy_state(env: &Env) -> Option<CopyState> {
-    let Some(conn) = db::open_existing(env).ok()? else {
+    let Ok(Some(conn)) = db::open_existing(env) else {
         return Some(CopyState::Missing);
     };
     if db::is_partial(&conn) {
