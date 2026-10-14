@@ -499,20 +499,13 @@ impl Render for PageView {
                             catalog.update(cx, |c, cx| c.sort_tracks(here.clone(), s, cx))
                         }
                     };
-                    let sorted = shown.sort.is_some();
                     d.child(section_title("Top tracks", pal))
                         .child(track_header(&cols, false, shown.sort, pal, sort))
                         .children((0..shown.len()).filter_map(|ix| {
-                            let (rank, t) = shown.row(ix)?;
-                            Some(track_row(
-                                "top-track",
-                                ix,
-                                t,
-                                &cols,
-                                pal,
-                                catalog,
-                                RowCtx::plain(rank, sorted, row_hover("top-track", ix, window, cx)),
-                            ))
+                            let (_, t) = shown.row(ix)?;
+                            let hover = row_hover("top-track", ix, window, cx);
+                            let row = RowCtx::of(&selection, &here, &shown, ix, hover);
+                            Some(track_row("top-track", ix, t, &cols, pal, catalog, row))
                         }))
                 })
                 .when(!albums.is_empty(), |d| {
@@ -554,7 +547,7 @@ impl SelectionBar {
 
 impl Render for SelectionBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (count, playlist) = {
+        let (count, several, playlist) = {
             let c = self.catalog.read(cx);
             let here = c.here().clone();
             let playlist = match c.pages.get(&here).map(Arc::as_ref) {
@@ -563,10 +556,16 @@ impl Render for SelectionBar {
                 }
                 _ => None,
             };
-            (c.selection.count(&here), playlist)
+            (
+                c.selection.count(&here),
+                c.selection.several(&here),
+                playlist,
+            )
         };
-        let t = motion::flag("selection-bar", count > 0, motion::ENTER, window, cx);
-        if count > 0 {
+        // one row picked is what a plain click leaves: no bar for it
+        let shows = several;
+        let t = motion::flag("selection-bar", shows, motion::ENTER, window, cx);
+        if shows {
             self.count = count;
         }
         if t == 0.0 {
@@ -579,7 +578,8 @@ impl Render for SelectionBar {
             let catalog = self.catalog.clone();
             move |cx: &App| {
                 let c = catalog.read(cx);
-                let Some(shown) = c.shown() else {
+                // the list the rows were picked in: the search keeps its tables apart
+                let Some(shown) = c.selection.shown(c.here()) else {
                     return (vec![], vec![]);
                 };
                 let picks = shown.picks(&c.selection, c.here());

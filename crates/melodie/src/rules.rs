@@ -92,6 +92,7 @@ pub fn open_request(addr: &Address, mut tracks: Vec<TrackInfo>) -> Request {
         Place::Replace => Request::Play {
             tracks,
             shuffle: addr.shuffle,
+            start: 0,
         },
         Place::Next | Place::Last => {
             if addr.shuffle {
@@ -193,14 +194,16 @@ mod tests {
             open_request(&at("melodie:album/a?shuffle=true"), tracks.clone()),
             Request::Play {
                 tracks: tracks.clone(),
-                shuffle: true
+                shuffle: true,
+                start: 0
             }
         );
         assert_eq!(
             open_request(&at("melodie:album/a"), tracks.clone()),
             Request::Play {
                 tracks: tracks.clone(),
-                shuffle: false
+                shuffle: false,
+                start: 0
             }
         );
         assert_eq!(

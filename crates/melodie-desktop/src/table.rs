@@ -752,8 +752,8 @@ mod tests {
         );
         // shown: t3, t0, t2, t1; the first and the last rows are picked
         let mut s = Selection::default();
-        s.click(&here, 0, How::Toggle);
-        s.click(&here, 3, How::Toggle);
+        s.click(&here, &shown, 0, How::Toggle);
+        s.click(&here, &shown, 3, How::Toggle);
         assert_eq!(
             shown.picks(&s, &here),
             [(1, "t1".to_string()), (3, "t3".to_string())]

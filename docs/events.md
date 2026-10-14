@@ -20,7 +20,7 @@ older `index` of `now`.)
 | `{"cmd":"queue_remove","index":0}` | removes a track | `{"ok":true}` |
 | `{"cmd":"queue_clear_after"}` | removes every track after the current one | `{"ok":true}` |
 | `{"cmd":"queue","tracks":[…],"next":true}` | adds tracks right after the current one (`next`) or at the end (`next` false or absent); plays the first of them if nothing plays | `{"ok":true}` |
-| `{"cmd":"play","tracks":[…],"shuffle":false}` | replaces the queue and plays it | `{"ok":true}` |
+| `{"cmd":"play","tracks":[…],"shuffle":false,"start":2}` | replaces the queue and plays it from the track at `start` (from 0, 0 when absent; ignored with `shuffle`): the tracks before it never start | `{"ok":true}` |
 
 A position outside the queue is refused (`ok` false), never guessed.
 

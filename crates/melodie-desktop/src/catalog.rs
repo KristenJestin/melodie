@@ -15,8 +15,9 @@ use melodie_desktop::browse::{Nav, Place};
 use melodie_desktop::covers::{Files, Use};
 use melodie_desktop::home::{self, Highlight, Home, Row};
 use melodie_desktop::launch::{self, Job};
+use melodie_desktop::menu::{self, Item, Spot};
 use melodie_desktop::playlists;
-use melodie_desktop::selection::{How, Selection};
+use melodie_desktop::selection::{Click, Selection};
 use melodie_desktop::table::{self, ColSort, Shown, Sorts};
 use melodie_desktop::theme::Tint;
 use melodie_desktop::tint;
@@ -242,6 +243,7 @@ impl Catalog {
             }
         };
         let shown = Shown::new(tracks, self.sorts.get(place));
+        self.selection.read_again(place, &shown);
         self.views.insert(place.clone(), shown);
     }
 
@@ -268,11 +270,28 @@ impl Catalog {
         }
     }
 
-    /// A Ctrl+click or a Shift+click on row `ix` of the current list.
-    pub fn select(&mut self, ix: usize, how: How, cx: &mut Context<Self>) {
+    /// A left click on row `ix` of `shown`, the list at the current place: it picks, or plays.
+    pub fn left_click(&mut self, shown: &Shown, ix: usize, click: Click, cx: &mut Context<Self>) {
         let here = self.here().clone();
-        self.selection.click(&here, ix, how);
+        if let Some(job) = self.selection.left_click(&here, shown, ix, click) {
+            self.run(job, cx);
+        }
         cx.notify();
+    }
+
+    /// A right click on row `ix` of `shown`: the menu of the selection when the row is in it,
+    /// else of this row, picked alone. `playlist`: the user's playlist the list is.
+    pub fn menu_on(
+        &mut self,
+        shown: &Shown,
+        ix: usize,
+        playlist: Option<(String, String)>,
+        cx: &mut Context<Self>,
+    ) -> Option<(Item, Spot)> {
+        let here = self.here().clone();
+        self.selection.right_click(&here, shown, ix);
+        cx.notify();
+        menu::of_picked(&self.selection.tracks(&here), playlist)
     }
 
     pub fn unselect(&mut self, cx: &mut Context<Self>) {
@@ -280,9 +299,10 @@ impl Catalog {
         cx.notify();
     }
 
-    /// The list of tracks shown at the current place, as its table shows it.
-    pub fn shown(&self) -> Option<&Shown> {
-        self.views.get(self.here())
+    /// Unpicks the rows picked in the lists at these places.
+    pub fn unselect_where(&mut self, read_again: impl Fn(&Place) -> bool, cx: &mut Context<Self>) {
+        self.selection.clear_where(read_again);
+        cx.notify();
     }
 
     /// Runs `melodie` to change a playlist, then reads the playlists and the current place again
@@ -546,6 +566,7 @@ impl Catalog {
             move |this, list, _| {
                 if this.sorts.get(&Place::Tracks) == sort {
                     let shown = Shown::read_sorted(list.into(), sort);
+                    this.selection.read_again(&Place::Tracks, &shown);
                     this.views.insert(Place::Tracks, shown);
                 }
             },

@@ -9,10 +9,10 @@ use melodie_core::api::Client;
 use melodie_core::env::Env;
 use melodie_core::prefs::{self, Prefs};
 use melodie_core::proto::{self, Now, QueueView, Request, Response};
-use melodie_core::resolve;
 use melodie_core::search::Kind;
 use melodie_core::state::{self, Failure};
 use melodie_core::track::clock;
+use melodie_core::{db, mix, resolve};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
@@ -200,15 +200,27 @@ pub struct Ready {
 }
 
 pub fn prepare(env: &Env) -> Result<(Client, Ready), Failure> {
-    let running = connect();
+    let client = client(env)?;
+    let ready = reach(env, &client)?;
+    Ok((client, ready))
+}
+
+/// The client of the server, from the keyring.
+fn client(env: &Env) -> Result<Client, Failure> {
     state::quick_check(env)?;
-    let client: Client = state::open_client(env)?;
+    state::open_client(env)
+}
+
+/// The daemon if it runs; else the server checked first, for the daemon to start only if it
+/// can play.
+fn reach(env: &Env, client: &Client) -> Result<Ready, Failure> {
+    let running = connect();
     if running.is_none() {
         let r = client.ping().map_err(|e| state::from_api(e, client.url()));
         state::record(env, &r);
         r?;
     }
-    Ok((client, Ready { running }))
+    Ok(Ready { running })
 }
 
 /// Envoie des morceaux au démon (démarré au besoin) : remplace la file ou l'allonge.
@@ -224,14 +236,18 @@ pub fn deliver(
     let req = if queue {
         Request::Queue { tracks, next }
     } else {
-        Request::Play { tracks, shuffle }
+        Request::Play {
+            tracks,
+            shuffle,
+            start: 0,
+        }
     };
     send(env, ready, &req)?;
     Ok(n)
 }
 
 /// Sends a request that loads tracks to the daemon (started if needed).
-fn send(env: &Env, ready: Ready, req: &Request) -> Result<(), Failure> {
+fn send(env: &Env, ready: Ready, req: &Request) -> Result<UnixStream, Failure> {
     let stream = match ready.running {
         Some(s) => s,
         None => ensure_daemon(env)?,
@@ -243,7 +259,7 @@ fn send(env: &Env, ready: Ready, req: &Request) -> Result<(), Failure> {
             reply.error.unwrap_or_else(|| "refusé par le démon".into())
         )));
     }
-    Ok(())
+    Ok(stream)
 }
 
 fn try_play_or_queue(
@@ -258,6 +274,83 @@ fn try_play_or_queue(
     let result = resolve::resolve(&client, kind, id);
     state::record(env, &result);
     deliver(env, ready, result?, shuffle, queue, next)
+}
+
+/// Plays tracks from the one at `start` (from 0), shuffled or not, or queues them, in this
+/// order: one request, the tracks read from the local copy, as a mix's are; the server is asked
+/// only for those the copy does not hold yet, before the daemon is reached.
+pub fn play_tracks(
+    env: &Env,
+    ids: Vec<String>,
+    start: usize,
+    shuffle: bool,
+    queue: bool,
+    next: bool,
+) -> ExitCode {
+    match try_play_tracks(env, ids, start, shuffle, queue, next) {
+        Ok(n) => {
+            announce(n, queue);
+            ExitCode::SUCCESS
+        }
+        Err(f) => report(&f),
+    }
+}
+
+fn try_play_tracks(
+    env: &Env,
+    ids: Vec<String>,
+    start: usize,
+    shuffle: bool,
+    queue: bool,
+    next: bool,
+) -> Result<usize, Failure> {
+    let known = match db::open_existing(env)? {
+        Some(conn) => mix::infos(&conn, &ids)?,
+        None => vec![None; ids.len()],
+    };
+    let client = client(env)?;
+    let mut tracks = Vec::with_capacity(ids.len());
+    for (id, info) in ids.iter().zip(known) {
+        match info {
+            Some(t) => tracks.push(t),
+            None => {
+                let r = resolve::resolve(&client, Kind::Track, id);
+                state::record(env, &r);
+                tracks.extend(r?);
+            }
+        }
+    }
+    let ready = reach(env, &client)?;
+    let n = tracks.len();
+    let req = if queue {
+        Request::Queue { tracks, next }
+    } else {
+        Request::Play {
+            tracks,
+            shuffle,
+            start,
+        }
+    };
+    let stream = send(env, ready, &req)?;
+    if start > 0 && !shuffle && !queue {
+        started_at(&stream, start)?;
+    }
+    Ok(n)
+}
+
+/// A daemon older than `start` reads the request without it and plays from the first track:
+/// said, rather than playing what was not asked.
+fn started_at(stream: &UnixStream, start: usize) -> Result<(), Failure> {
+    let current = exchange(stream, &Request::QueueList)?
+        .queue
+        .and_then(|q| q.current);
+    match current {
+        Some(c) if c != start => Err(Failure::Internal(anyhow!(
+            "the player running is older than this melodie and started from the first track: \
+             stop it once with `melodie quit`, then play again"
+        ))),
+        _ => Ok(()),
+    }
 }
 
 /// `open`: plays or queues what an address names. A malformed address is refused before

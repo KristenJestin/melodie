@@ -211,7 +211,13 @@ impl Root {
     }
 
     /// What the window knows now, for `keys` to judge by.
-    fn situation<R>(&self, window: &Window, cx: &App, judge: impl FnOnce(Situation) -> R) -> R {
+    fn situation<R>(
+        &self,
+        held: bool,
+        window: &Window,
+        cx: &App,
+        judge: impl FnOnce(Situation) -> R,
+    ) -> R {
         let (s, c, v) = (
             self.shared.read(cx),
             self.catalog.read(cx),
@@ -225,6 +231,9 @@ impl Root {
             overlay_open: self.queue_place(window, cx).covers() || s.settings_open,
             dialog_open: self.views.dialogs.read(cx).is_open(),
             selection: c.selection.count(c.here()) > 0,
+            several: c.selection.several(c.here()),
+            held,
+            can_back: c.nav.can_go_back(),
             field_empty: v.is_empty(),
             palette_empty: self.views.quick.read(cx).is_empty(),
             sign_in: self.account.read(cx).screen(cx) == Screen::SignIn,
@@ -241,18 +250,18 @@ impl Root {
         } else {
             Key::read(m.control, m.shift, &k.key, k.key_char.as_deref())
         };
-        let act = self.situation(window, cx, |s| keys::act(key, s));
+        let act = self.situation(ev.is_held, window, cx, |s| keys::act(key, s));
         self.run(act, window, cx);
     }
 
     /// The arrows, which the palette's field takes as actions before any key listener.
     fn on_arrow(&mut self, key: Key, window: &mut Window, cx: &mut Context<Self>) {
-        let act = self.situation(window, cx, |s| keys::act(key, s));
+        let act = self.situation(false, window, cx, |s| keys::act(key, s));
         self.run(act, window, cx);
     }
 
     fn on_thumb(&mut self, button: Thumb, window: &mut Window, cx: &mut Context<Self>) {
-        let act = self.situation(window, cx, |s| keys::pointer_act(button, s));
+        let act = self.situation(false, window, cx, |s| keys::pointer_act(button, s));
         self.run(act, window, cx);
     }
 
@@ -275,6 +284,12 @@ impl Root {
             }),
             Act::ToggleQueue => self.shared.update(cx, |s, cx| s.toggle_queue(cx)),
             Act::OpenMenu => context_menu::open_on_picked(&self.catalog, window, cx),
+            Act::PlayPicked => {
+                let c = self.catalog.read(cx);
+                if let Some(job) = c.selection.play_picked(c.here()) {
+                    self.shared.update(cx, |s, cx| s.run(job, cx));
+                }
+            }
             Act::CloseDialog => self.views.dialogs.update(cx, |d, cx| d.close(cx)),
             // Enter in the name field is the field's own: it confirms once, through its event
             Act::Confirm if self.views.dialogs.read(cx).field_focused(window, cx) => return,

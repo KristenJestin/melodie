@@ -89,6 +89,12 @@ pub struct Situation<'a> {
     pub dialog_open: bool,
     /// Rows of the current list are picked.
     pub selection: bool,
+    /// Two rows or more are picked: the selection bar shows, and Escape clears them first.
+    pub several: bool,
+    /// The key repeats, held down.
+    pub held: bool,
+    /// There is a page to go back to.
+    pub can_back: bool,
     pub field_empty: bool,
     /// The palette's field holds no text.
     pub palette_empty: bool,
@@ -128,6 +134,8 @@ pub enum Act {
     ToggleQueue,
     /// The menu of the row picked.
     OpenMenu,
+    /// Plays the list from the first track picked, as a double click on it does.
+    PlayPicked,
     /// Not ours: the key goes on (typed in the field).
     Pass,
 }
@@ -204,13 +212,18 @@ pub fn act(key: Key, s: Situation) -> Act {
         Key::Find => Act::OpenSearch,
         Key::Slash if !typing => Act::OpenSearch,
         Key::Escape if s.overlay_open => Act::CloseOverlays,
-        Key::Escape if s.selection => Act::ClearSelection,
+        // one row picked is what a plain click leaves: it must not cost a second Escape, unless
+        // there is no page to go back to
+        Key::Escape if s.several || (s.selection && !s.can_back) => Act::ClearSelection,
         // the field empties first, then the search is left
         Key::Escape if *s.here == Place::Search && !s.field_empty => Act::ClearField,
         Key::Escape => Act::Back,
         Key::Space if !typing => Act::PlayPause,
         Key::Queue if !typing => Act::ToggleQueue,
         Key::Menu if s.selection => Act::OpenMenu,
+        // the field's own Enter while it has the focus: the list needs no focus of its own; held
+        // down, it would start the music again on every repeat
+        Key::Enter if s.selection && !typing && !s.overlay_open && !s.held => Act::PlayPicked,
         _ => Act::Pass,
     }
 }
@@ -243,6 +256,9 @@ mod tests {
             overlay_open: false,
             dialog_open: false,
             selection: false,
+            several: false,
+            held: false,
+            can_back: true,
             field_empty: true,
             palette_empty: true,
             sign_in: false,
@@ -388,6 +404,7 @@ mod tests {
             overlay_open: true,
             dialog_open: true,
             selection: true,
+            several: true,
             field_empty: false,
             ..at(&Place::Search, true)
         };
@@ -424,10 +441,32 @@ mod tests {
         let page = Place::Playlist("p1".into());
         let picked = Situation {
             selection: true,
+            several: true,
             ..at(&page, false)
         };
         assert_eq!(act(Key::Escape, picked), Act::ClearSelection);
         assert_eq!(act(Key::Escape, at(&page, false)), Act::Back);
+    }
+
+    #[test]
+    fn escape_goes_back_at_once_with_one_row_picked() {
+        // a plain click picks a row: it must not cost a second Escape
+        let page = Place::Album("al1".into());
+        let one = Situation {
+            selection: true,
+            ..at(&page, false)
+        };
+        assert_eq!(act(Key::Escape, one), Act::Back);
+    }
+
+    #[test]
+    fn escape_with_one_row_picked_and_no_page_to_go_back_to_clears_it() {
+        let one = Situation {
+            selection: true,
+            can_back: false,
+            ..at(&Place::Tracks, false)
+        };
+        assert_eq!(act(Key::Escape, one), Act::ClearSelection);
     }
 
     #[test]
@@ -633,6 +672,57 @@ mod tests {
             };
             assert_eq!(act(Key::Escape, palette), Act::TogglePalette, "{here:?}");
         }
+    }
+
+    #[test]
+    fn enter_plays_the_selections_first_track() {
+        let page = Place::Album("al1".into());
+        let picked = Situation {
+            selection: true,
+            ..at(&page, false)
+        };
+        assert_eq!(act(Key::Enter, picked), Act::PlayPicked);
+        assert_eq!(
+            act(Key::Enter, at(&page, false)),
+            Act::Pass,
+            "nothing picked"
+        );
+        // in the search, the field keeps its Enter while it has the focus
+        for here in [Place::Search, Place::Found(Kind::Track)] {
+            let typing = Situation {
+                selection: true,
+                ..at(&here, true)
+            };
+            assert_eq!(act(Key::Enter, typing), Act::Pass);
+            let rows = Situation {
+                selection: true,
+                ..at(&here, false)
+            };
+            assert_eq!(act(Key::Enter, rows), Act::PlayPicked);
+        }
+        // a dialog, the menu or the palette take it first
+        let menu = Situation {
+            menu_open: true,
+            ..picked
+        };
+        assert_eq!(act(Key::Enter, menu), Act::Pass);
+        let dialog = Situation {
+            dialog_open: true,
+            ..picked
+        };
+        assert_eq!(act(Key::Enter, dialog), Act::Confirm);
+        // the settings card, or the queue over a narrow window, is in front of the list
+        let overlay = Situation {
+            overlay_open: true,
+            ..picked
+        };
+        assert_eq!(act(Key::Enter, overlay), Act::Pass);
+        // held down, it plays once
+        let held = Situation {
+            held: true,
+            ..picked
+        };
+        assert_eq!(act(Key::Enter, held), Act::Pass);
     }
 
     #[test]

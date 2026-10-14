@@ -18,7 +18,9 @@ use melodie_desktop::thumbs::{self, Thumbs};
 use melodie_desktop::tint;
 use melodie_desktop::wave;
 use std::collections::VecDeque;
+use std::io::Write as _;
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
@@ -106,10 +108,18 @@ pub struct Shared {
     failures: u64,
     socket: PathBuf,
     env: Env,
+    /// The `melodie` the jobs run.
+    program: PathBuf,
     _watch: Option<notify::RecommendedWatcher>,
     /// The playlist jobs running, and those waiting behind them.
     playlist_jobs: Lanes<(Job, Done)>,
+    /// The jobs that change what plays, one lane (`PLAYER`): a quicker job started later would
+    /// otherwise be overtaken by an earlier, slower one.
+    play_jobs: Lanes<Job>,
 }
+
+/// The lane of `Shared::play_jobs`.
+const PLAYER: &str = "player";
 
 /// Something the user started playing from the window.
 pub struct Started(pub Seen);
@@ -158,7 +168,7 @@ impl Shared {
 
     /// Play or pause; with nothing current, the queue from its start, or with no daemon the
     /// personal mix.
-    pub fn play_or_pause(&self, cx: &mut Context<Self>) {
+    pub fn play_or_pause(&mut self, cx: &mut Context<Self>) {
         match (
             self.player.following,
             self.player.current,
@@ -180,17 +190,28 @@ impl Shared {
     }
 
     /// Runs `melodie` for what needs the server; its first error line is said in the window.
-    pub fn run(&self, job: Job, cx: &mut Context<Self>) {
+    pub fn run(&mut self, job: Job, cx: &mut Context<Self>) {
         if let Some(seen) = Seen::of_job(&job) {
             cx.emit(Started(seen));
         }
-        let program = launch::program(std::env::current_exe().ok().as_deref());
+        if !job.plays() {
+            return self.spawn_run(job, cx);
+        }
+        if let Some(job) = self.play_jobs.start(PLAYER, job) {
+            self.spawn_run(job, cx);
+        }
+    }
+
+    /// Runs `job` now; when it is done, the next job that changes what plays, if it is one.
+    fn spawn_run(&self, job: Job, cx: &mut Context<Self>) {
+        let lane = job.plays();
+        let program = self.program.clone();
         let what = match &job {
             Job::PlayMix => "Could not start your mix",
             Job::Rediscover => "Could not start the rediscoveries",
             Job::Star { .. } => "Could not change the favourite",
-            Job::Play { .. } => "Could not play it",
-            Job::Queue { .. } => "Could not add it to the queue",
+            Job::Play { .. } | Job::PlayTracks { .. } => "Could not play it",
+            Job::Queue { .. } | Job::QueueTracks { .. } => "Could not add it to the queue",
             Job::Mix { .. } => "Could not make the mix",
             Job::AddToPlaylist { .. } => "Could not add to the playlist",
             Job::MixGenre { .. } => "Could not make the mix",
@@ -206,10 +227,23 @@ impl Shared {
         };
         let adds = matches!(job, Job::AddToPlaylist { .. });
         let task = cx.background_spawn(async move {
+            let input = job.stdin();
             let out = std::process::Command::new(&program)
                 .args(job.args())
-                .stdin(std::process::Stdio::null())
-                .output();
+                .stdin(match input {
+                    Some(_) => Stdio::piped(),
+                    None => Stdio::null(),
+                })
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .and_then(|mut child| {
+                    if let (Some(text), Some(mut pipe)) = (input, child.stdin.take()) {
+                        // a `melodie` that fails before reading says why on its stderr
+                        let _ = pipe.write_all(text.as_bytes());
+                    }
+                    child.wait_with_output()
+                });
             match out {
                 // `--json` says how it went on its output, even when it failed
                 Ok(o) if o.status.success() && adds => {
@@ -226,12 +260,19 @@ impl Shared {
         });
         cx.spawn(async move |this, cx| {
             let msg = match task.await {
-                Ok(None) => return,
-                Ok(Some(said)) => said,
-                Err(Some(why)) if !why.is_empty() => format!("{what}: {why}"),
-                Err(_) => what.to_string(),
+                Ok(None) => None,
+                Ok(Some(said)) => Some(said),
+                Err(Some(why)) if !why.is_empty() => Some(format!("{what}: {why}")),
+                Err(_) => Some(what.to_string()),
             };
-            let _ = this.update(cx, |s, cx| s.fail(msg, cx));
+            let _ = this.update(cx, |s, cx| {
+                if let Some(msg) = msg {
+                    s.fail(msg, cx);
+                }
+                if lane && let Some(next) = s.play_jobs.done(PLAYER) {
+                    s.spawn_run(next, cx);
+                }
+            });
         })
         .detach();
     }
@@ -257,7 +298,7 @@ impl Shared {
 
     /// Runs `job`; when it is done, the next job waiting on `playlist`, if any.
     fn spawn_job(&self, job: Job, playlist: Option<String>, done: Done, cx: &mut Context<Self>) {
-        let program = launch::program(std::env::current_exe().ok().as_deref());
+        let program = self.program.clone();
         let task = cx.background_spawn(async move {
             let out = std::process::Command::new(&program)
                 .args(job.args())
@@ -487,6 +528,57 @@ pub fn apply_component_theme(p: Palette, cx: &mut App) {
     });
 }
 
+/// The window's state without a daemon, a theme to follow or a window: the jobs run `program`,
+/// never the `melodie` of the machine.
+#[cfg(test)]
+pub fn bare(env: Env, program: PathBuf, cx: &mut App) -> Entity<Shared> {
+    let covers = cx.new(|_| CoverCache::new(env.clone(), 1.));
+    let waves = cx.new(|_| WaveCache::new(env.clone()));
+    cx.new(|_| Shared {
+        player: Player::default(),
+        art: Art::default(),
+        thumbs: Arc::default(),
+        thumbs_of: None,
+        thumbs_gen: 0,
+        covers,
+        waves,
+        theme: ThemeState {
+            omarchy: Omarchy::system(&env),
+            stored: None,
+            detected: false,
+            palette: None,
+        },
+        dark: true,
+        queue_open: false,
+        settings_open: false,
+        failure: None,
+        failures: 0,
+        socket: env.state_dir().join("no-daemon.sock"),
+        env,
+        program,
+        _watch: None,
+        playlist_jobs: Lanes::default(),
+        play_jobs: Lanes::default(),
+    })
+}
+
+/// A `melodie` in `dir` that writes down what it is asked (its arguments, then what it reads),
+/// for `bare`.
+#[cfg(test)]
+pub fn fake_melodie(dir: &std::path::Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt as _;
+    let program = dir.join("melodie");
+    std::fs::write(&program, "#!/bin/sh\n{ echo \"$*\"; cat; } >> \"$0.ran\"\n").unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    program
+}
+
+/// What the `fake_melodie` at `program` was asked so far.
+#[cfg(test)]
+pub fn ran(program: &std::path::Path) -> String {
+    std::fs::read_to_string(program.with_extension("ran")).unwrap_or_default()
+}
+
 pub fn is_dark(a: WindowAppearance) -> bool {
     matches!(a, WindowAppearance::Dark | WindowAppearance::VibrantDark)
 }
@@ -533,8 +625,10 @@ pub fn start(
         failures: 0,
         socket: socket.clone(),
         env,
+        program: launch::program(std::env::current_exe().ok().as_deref()),
         _watch: None,
         playlist_jobs: Lanes::default(),
+        play_jobs: Lanes::default(),
     });
     apply_component_theme(shared.read(cx).target_palette(), cx);
     shared.update(cx, |s, cx| s.follow_cover(cx));
@@ -597,4 +691,47 @@ pub fn start(
         .detach();
     }
     (shared, clock)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{bare, fake_melodie, ran};
+    use gpui_kit::{TestAppContext, TestDispatcher};
+    use melodie_core::env::Env;
+    use melodie_desktop::launch::Job;
+    use melodie_desktop::launch::Kind;
+
+    #[test]
+    fn the_plays_run_one_after_the_other_in_the_order_clicked() {
+        // the test executor runs the tasks ready in an order drawn from its seed
+        for seed in 0..8 {
+            let dir = tempfile::tempdir().unwrap();
+            let program = fake_melodie(dir.path());
+            let env = Env::with_home(dir.path().join("home"));
+            let mut app = TestAppContext::build(TestDispatcher::new(seed), None);
+            let shared = app.update(|cx| bare(env, program.clone(), cx));
+            shared.update(&mut app, |s, cx| {
+                let play = |id: &str| Job::Play {
+                    kind: Kind::Album,
+                    id: id.into(),
+                    shuffle: false,
+                };
+                s.run(play("first"), cx);
+                s.run(
+                    Job::QueueTracks {
+                        ids: vec!["second".into()],
+                        next: true,
+                    },
+                    cx,
+                );
+                s.run(play("third"), cx);
+            });
+            app.run_until_parked();
+            assert_eq!(
+                ran(&program),
+                "play album -- first\nqueue track --next -\nsecond\nplay album -- third\n",
+                "seed {seed}: the last click wins"
+            );
+        }
+    }
 }
