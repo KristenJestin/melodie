@@ -301,7 +301,8 @@ impl Account {
             }
             Step::Late => {
                 self.stop_following(cx);
-                // the copy did not come: the server says why, if it is about the login
+                self.say("The copy of the library is not moving", cx);
+                // the server says why, if it is about the login
                 self.check(cx);
                 return false;
             }
@@ -1077,6 +1078,7 @@ mod tests {
         let (program, said) = recorder(d.path(), 0);
         let _lock = hold_lock(d.path());
         let a = account(&mut app, &env, &program);
+        let notices = notices(&mut app, &a);
         partial_copy(&env, 3);
         a.update(&mut app, |a, cx| a.signed_in(now_secs(), cx));
         app.run_until_parked();
@@ -1085,6 +1087,7 @@ mod tests {
         }
         assert!(a.read_with(&app, |a, _| a.syncing));
         look(&mut app, COPY_FOR);
+        assert_eq!(*notices.borrow(), ["The copy of the library is not moving"]);
         // the server is asked why; the login holds, so the window takes the copy up itself
         settle(&mut app, |_| calls(&said) == ["status", "sync"]);
     }
