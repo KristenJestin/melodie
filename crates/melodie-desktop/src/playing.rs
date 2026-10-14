@@ -228,6 +228,14 @@ impl Playing {
             .then_some(origin)
     }
 
+    /// The mark of the track `id`, wherever it is listed alone (a result of the search).
+    pub fn track(&self, id: &str) -> Option<Mark> {
+        self.current
+            .as_ref()
+            .filter(|(_, now)| now == id)
+            .and_then(|_| self.mark())
+    }
+
     /// The mark of the album `id`.
     pub fn album(&self, id: &str) -> Option<Mark> {
         self.origin()
@@ -343,6 +351,19 @@ mod tests {
                 "{list:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_track_listed_alone_is_marked_by_its_id() {
+        let q = &[(1, "a"), (2, "b")];
+        let mut p = Playing::default();
+        assert_eq!(p.track("a"), None, "nothing plays");
+        p.follow(&player(q, Some(0), PlayState::Playing));
+        assert_eq!((p.track("a"), p.track("b")), (PLAYING, None));
+        p.follow(&player(q, Some(0), PlayState::Paused));
+        assert_eq!(p.track("a"), PAUSED);
+        p.follow(&Player::default());
+        assert_eq!(p.track("a"), None, "the daemon quit");
     }
 
     #[test]

@@ -50,10 +50,20 @@ pub fn apply(
 
 /// Texte de la notification : (titre, corps).
 pub fn message(on: bool, title: &str) -> (String, String) {
-    if on {
-        (format!("♥ Ajouté aux favoris : {title}"), String::new())
+    let summary = if on {
+        "Added to favourites"
     } else {
-        ("Retiré des favoris".to_string(), title.to_string())
+        "Removed from favourites"
+    };
+    (summary.to_string(), title.to_string())
+}
+
+/// Glyphe Nerd Font de l'icône de la notification : le cœur n'est pas dans le texte.
+pub fn glyph(on: bool) -> char {
+    if on {
+        '\u{F02D1}' // nf-md-heart
+    } else {
+        '\u{F02D4}' // nf-md-heart_broken
     }
 }
 
@@ -131,8 +141,17 @@ mod tests {
     fn textes_de_notification() {
         assert_eq!(
             message(true, "Halo"),
-            ("♥ Ajouté aux favoris : Halo".into(), String::new())
+            ("Added to favourites".into(), "Halo".into())
         );
-        assert_eq!(message(false, "Halo").0, "Retiré des favoris");
+        assert_eq!(
+            message(false, "Halo"),
+            ("Removed from favourites".into(), "Halo".into())
+        );
+    }
+
+    #[test]
+    fn glyphes_de_notification() {
+        assert_eq!(glyph(true), '\u{F02D1}');
+        assert_eq!(glyph(false), '\u{F02D4}');
     }
 }
