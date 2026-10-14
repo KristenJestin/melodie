@@ -5,7 +5,7 @@ use crate::app::Shared;
 use crate::catalog::Catalog;
 use crate::context_menu::Menued as _;
 use crate::dialogs::{self, Dialog};
-use crate::equaliser::Equaliser;
+use crate::equaliser::{Equaliser, badge};
 use crate::motion;
 use crate::player::palette;
 use crate::widgets::{IconButton, follow_pointer, pointer};
@@ -20,6 +20,9 @@ use melodie_desktop::menu::{Item, Spot};
 use melodie_desktop::playing::Mark;
 use melodie_desktop::playlists::{self, PICTURE};
 use melodie_desktop::theme::{Palette, mix};
+
+/// The side of the badge on the cover of the source of the music, when only the icons show.
+const BADGE: f32 = 14.;
 
 /// A window narrower than this has the sidebar of icons.
 const COMPACT: f32 = 760.0;
@@ -67,6 +70,7 @@ impl RenderOnce for Entry {
         let s = motion::flag((self.id.clone(), "on"), self.on, motion::HOVER, window, cx);
         let pal = self.pal;
         let mark_id = (self.id.clone(), "equaliser");
+        let outline_id = format!("{}-outline", self.id);
         let fg = mix(pal.secondary, pal.fg, s.max(h));
         let (catalog, to) = (self.catalog, self.to);
         follow_pointer(div().id(self.id), ptr)
@@ -84,20 +88,51 @@ impl RenderOnce for Entry {
                 ..mix(pal.fg, pal.accent, s)
             })
             .on_click(move |_, _, cx| catalog.update(cx, |c, cx| c.start_at(to.clone(), cx)))
-            .child(match self.picture {
-                // GPUI does not clip children to rounded corners: the image is rounded itself
-                Some(cover) => img(cover.path)
-                    .size(px(PICTURE))
+            .child(
+                div()
+                    .relative()
                     .flex_none()
-                    .rounded(px(4.))
-                    .object_fit(ObjectFit::Cover)
-                    .into_any_element(),
-                None => Icon::new(self.icon)
-                    .size(px(18.))
-                    .flex_none()
-                    .text_color(mix(fg, pal.accent, s))
-                    .into_any_element(),
-            })
+                    // an icon is smaller than a picture: the outline goes round the room of one
+                    .when(self.mark.is_some() && self.compact, |d| {
+                        d.size(px(PICTURE)).flex().items_center().justify_center()
+                    })
+                    .child(match self.picture {
+                        // GPUI does not clip children to rounded corners: the image is rounded
+                        // itself
+                        Some(cover) => img(cover.path)
+                            .size(px(PICTURE))
+                            .flex_none()
+                            .rounded(px(4.))
+                            .object_fit(ObjectFit::Cover)
+                            .into_any_element(),
+                        None => Icon::new(self.icon)
+                            .size(px(18.))
+                            .flex_none()
+                            .text_color(mix(fg, pal.accent, s))
+                            .into_any_element(),
+                    })
+                    // icons only: no name to turn to the accent, so the cover the music plays
+                    // from is outlined and wears the badge
+                    .when_some(self.mark.filter(|_| self.compact), |d, mark| {
+                        d.child(
+                            div()
+                                .debug_selector(|| outline_id)
+                                .absolute()
+                                .top(px(-1.))
+                                .left(px(-1.))
+                                .size(px(PICTURE + 2.))
+                                .rounded(px(5.))
+                                .border_1()
+                                .border_color(pal.accent),
+                        )
+                        .child(badge(
+                            mark_id.clone(),
+                            mark,
+                            BADGE,
+                            pal.accent,
+                        ))
+                    }),
+            )
             .when(!self.compact, |d| {
                 d.child(
                     div()
@@ -261,5 +296,145 @@ impl Render for Sidebar {
                             }),
                     ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Sidebar;
+    use crate::app;
+    use crate::catalog::Catalog;
+    use gpui_kit::{AppContext as _, Entity, TestAppContext, VisualTestContext, px, size};
+    use melodie_core::env::Env;
+    use melodie_core::library::Playlist;
+    use melodie_core::proto::QueueEntry;
+    use melodie_desktop::model::{PlayState, Player};
+    use melodie_desktop::playing::Ranks;
+    use std::sync::Arc;
+
+    fn playlist(id: &str) -> Playlist {
+        Playlist {
+            id: id.into(),
+            name: format!("Playlist {id}"),
+            songs: 3,
+            duration: 600,
+            owner: None,
+            cover: None,
+        }
+    }
+
+    /// A sidebar of the playlists `p1` and `p2`, `width` pixels wide (a window under 760 keeps
+    /// only the icons).
+    fn sidebar(
+        app: &mut TestAppContext,
+        width: f32,
+    ) -> (Entity<app::Shared>, &mut VisualTestContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let program = app::fake_melodie(dir.path());
+        let env = Env::with_home(dir.path().join("home"));
+        let mut made = None;
+        let (_, cx) = app.add_window_view(|_, cx| {
+            let s = app::bare(env.clone(), program.clone(), cx);
+            let catalog = cx.new(|cx| Catalog::new(env.clone(), s.clone(), cx));
+            made = Some((s.clone(), catalog.clone()));
+            Sidebar::new(s, catalog)
+        });
+        let (shared, catalog) = made.unwrap();
+        cx.simulate_resize(size(px(width), px(700.)));
+        cx.run_until_parked();
+        // after the read of the copy, which holds no playlist
+        catalog.update(cx, |c, _| {
+            c.playlists = Arc::from([playlist("p1"), playlist("p2")])
+        });
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+        (shared, cx)
+    }
+
+    /// The music plays (or is paused) from the playlist `p1`; no music when `None`.
+    fn play(shared: &Entity<app::Shared>, state: Option<PlayState>, cx: &mut VisualTestContext) {
+        shared.update(cx, |s, _| {
+            let Some(state) = state else {
+                return s.playing.follow(&Player::default());
+            };
+            // a new start asks for the queue that follows: not again for a pause of this one
+            if s.playing.playlist("p1").is_none() {
+                s.playing.start_playlist("p1", Ranks::Own);
+            }
+            s.playing.follow(&Player {
+                following: true,
+                state,
+                tracks: vec![QueueEntry {
+                    entry: 1,
+                    id: "a".into(),
+                    ..QueueEntry::default()
+                }]
+                .into(),
+                current: Some(0),
+                ..Player::default()
+            });
+        });
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+        // an update draws the window that is dirty; reading a bound does it only after the read
+        cx.update(|_, _| {});
+    }
+
+    #[test]
+    fn the_collapsed_sidebar_outlines_and_badges_the_cover_the_music_plays_from() {
+        let mut app = TestAppContext::single();
+        let (shared, cx) = sidebar(&mut app, 600.);
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("nav-pl-p1-outline").is_none(),
+            "nothing plays"
+        );
+        play(&shared, Some(PlayState::Playing), cx);
+        let outline = cx.debug_bounds("nav-pl-p1-outline").expect("its cover");
+        let badge = cx
+            .debug_bounds("nav-pl-p1-equaliser-badge")
+            .expect("the badge");
+        assert!(
+            cx.debug_bounds("nav-pl-p1-equaliser").is_some(),
+            "holding the bars"
+        );
+        let near = |a: gpui_kit::Pixels, b: gpui_kit::Pixels| (a - b).abs() <= px(4.);
+        assert!(
+            near(badge.right(), outline.right()) && near(badge.bottom(), outline.bottom()),
+            "on its bottom-right corner: {badge:?} on {outline:?}"
+        );
+        assert!(badge.size.width < outline.size.width, "small");
+        assert!(
+            cx.debug_bounds("nav-pl-p2-outline").is_none()
+                && cx.debug_bounds("nav-pl-p2-equaliser").is_none(),
+            "another playlist is not marked"
+        );
+        play(&shared, Some(PlayState::Paused), cx);
+        assert!(
+            cx.debug_bounds("nav-pl-p1-outline").is_some(),
+            "paused: still marked"
+        );
+        play(&shared, None, cx);
+        assert!(
+            cx.debug_bounds("nav-pl-p1-outline").is_none()
+                && cx.debug_bounds("nav-pl-p1-equaliser-badge").is_none(),
+            "the music stopped"
+        );
+    }
+
+    #[test]
+    fn the_full_sidebar_keeps_the_name_in_the_accent_and_no_outline() {
+        let mut app = TestAppContext::single();
+        let (shared, cx) = sidebar(&mut app, 1280.);
+        play(&shared, Some(PlayState::Playing), cx);
+        assert!(
+            cx.debug_bounds("nav-pl-p1-equaliser").is_some(),
+            "at the right of its name"
+        );
+        assert!(
+            cx.debug_bounds("nav-pl-p1-outline").is_none()
+                && cx.debug_bounds("nav-pl-p1-equaliser-badge").is_none(),
+            "the outline and the badge are for the icons"
+        );
     }
 }

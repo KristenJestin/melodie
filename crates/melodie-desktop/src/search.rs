@@ -11,11 +11,10 @@ use crate::equaliser::name_line;
 use crate::motion;
 use crate::player::palette;
 use crate::tables::{RowCtx, row_button, row_hover, track_header, track_row};
-use crate::widgets::{Hover, IconButton, Revealed as _, title_with_aside};
+use crate::widgets::{Hover, IconButton, Revealed as _, search_field, title_with_aside};
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
-use gpui_kit::component::Icon;
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use melodie_core::env::Env;
@@ -271,14 +270,7 @@ struct Field {
 impl Render for Field {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let pal = palette(&self.shared, window, cx);
-        Input::new(&self.input)
-            .prefix(
-                Icon::new(IconName::Search)
-                    .size(px(18.))
-                    .text_color(pal.secondary),
-            )
-            .cleanable(true)
-            .h(px(44.))
+        search_field(&self.input, pal).cleanable(true)
     }
 }
 

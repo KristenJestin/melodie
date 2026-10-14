@@ -139,7 +139,11 @@ Screenshots and a recording of the animations, made with invented data, are in
   playlist (the home, the sidebar, the search) while the queue is the one the window started
   from it: a play of the playlist, or a double click on one of its rows. The album and the artist
   are read from the local copy, once for each track that begins, away from the window's thread.
-  The queue's own marking of its current row is unchanged.
+  The queue's own marking of its current row is unchanged. In the search palette the result that
+  is the track playing has its title in the accent colour and the equaliser at the right end of
+  its row, and the result that is the album playing wears a small badge holding the bars on its
+  cover; in the sidebar of icons (a window under 760 pixels) the picture of the playlist the queue
+  was started from has a thin accent outline and the same badge, since no name is there to colour.
 - **The player bar**, at the bottom of every place but the player: on the left the cover, the
   title (opens the album) and the artist (opens the artist), and the heart; in the middle
   previous, play/pause and next, and under them the position bar to drag, with the elapsed and
@@ -283,7 +287,8 @@ Screenshots and a recording of the animations, made with invented data, are in
   window starts. Closed (Escape, Ctrl+K, a click outside, a result run) and opened again, it shows the last
   non-empty text searched, selected (typing replaces it, Enter runs the same search again);
   Escape empties a filled field (back to the recents) and closes an empty one, as on the search
-  page, and emptying the field does not make it forget that text.
+  page, and emptying the field does not make it forget that text. The field is the search page's
+  (same component, same height and inner padding), on a header row as high as a result.
 - **Keys**: Ctrl+F, or / when not typing, opens the search and puts the cursor in its field;
   Space plays or pauses (in the field, it is a space); `q` shows or hides the queue (in the field,
   it is a letter); Escape closes a dialog, else the queue laid over a narrow window or the

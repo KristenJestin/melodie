@@ -6,6 +6,7 @@ use crate::tips::{self, Tip};
 use gpui_kit::assets::IconName;
 use gpui_kit::base::h_flex;
 use gpui_kit::component::Icon;
+use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use melodie_desktop::figures::{self, Line};
@@ -403,6 +404,17 @@ impl RenderOnce for IconButton {
                 )
             })
     }
+}
+
+/// The field of the window's searches (the search page's, the palette's): the magnifier, then the
+/// text, at the input's own size, whose height and inner padding both fields share. Not
+/// `Input::h`: it only sets the height of a field of several lines.
+pub fn search_field(input: &Entity<InputState>, pal: Palette) -> Input {
+    Input::new(input).prefix(
+        Icon::new(IconName::Search)
+            .size(px(18.))
+            .text_color(pal.secondary),
+    )
 }
 
 #[cfg(test)]
