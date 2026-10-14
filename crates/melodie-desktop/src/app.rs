@@ -10,6 +10,7 @@ use melodie_core::env::Env;
 use melodie_core::proto::{QueueEntry, Request};
 use melodie_desktop::browse::Place;
 use melodie_desktop::covers::Use;
+use melodie_desktop::credits::{self, Credits};
 use melodie_desktop::launch::{self, Job, Kind, Lanes};
 use melodie_desktop::link::{self, Msg};
 use melodie_desktop::model::{Clock, Connection, Player};
@@ -99,6 +100,12 @@ pub struct Shared {
     thumbs_of: Option<Arc<[QueueEntry]>>,
     /// Which lookup of `thumbs` is the latest: an older one finishing late says nothing.
     thumbs_gen: u64,
+    /// The artists credited on each track of the queue, by track; read away from the render path.
+    pub credits: Arc<Credits>,
+    /// The tracks `credits` is being (or was) read for.
+    credits_of: Option<Arc<[QueueEntry]>>,
+    /// Which read of `credits` is the latest.
+    credits_gen: u64,
     /// The cover files of the whole window: the queue, the player and the library views ask
     /// it, and it fetches what is missing.
     pub covers: Entity<CoverCache>,
@@ -468,6 +475,37 @@ impl Shared {
         .detach();
     }
 
+    /// After the player changed: the artists of the tracks of a new queue, from the local copy.
+    /// The rows show the names the daemon gave meanwhile.
+    fn follow_credits(&mut self, cx: &mut Context<Self>) {
+        let tracks = self.player.tracks.clone();
+        if self
+            .credits_of
+            .as_ref()
+            .is_some_and(|t| Arc::ptr_eq(t, &tracks))
+        {
+            return;
+        }
+        self.credits_of = Some(tracks.clone());
+        self.credits_gen += 1;
+        let latest = self.credits_gen;
+        let env = self.env.clone();
+        let task =
+            cx.background_spawn(
+                async move { credits::read(&env, tracks.iter().map(|t| t.id.clone())) },
+            );
+        cx.spawn(async move |this, cx| {
+            let found = task.await;
+            let _ = this.update(cx, |s, cx| {
+                if s.credits_gen == latest {
+                    s.credits = Arc::new(found);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
     /// After the player changed: which rows are the music playing. The album and the artist of a
     /// track that begins are read from the local copy, away from the window.
     fn follow_playing(&mut self, cx: &mut Context<Self>) {
@@ -617,6 +655,9 @@ pub fn bare(env: Env, program: PathBuf, cx: &mut App) -> Entity<Shared> {
         thumbs: Arc::default(),
         thumbs_of: None,
         thumbs_gen: 0,
+        credits: Arc::default(),
+        credits_of: None,
+        credits_gen: 0,
         covers,
         waves,
         theme: ThemeState {
@@ -673,6 +714,9 @@ pub fn for_tests(env: Env, cx: &mut App) -> Entity<Shared> {
         thumbs: Arc::default(),
         thumbs_of: None,
         thumbs_gen: 0,
+        credits: Arc::default(),
+        credits_of: None,
+        credits_gen: 0,
         covers,
         waves,
         theme: ThemeState {
@@ -730,6 +774,9 @@ pub fn start(
         thumbs: Arc::default(),
         thumbs_of: None,
         thumbs_gen: 0,
+        credits: Arc::default(),
+        credits_of: None,
+        credits_gen: 0,
         covers: covers.clone(),
         waves,
         theme,
@@ -777,6 +824,7 @@ pub fn start(
                 if changed.player {
                     s.follow_playing(cx);
                     s.follow_thumbs(false, cx);
+                    s.follow_credits(cx);
                     s.follow_cover(cx);
                     s.follow_waves(cx);
                     cx.notify();
@@ -1046,6 +1094,34 @@ mod tests {
             assert!(s.playing.album("al1").is_some());
             assert!(s.playing.artist("ar1").is_some());
             assert!(s.playing.album("al2").is_none());
+        });
+    }
+
+    #[test]
+    fn the_artists_of_the_tracks_of_the_queue_are_read_when_it_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = fake_melodie(dir.path());
+        let env = Env::with_home(dir.path().join("home"));
+        let path = db::db_path(&env);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut conn = db::create(&path).unwrap();
+        let tx = conn.transaction().unwrap();
+        for (id, name) in [("ar5", "Nova Reyes"), ("ar1", "Lior Castell")] {
+            db::insert_artist(&tx, &serde_json::json!({"id":id,"name":name})).unwrap();
+        }
+        db::insert_track(&tx, &serde_json::json!({"id":"t1","title":"Crossing","artist":"Nova Reyes, Lior Castell","artistId":"ar5","artists":[{"id":"ar5","name":"Nova Reyes"},{"id":"ar1","name":"Lior Castell"}]})).unwrap();
+        tx.commit().unwrap();
+        let mut app = TestAppContext::single();
+        let shared = app.update(|cx| bare(env, program, cx));
+        shared.update(&mut app, |s, cx| {
+            s.player = playing_queue(1, &["t1", "elsewhere"]);
+            s.follow_credits(cx);
+        });
+        app.run_until_parked();
+        shared.read_with(&app, |s, _| {
+            let names: Vec<&str> = s.credits["t1"].iter().map(|c| c.name.as_str()).collect();
+            assert_eq!(names, ["Nova Reyes", "Lior Castell"]);
+            assert!(!s.credits.contains_key("elsewhere"), "not in the copy");
         });
     }
 

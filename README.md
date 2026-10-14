@@ -200,6 +200,11 @@ Screenshots and a recording of the animations, made with invented data, are in
     A sorted playlist's rows are not dragged (there is no order to drop them in). A sort belongs
     to the visit: a list opened anew (the sidebar, a link, a search result) shows its own order,
     one come back to (Back, Forward) keeps its sort, and a new search shows its tracks unsorted.
+  - **Each artist of a track is a link of its own** to their page, in the tables, the queue, the
+    player and the bottom bar: the artists the server credits on the track (OpenSubsonic
+    `artists`), in its order, the main one first, separated by ", ". A name that does not fit is
+    cut with an ellipsis and those after it are hidden. A server that credits no others shows the
+    track's artist, as before; a "feat." in a title or a name is not read.
   - A page for an album (its tracks; play, shuffle, play next, add to the queue, instant mix, add
     to a playlist), an artist (its top tracks by plays, its albums, then under "Appears on" the
     tracks it is credited on outside its albums, such as featured on another artist's; play,
@@ -632,8 +637,10 @@ once "Copie de la bibliothèque en cours…" (see "Automatic synchronisation").
   whose counters moved are read again with `getAlbum`); changed: full sync. A copy made by an older
   version gets the new columns and tables there; the date an album was added comes with the next
   full sync (until then, those albums come last in "recently added"). The artists credited on each
-  track (OpenSubsonic `artists`, featured ones included) are kept in `track_artists`; a copy made
-  before them is made again in full by the next sync, whatever starts it.
+  track (OpenSubsonic `artists`, featured ones included) are kept in `track_artists`, in the
+  server's order (`pos`); a copy made before them is made again in full by the next sync, whatever
+  starts it. A copy that kept them without their order gets it when it is opened, from the order
+  they were written in, which is the server's: no sync is needed.
 - `melodie playlist add`, `remove`, `duplicates --remove` and `create` change the tracks of the
   playlist in the copy too, as the server did.
 - Search: FTS5 prefixes ("daf pun" finds "Daft Punk"), case and accent insensitive. Order:

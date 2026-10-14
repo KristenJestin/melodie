@@ -2,6 +2,8 @@
 //! reorder, remove, clear what comes next.
 
 use crate::app::Shared;
+use crate::artist_links;
+use crate::catalog::Catalog;
 use crate::context_menu::Menued as _;
 use crate::player::palette;
 use crate::tips::Tipped as _;
@@ -12,7 +14,9 @@ use gpui_kit::component::Icon;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use melodie_core::proto::{QueueEntry, Request};
+use melodie_desktop::browse::Place;
 use melodie_desktop::covers::Use;
+use melodie_desktop::credits;
 use melodie_desktop::figures::{Figures as _, clock_text, count_text};
 use melodie_desktop::menu::{Item, Spot};
 use melodie_desktop::model::Row;
@@ -32,9 +36,10 @@ pub struct QueuePanel {
 }
 
 impl QueuePanel {
-    pub fn new(shared: Entity<Shared>, cx: &mut Context<Self>) -> Self {
+    pub fn new(shared: Entity<Shared>, catalog: Entity<Catalog>, cx: &mut Context<Self>) -> Self {
         let list = cx.new(|_| QueueList {
             shared: shared.clone(),
+            catalog,
             scroll: UniformListScrollHandle::new(),
             asked: Rc::default(),
         });
@@ -124,6 +129,7 @@ impl Render for QueuePanel {
 /// the list on its scroll layer (`docs/gui-toolkit.md`, "Retained mode and animations").
 pub struct QueueList {
     shared: Entity<Shared>,
+    catalog: Entity<Catalog>,
     scroll: UniformListScrollHandle,
     /// The queue and the rows whose covers were last asked, so that a frame showing the same
     /// rows asks nothing.
@@ -189,10 +195,17 @@ impl Render for Dragged {
 
 impl Render for QueueList {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (tracks, player, thumbs) = {
+        let (tracks, player, thumbs, credited) = {
             let s = self.shared.read(cx);
-            (s.player.tracks.clone(), s.player.clone(), s.thumbs.clone())
+            let p = &s.player;
+            (
+                p.tracks.clone(),
+                p.clone(),
+                s.thumbs.clone(),
+                s.credits.clone(),
+            )
         };
+        let catalog = self.catalog.clone();
         let pal = palette(&self.shared, window, cx);
         let shared = self.shared.clone();
         let len = tracks.len();
@@ -344,13 +357,23 @@ impl Render for QueueList {
                                         })
                                         .child(t.title.clone()),
                                 )
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .truncate()
-                                        .text_color(pal.secondary)
-                                        .child(t.artist.clone()),
-                                ),
+                                .child({
+                                    let artists = credits::of(&credited, &t.id, &t.artist, None);
+                                    artist_links::line(&artists, |i, a| {
+                                        let id = format!("queue-artist-{entry}-{i}");
+                                        crate::tables::link(
+                                            ElementId::Name(id.clone().into()),
+                                            a.name.clone(),
+                                            a.id.clone().map(Place::Artist),
+                                            pal,
+                                            &catalog,
+                                        )
+                                        .min_w_0()
+                                        .debug_selector(move || id.clone())
+                                        .into_any_element()
+                                    })
+                                    .text_xs()
+                                }),
                         )
                         .child(
                             div()
@@ -395,5 +418,85 @@ impl Render for QueueList {
         .flex_1()
         .px_2()
         .pb_2()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::QueueList;
+    use crate::catalog::Catalog;
+    use gpui_kit::{
+        AppContext as _, Entity, Modifiers, TestAppContext, UniformListScrollHandle,
+        VisualTestContext,
+    };
+    use melodie_core::env::Env;
+    use melodie_core::library::Credit;
+    use melodie_core::proto::QueueEntry;
+    use melodie_desktop::browse::Place;
+    use melodie_desktop::model::Player;
+    use std::sync::Arc;
+
+    #[test]
+    fn a_queued_track_of_three_artists_shows_three_links_each_to_its_own_page() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = crate::app::fake_melodie(dir.path());
+        let env = Env::with_home(dir.path().join("home"));
+        let mut app = TestAppContext::single();
+        let (view, cx): (Entity<QueueList>, &mut VisualTestContext) =
+            app.add_window_view(|_, cx| {
+                let shared = crate::app::bare(env.clone(), program.clone(), cx);
+                let entry = |n: u64, id: &str, artist: &str| QueueEntry {
+                    entry: n,
+                    id: id.into(),
+                    title: format!("Song {id}"),
+                    artist: artist.into(),
+                    ..QueueEntry::default()
+                };
+                shared.update(cx, |s, _| {
+                    s.player = Player {
+                        tracks: vec![
+                            entry(1, "t1", "Nova Reyes, Lior Castell, Ada Marlow"),
+                            entry(2, "t2", "Ilse Varga"),
+                        ]
+                        .into(),
+                        ..Player::default()
+                    };
+                    let credit = |id: &str, name: &str| Credit {
+                        id: Some(id.into()),
+                        name: name.into(),
+                    };
+                    let three = vec![
+                        credit("ar5", "Nova Reyes"),
+                        credit("ar1", "Lior Castell"),
+                        credit("ar3", "Ada Marlow"),
+                    ];
+                    s.credits = Arc::new([("t1".to_string(), three)].into());
+                });
+                let catalog = cx.new(|cx| Catalog::new(env.clone(), shared.clone(), cx));
+                QueueList {
+                    shared,
+                    catalog,
+                    scroll: UniformListScrollHandle::new(),
+                    asked: Default::default(),
+                }
+            });
+        cx.run_until_parked();
+        let catalog = view.read_with(cx, |v, _| v.catalog.clone());
+        let link = |cx: &mut VisualTestContext, entry: u64, ix: usize| {
+            cx.debug_bounds(Box::leak(
+                format!("queue-artist-{entry}-{ix}").into_boxed_str(),
+            ))
+        };
+        assert!(link(cx, 1, 2).is_some() && link(cx, 1, 3).is_none());
+        assert!(link(cx, 1, 0).unwrap().right() < link(cx, 1, 1).unwrap().left());
+        // a track the copy does not credit: the daemon's name, one artist, no page to open
+        assert!(link(cx, 2, 0).is_some() && link(cx, 2, 1).is_none());
+        for (ix, id) in [(0, "ar5"), (1, "ar1"), (2, "ar3")] {
+            let at = link(cx, 1, ix).unwrap().center();
+            cx.simulate_click(at, Modifiers::none());
+            cx.run_until_parked();
+            let here = catalog.read_with(cx, |c, _| c.here().clone());
+            assert_eq!(here, Place::Artist(id.into()), "artist {ix}");
+        }
     }
 }

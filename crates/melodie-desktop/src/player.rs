@@ -1,6 +1,8 @@
 //! The player, in the spirit of Amberol: the cover large, the track, the position, a few buttons.
 
 use crate::app::{Shared, Shown};
+use crate::artist_links;
+use crate::catalog::Catalog;
 use crate::context_menu::Menued as _;
 use crate::dialogs::{self, Dialog};
 use crate::motion;
@@ -15,6 +17,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use melodie_core::proto::Request;
 use melodie_desktop::bar;
+use melodie_desktop::browse::Place;
+use melodie_desktop::credits;
 use melodie_desktop::figures::clock_text;
 use melodie_desktop::launch::{Adding, Job, Kind};
 use melodie_desktop::layout;
@@ -39,14 +43,21 @@ const SIDE: f32 = 2.0 * 40.0 + 12.0;
 
 pub struct PlayerView {
     shared: Entity<Shared>,
+    catalog: Entity<Catalog>,
     bar: Entity<Bar>,
     volume: Entity<Volume>,
 }
 
 impl PlayerView {
-    pub fn new(shared: Entity<Shared>, bar: Entity<Bar>, volume: Entity<Volume>) -> Self {
+    pub fn new(
+        shared: Entity<Shared>,
+        catalog: Entity<Catalog>,
+        bar: Entity<Bar>,
+        volume: Entity<Volume>,
+    ) -> Self {
         Self {
             shared,
+            catalog,
             bar,
             volume,
         }
@@ -79,10 +90,15 @@ fn cover(shown: Option<&Shown>, size: Pixels, pal: Palette) -> AnyElement {
 
 impl Render for PlayerView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (track, state, following, has_tracks, step, queue_open) = {
+        let (track, artists, state, following, has_tracks, step, queue_open) = {
             let s = self.shared.read(cx);
+            let artists = s
+                .player
+                .track()
+                .map(|t| credits::of(&s.credits, &t.id, &t.artist, None));
             (
                 s.player.track().cloned(),
+                artists,
                 s.player.state,
                 s.player.following,
                 !s.player.tracks.is_empty(),
@@ -187,13 +203,36 @@ impl Render for PlayerView {
                             .truncate()
                             .child(title),
                     )
-                    .child(
-                        div()
+                    .child(match (&track, artists) {
+                        // each artist a link of its own, the album after them
+                        (Some(t), Some(artists)) => h_flex()
+                            .max_w_full()
+                            .text_color(pal.secondary)
+                            .child(artist_links::line(&artists, |i, a| {
+                                let id = format!("player-artist-{i}");
+                                crate::tables::link(
+                                    ElementId::Name(id.clone().into()),
+                                    a.name.clone(),
+                                    a.id.clone().map(Place::Artist),
+                                    pal,
+                                    &self.catalog,
+                                )
+                                .min_w_0()
+                                .debug_selector(move || id.clone())
+                                .into_any_element()
+                            }))
+                            .when(!t.album.is_empty(), |d| {
+                                d.when(!artists.is_empty(), |d| {
+                                    d.child(div().flex_none().px(px(5.)).child("·"))
+                                })
+                                .child(div().min_w_0().truncate().child(t.album.clone()))
+                            }),
+                        _ => div()
                             .text_color(pal.secondary)
                             .max_w_full()
                             .truncate()
                             .child(byline),
-                    )
+                    })
                     .when(!quality.is_empty(), |d| {
                         d.child(
                             div()

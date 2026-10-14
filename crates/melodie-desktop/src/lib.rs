@@ -6,6 +6,7 @@ pub mod bar;
 pub mod browse;
 pub mod card;
 pub mod covers;
+pub mod credits;
 pub mod edit;
 pub mod figures;
 pub mod find;

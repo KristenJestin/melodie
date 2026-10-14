@@ -21,6 +21,7 @@ use melodie_core::env::Env;
 use melodie_core::search::{self, Hit};
 use melodie_desktop::browse::Place;
 use melodie_desktop::covers::{Covers, Use};
+use melodie_desktop::credits::{self, Credits};
 use melodie_desktop::find::{self, Action, Answer, Latest};
 use melodie_desktop::launch::{Adding, Kind};
 use melodie_desktop::menu::{Item, Spot};
@@ -182,7 +183,14 @@ impl SearchView {
         let task = cx.background_spawn(async move {
             let answer = find::answer(&env, &text, all)?;
             anyhow::Ok(answer.map(|a| {
-                let tables = tabulate(&a, &sorts);
+                let tracks = a.groups.iter().map(|g| &g.hits[..]);
+                let found = tracks.chain(a.all.as_ref().map(|(_, hits)| &hits[..]));
+                let ids = found
+                    .flatten()
+                    .filter(|h| h.kind == search::Kind::Track)
+                    .map(|h| h.id.clone());
+                let credits = credits::read(&env, ids);
+                let tables = tabulate(&a, &sorts, &credits);
                 (a, tables)
             }))
         });
@@ -450,7 +458,7 @@ fn count_label(n: usize, text: &str) -> String {
 
 /// The tracks of an answer as their tables show them, by place. Blocking: run it away from the
 /// window (there may be thousands).
-fn tabulate(a: &Answer, sorts: &Sorts) -> HashMap<Place, Shown> {
+fn tabulate(a: &Answer, sorts: &Sorts, credits: &Credits) -> HashMap<Place, Shown> {
     let grouped = a.groups.iter().find(|g| g.kind == search::Kind::Track);
     let all = a.all.as_ref().filter(|(k, _)| *k == Kind::Track);
     let lists = [
@@ -460,7 +468,10 @@ fn tabulate(a: &Answer, sorts: &Sorts) -> HashMap<Place, Shown> {
     lists
         .into_iter()
         .filter_map(|(place, hits)| {
-            let tracks = hits?.iter().map(track_table::track_of).collect();
+            let tracks = hits?
+                .iter()
+                .map(|h| track_table::track_of(h, credits))
+                .collect();
             let shown = Shown::new(tracks, sorts.get(&place));
             Some((place, shown))
         })

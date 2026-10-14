@@ -406,3 +406,33 @@ fn a_filter_with_no_result_says_nothing_was_found_under_its_title() {
     assert!(cx.debug_bounds("search-none").is_some());
     assert!(cx.debug_bounds("found-title").is_none());
 }
+
+#[test]
+fn a_track_found_shows_each_of_its_artists() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = library(dir.path());
+    let conn = db::open_existing(&env).unwrap().unwrap();
+    conn.execute_batch(
+        "INSERT INTO artists(id, name) VALUES ('ar5', 'Nova Reyes'), ('ar1', 'Lior Castell');
+         UPDATE tracks SET artist = 'Nova Reyes, Lior Castell', artistId = 'ar5' WHERE id = 't1';
+         INSERT INTO track_artists(track, artist, pos) VALUES ('t1', 'ar5', 0), ('t1', 'ar1', 1);",
+    )
+    .unwrap();
+    drop(conn);
+    let mut app = TestAppContext::single();
+    let (page, cx) = open(&mut app, &env);
+    go(&page, Place::Search, cx);
+    type_in(&page, "roof", cx);
+    let names = page.read_with(cx, |p, cx| {
+        let shown = &p.search.read(cx).tables[&Place::Search];
+        let t = &shown.tracks[0];
+        assert_eq!(t.id, "t1");
+        t.artists
+            .iter()
+            .map(|a| (a.id.clone().unwrap(), a.name.clone()))
+            .collect::<Vec<_>>()
+    });
+    let want = [("ar5", "Nova Reyes"), ("ar1", "Lior Castell")]
+        .map(|(id, name)| (id.to_string(), name.to_string()));
+    assert_eq!(names, want);
+}
