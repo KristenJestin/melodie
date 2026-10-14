@@ -2,7 +2,8 @@
 //! shows them, and what an album, an artist or a playlist holds. Reads only: no network.
 
 use anyhow::Result;
-use rusqlite::{Connection, Row, params};
+use rusqlite::{Connection, OptionalExtension as _, Row, params};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Album {
@@ -42,6 +43,16 @@ pub struct Track {
     pub duration: i64,
     pub plays: i64,
     pub cover: Option<String>,
+    /// Every artist credited on it, in the server's order, the main one first; at least its own
+    /// artist when it has one, for a server that credits no others.
+    pub artists: Vec<Credit>,
+}
+
+/// An artist credited on a track. No id: the copy does not know that artist.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Credit {
+    pub id: Option<String>,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -145,16 +156,51 @@ fn album_row(r: &Row) -> rusqlite::Result<Album> {
     })
 }
 
-const TRACK: &str =
+/// The artists credited on the track `t`, in order: each as its id and its name, the two split by
+/// a unit separator and the artists by a record separator (no name holds either). An artist the
+/// copy does not list is left out. A macro, for `TRACK` to be one constant.
+macro_rules! credits {
+    () => {
+        "(SELECT group_concat(c.artist || char(31) || ca.name, char(30) ORDER BY c.pos, c.rowid)
+    FROM track_artists c JOIN artists ca ON ca.id = c.artist WHERE c.track = t.id)"
+    };
+}
+
+const TRACK: &str = concat!(
     "SELECT t.id, t.title, t.artist, t.artistId, t.album, t.albumId, t.year, t.track,
-    t.duration, t.playCount, t.coverArt FROM tracks t";
+    t.duration, t.playCount, t.coverArt, ",
+    credits!(),
+    " FROM tracks t"
+);
+
+/// The artists of a track from the `credits!` it was read with, else its own artist.
+fn credited(joined: Option<String>, artist: &str, artist_id: Option<&str>) -> Vec<Credit> {
+    let listed: Vec<Credit> = joined
+        .iter()
+        .flat_map(|j| j.split('\x1e'))
+        .filter_map(|c| c.split_once('\x1f'))
+        .map(|(id, name)| Credit {
+            id: Some(id.to_string()),
+            name: name.to_string(),
+        })
+        .collect();
+    if !listed.is_empty() || (artist.is_empty() && artist_id.is_none()) {
+        return listed;
+    }
+    vec![Credit {
+        id: artist_id.map(str::to_string),
+        name: artist.to_string(),
+    }]
+}
 
 fn track_row(r: &Row) -> rusqlite::Result<Track> {
+    let (artist, artist_id): (String, Option<String>) = (r.get(2)?, r.get(3)?);
     Ok(Track {
         id: r.get(0)?,
         title: r.get(1)?,
-        artist: r.get(2)?,
-        artist_id: r.get(3)?,
+        artists: credited(r.get(11)?, &artist, artist_id.as_deref()),
+        artist,
+        artist_id,
         album: r.get(4)?,
         album_id: r.get(5)?,
         year: r.get(6)?,
@@ -256,6 +302,29 @@ pub fn track(conn: &Connection, id: &str) -> Result<Option<Track>> {
             .into_iter()
             .next(),
     )
+}
+
+/// The artists of the tracks of these ids, by id: for a list that knows only the tracks (the
+/// queue, the search). A track the copy does not hold is left out.
+pub fn credits(conn: &Connection, ids: &[String]) -> Result<HashMap<String, Vec<Credit>>> {
+    let mut st = conn.prepare_cached(concat!(
+        "SELECT t.artist, t.artistId, ",
+        credits!(),
+        " FROM tracks t WHERE t.id = ?1"
+    ))?;
+    let mut found = HashMap::new();
+    for id in ids {
+        let row = st
+            .query_row([id], |r| {
+                let (artist, artist_id): (String, Option<String>) = (r.get(0)?, r.get(1)?);
+                Ok(credited(r.get(2)?, &artist, artist_id.as_deref()))
+            })
+            .optional()?;
+        if let Some(artists) = row {
+            found.insert(id.clone(), artists);
+        }
+    }
+    Ok(found)
 }
 
 const ARTIST: &str = "SELECT a.id, a.name, a.albumCount, COALESCE(n.c, 0), a.coverArt FROM artists a
@@ -723,6 +792,73 @@ mod tests {
         // an artist credited only on their own albums appears nowhere
         assert!(artist_appearances(&conn, "ar2").unwrap().is_empty());
         assert!(artist_appearances(&conn, "nobody").unwrap().is_empty());
+    }
+
+    fn names(t: &Track) -> Vec<(Option<&str>, &str)> {
+        t.artists
+            .iter()
+            .map(|c| (c.id.as_deref(), c.name.as_str()))
+            .collect()
+    }
+
+    /// A track credited to three artists, the main one first, as Navidrome sends it: their names
+    /// joined in `artist`.
+    fn three_artists(conn: &mut Connection) {
+        let tx = conn.transaction().unwrap();
+        db::insert_track(
+            &tx,
+            &json!({"id":"t9","title":"Crossing","artist":"Ilse Varga, Ada Marlow, the Quiet Engines",
+                    "artistId":"ar3","album":"Northbound","albumId":"al3","track":2,
+                    "artists":[{"id":"ar3","name":"Ilse Varga"},{"id":"ar1","name":"Ada Marlow"},
+                               {"id":"ar2","name":"the Quiet Engines"}]}),
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn a_track_of_three_artists_is_read_with_the_three_in_order() {
+        let (_d, mut conn) = library();
+        three_artists(&mut conn);
+        let want = [
+            (Some("ar3"), "Ilse Varga"),
+            (Some("ar1"), "Ada Marlow"),
+            (Some("ar2"), "the Quiet Engines"),
+        ];
+        assert_eq!(names(&track(&conn, "t9").unwrap().unwrap()), want);
+        // every list of tracks reads them with the rows
+        let listed = album_tracks(&conn, "al3").unwrap();
+        assert_eq!(names(&listed[0]), want);
+        let all = tracks(&conn, Sort::asc(TrackBy::Title)).unwrap();
+        let t9 = all.iter().find(|t| t.id == "t9").unwrap();
+        assert_eq!(names(t9), want);
+    }
+
+    #[test]
+    fn a_track_of_one_artist_is_read_with_that_artist() {
+        let (_d, conn) = library();
+        // a server that sends no `artists`: the track's own artist, as before
+        let t = track(&conn, "t4").unwrap().unwrap();
+        assert_eq!(names(&t), [(Some("ar2"), "the Quiet Engines")]);
+        // an artist without an id is still named
+        conn.execute_batch(
+            "INSERT INTO tracks(id, title, artist) VALUES ('t0', 'Loose', 'Nova Reyes')",
+        )
+        .unwrap();
+        let t = track(&conn, "t0").unwrap().unwrap();
+        assert_eq!(names(&t), [(None, "Nova Reyes")]);
+    }
+
+    #[test]
+    fn the_artists_of_tracks_are_read_by_their_ids() {
+        let (_d, mut conn) = library();
+        three_artists(&mut conn);
+        let ids = ["t9", "t4", "gone"].map(String::from);
+        let found = credits(&conn, &ids).unwrap();
+        assert_eq!(found.len(), 2);
+        let order: Vec<&str> = found["t9"].iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(order, ["Ilse Varga", "Ada Marlow", "the Quiet Engines"]);
+        assert_eq!(found["t4"][0].id.as_deref(), Some("ar2"));
     }
 
     #[test]
