@@ -25,12 +25,31 @@ pub fn command(summary: &str, body: &str) -> Command {
     c
 }
 
+/// Comme [`command`], avec le glyphe Nerd Font que le démon de notifications du bureau dessine
+/// dans l'icône (`omarchy-glyph`) ; les autres démons ignorent l'indice.
+pub fn command_with_glyph(summary: &str, body: &str, glyph: char) -> Command {
+    let mut c = Command::new("notify-send");
+    c.args(["-a", "Mélodie", "-h"])
+        .arg(format!("string:omarchy-glyph:{glyph}"))
+        .args(["--", summary, body]);
+    c
+}
+
 /// Notification simple ; un échec de `notify-send` est sans conséquence.
 pub fn send(summary: &str, body: &str) {
+    run(command(summary, body));
+}
+
+/// Notification dont l'icône porte un glyphe.
+pub fn send_with_glyph(summary: &str, body: &str, glyph: char) {
+    run(command_with_glyph(summary, body, glyph));
+}
+
+fn run(mut c: Command) {
     if muted() {
         return;
     }
-    let _ = command(summary, body)
+    let _ = c
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -100,6 +119,28 @@ mod tests {
             .map(|a| a.to_string_lossy().to_string())
             .collect();
         assert_eq!(args, ["-a", "Mélodie", "--", "Titre", "Corps"]);
+    }
+
+    #[test]
+    fn commande_avec_glyphe() {
+        let c = command_with_glyph("Titre", "Corps", '\u{F02D1}');
+        assert_eq!(c.get_program(), "notify-send");
+        let args: Vec<_> = c
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(
+            args,
+            [
+                "-a",
+                "Mélodie",
+                "-h",
+                "string:omarchy-glyph:\u{F02D1}",
+                "--",
+                "Titre",
+                "Corps"
+            ]
+        );
     }
 
     #[test]

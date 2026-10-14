@@ -883,7 +883,7 @@ fn favoris_playlists_et_mixes_de_bout_en_bout() {
     // Favoris explicites : requête reçue, copie locale mise à jour sans resynchronisation.
     let before = sb.calls().len();
     let out = sb.ok(&["like", "track", "t2"]);
-    assert!(out.contains("♥ Ajouté aux favoris : Titre 2"), "{out}");
+    assert!(out.contains("Added to favourites : Titre 2"), "{out}");
     assert!(starred("t2"));
     assert_eq!(query_count(&sb, "star", "&id=t2"), 1);
     assert_eq!(
@@ -1066,7 +1066,7 @@ fn favoris_playlists_et_mixes_de_bout_en_bout() {
         assert!(!mpris_starred(p));
     }
     let out = sb.ok(&["like"]);
-    assert!(out.contains("Ajouté aux favoris"), "{out}");
+    assert!(out.contains("Added to favourites"), "{out}");
     assert_eq!(sb.now()["starred"], true);
     assert_eq!(query_count(&sb, "star", &format!("&id={id}")), 1);
     assert!(db_value::<bool>(
