@@ -96,10 +96,15 @@ pub fn resolve(
 }
 
 /// The tracks the local copy credits an artist on outside their albums; none without a copy.
+/// While the first copy is partial the credits are not all there: `Failure::Syncing`, as for the
+/// rest of the command line.
 fn appearances(env: &Env, id: &str) -> Result<Vec<TrackInfo>, Failure> {
     let Some(conn) = db::open_existing(env)? else {
         return Ok(Vec::new());
     };
+    if db::is_partial(&conn) {
+        return Err(Failure::Syncing);
+    }
     let ids: Vec<String> = library::artist_appearances(&conn, id)?
         .into_iter()
         .map(|t| t.id)
@@ -207,6 +212,23 @@ mod tests {
         assert_eq!(ids, ["s1", "s2"]);
         let said = message(resolve(&client, &env, Kind::Artist, "ar8"));
         assert_eq!(said, "Nothing to play for Nova Reyes");
+    }
+
+    #[test]
+    fn an_artist_without_albums_while_the_first_copy_is_partial_says_it_is_syncing() {
+        let fake = Fake::start(4, "tok");
+        featuring(&fake);
+        let client = client_of(&fake);
+        let d = tempfile::tempdir().unwrap();
+        let env = Env::with_home(d.path());
+        crate::sync::run(&env, &client, false).unwrap();
+        let conn = db::open_existing(&env).unwrap().unwrap();
+        db::set_meta(&conn, db::COPYING, "song:1000").unwrap();
+        // the credits may not be all there yet: neither "nothing" nor a part of the tracks
+        for id in ["ar9", "ar8"] {
+            let r = resolve(&client, &env, Kind::Artist, id);
+            assert!(matches!(r, Err(Failure::Syncing)), "{id}");
+        }
     }
 
     #[test]
