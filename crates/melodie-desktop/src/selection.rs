@@ -131,6 +131,11 @@ impl Selection {
             .collect()
     }
 
+    /// The track Enter plays: the first one picked, in the order shown.
+    pub fn first(&self, list: &Place) -> Option<&Track> {
+        self.tracks(list).first().map(|&(_, t)| t)
+    }
+
     /// The ids of the rows picked, in the list's order; `ids` is the list shown.
     pub fn ids<S: AsRef<str>>(&self, list: &Place, ids: &[S]) -> Vec<String> {
         self.picks(list, ids)
@@ -309,5 +314,22 @@ mod tests {
         let mut s = Selection::default();
         s.right_click(&here(), &rows(), 1);
         assert_eq!(s.ranks(&here()), [1], "nothing picked: this row");
+    }
+
+    #[test]
+    fn enter_plays_the_first_track_picked_in_the_order_shown() {
+        let tracks: Arc<[Track]> = [track("a", "A"), track("b", "B"), track("c", "C")].into();
+        let shown = Shown::new(
+            tracks,
+            Some(ColSort {
+                col: Col::Title,
+                descending: true,
+            }),
+        );
+        let mut s = Selection::default();
+        s.click(&here(), &shown, 2, How::Toggle);
+        s.click(&here(), &shown, 1, How::Toggle);
+        assert_eq!(s.first(&here()).map(|t| t.id.as_str()), Some("b"));
+        assert_eq!(s.first(&Place::Tracks), None);
     }
 }

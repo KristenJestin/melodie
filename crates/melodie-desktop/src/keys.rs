@@ -124,6 +124,8 @@ pub enum Act {
     ToggleQueue,
     /// The menu of the row picked.
     OpenMenu,
+    /// Plays the first track picked, as a double click on it does.
+    PlayPicked,
     /// Not ours: the key goes on (typed in the field).
     Pass,
 }
@@ -205,6 +207,8 @@ pub fn act(key: Key, s: Situation) -> Act {
         Key::Space if !typing => Act::PlayPause,
         Key::Queue if !typing => Act::ToggleQueue,
         Key::Menu if s.selection => Act::OpenMenu,
+        // the field's own Enter while it has the focus: the list needs no focus of its own
+        Key::Enter if s.selection && !typing => Act::PlayPicked,
         _ => Act::Pass,
     }
 }
@@ -626,5 +630,44 @@ mod tests {
             };
             assert_eq!(act(Key::Escape, palette), Act::TogglePalette, "{here:?}");
         }
+    }
+
+    #[test]
+    fn enter_plays_the_selections_first_track() {
+        let page = Place::Album("al1".into());
+        let picked = Situation {
+            selection: true,
+            ..at(&page, false)
+        };
+        assert_eq!(act(Key::Enter, picked), Act::PlayPicked);
+        assert_eq!(
+            act(Key::Enter, at(&page, false)),
+            Act::Pass,
+            "nothing picked"
+        );
+        // in the search, the field keeps its Enter while it has the focus
+        for here in [Place::Search, Place::Found(Kind::Track)] {
+            let typing = Situation {
+                selection: true,
+                ..at(&here, true)
+            };
+            assert_eq!(act(Key::Enter, typing), Act::Pass);
+            let rows = Situation {
+                selection: true,
+                ..at(&here, false)
+            };
+            assert_eq!(act(Key::Enter, rows), Act::PlayPicked);
+        }
+        // a dialog, the menu or the palette take it first
+        let menu = Situation {
+            menu_open: true,
+            ..picked
+        };
+        assert_eq!(act(Key::Enter, menu), Act::Pass);
+        let dialog = Situation {
+            dialog_open: true,
+            ..picked
+        };
+        assert_eq!(act(Key::Enter, dialog), Act::Confirm);
     }
 }

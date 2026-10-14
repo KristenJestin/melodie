@@ -42,6 +42,7 @@ use melodie_desktop::account::{self, Screen};
 use melodie_desktop::bar;
 use melodie_desktop::browse::Place;
 use melodie_desktop::keys::{self, Act, Key, Situation, Thumb};
+use melodie_desktop::launch::{Job, Kind};
 use melodie_desktop::layout::{self, QUEUE_WIDTH};
 use melodie_desktop::theme::{self, Active, Choice, Palette};
 use pages::{PageView, SelectionBar};
@@ -276,6 +277,17 @@ impl Root {
             }),
             Act::ToggleQueue => self.shared.update(cx, |s, cx| s.toggle_queue(cx)),
             Act::OpenMenu => context_menu::open_on_picked(&self.catalog, window, cx),
+            Act::PlayPicked => {
+                let c = self.catalog.read(cx);
+                let job = c.selection.first(c.here()).map(|t| Job::Play {
+                    kind: Kind::Track,
+                    id: t.id.clone(),
+                    shuffle: false,
+                });
+                if let Some(job) = job {
+                    self.shared.update(cx, |s, cx| s.run(job, cx));
+                }
+            }
             Act::CloseDialog => self.views.dialogs.update(cx, |d, cx| d.close(cx)),
             // Enter in the name field is the field's own: it confirms once, through its event
             Act::Confirm if self.views.dialogs.read(cx).field_focused(window, cx) => return,
