@@ -60,6 +60,8 @@ const SUBSCRIBER_BUFFER: usize = 64;
 const POSITION_EVERY: Duration = Duration::from_secs(1);
 /// Time left to subscribers to receive the last events when the daemon quits.
 const FAREWELL: Duration = Duration::from_secs(1);
+/// Longest wait for mpv's core to start its playlist before the daemon answers anyway.
+const MPV_START: Duration = Duration::from_secs(2);
 
 /// Fin de lecture demandée par SIGTERM ou SIGINT.
 static TERMINATED: AtomicBool = AtomicBool::new(false);
@@ -194,8 +196,13 @@ fn event_handle(mpv: &Arc<Mpv>) -> Arc<Mpv> {
     mpv.clone()
 }
 
-/// mpv's event thread.
-fn spawn_events(mpv: &Arc<Mpv>, tx: Sender<Msg>) -> Result<()> {
+/// mpv's event thread. The receiver hears once that mpv's core started its playlist: as it
+/// starts, the core sends the playlist back to its first entry (`prepare_playlist`), so a play
+/// handled before would start at the first track instead of the one asked. mpv tells it with
+/// its `idle` event, deprecated but sent to every client unless refused. That first `idle`
+/// comes only while mpv has nothing loaded, so nothing may be loaded before the wait (a
+/// "restore the queue at start" would bring the race back, and a 2 s stall).
+fn spawn_events(mpv: &Arc<Mpv>, tx: Sender<Msg>) -> Result<Receiver<()>> {
     let ev = event_handle(mpv);
     for (id, name, fmt) in [
         (1, "playlist-pos", Format::Int64),
@@ -206,10 +213,20 @@ fn spawn_events(mpv: &Arc<Mpv>, tx: Sender<Msg>) -> Result<()> {
         ev.observe_property(name, fmt, id)
             .map_err(|e| anyhow::anyhow!("observation de {name} : {e}"))?;
     }
+    let (started, heard) = channel();
+    let mut started = Some(started);
     std::thread::spawn(move || {
         loop {
             let msg = match ev.wait_event(1.0) {
                 None => continue,
+                Some(Ok(MpvRaw::Deprecated(e)))
+                    if e.event_id == libmpv2_sys::mpv_event_id_MPV_EVENT_IDLE =>
+                {
+                    if let Some(s) = started.take() {
+                        let _ = s.send(());
+                    }
+                    continue;
+                }
                 Some(Ok(MpvRaw::PropertyChange { change, .. })) => {
                     let _ = matches!(change, PropertyData::Flag(_));
                     MpvEvent::Prop
@@ -224,7 +241,7 @@ fn spawn_events(mpv: &Arc<Mpv>, tx: Sender<Msg>) -> Result<()> {
             }
         }
     });
-    Ok(())
+    Ok(heard)
 }
 
 /// Turns a connection into the event stream: the engine queues lines, this
@@ -1303,7 +1320,7 @@ pub fn run(env: &Env) -> Result<()> {
     let volume = Prefs::load(env).volume();
     let mpv = Arc::new(new_mpv(volume)?);
     let (tx, rx) = channel::<Msg>();
-    spawn_events(&mpv, tx.clone())?;
+    let mpv_started = spawn_events(&mpv, tx.clone())?;
 
     let shared = Arc::new(Mutex::new(Snapshot {
         volume: f64::from(volume) / 100.0,
@@ -1336,6 +1353,11 @@ pub fn run(env: &Env) -> Result<()> {
         });
     }
 
+    // Bounded: an mpv that no longer sends `idle` must not keep the daemon from answering.
+    // This wiring is untested (`run` needs a real session); `spawn_events` is.
+    if mpv_started.recv_timeout(MPV_START).is_err() {
+        dlog!("mpv did not say its core started");
+    }
     let mut engine = Engine {
         env: env.clone(),
         mpv: mpv.clone(),
@@ -1426,6 +1448,104 @@ mod tests {
             name == "main" || name == "melodie_events",
             "client named {name:?}"
         );
+    }
+
+    /// Lets the held core go: written by `now`, and when dropped, so a test that panics before
+    /// it does not leave `Mpv`'s drop joining a core stuck in the hold. Declare it after the mpv
+    /// it releases, so it is dropped first.
+    struct Release(std::path::PathBuf);
+
+    impl Release {
+        fn now(&self) {
+            std::fs::write(&self.0, "").unwrap();
+        }
+    }
+
+    impl Drop for Release {
+        fn drop(&mut self) {
+            let _ = std::fs::write(&self.0, "");
+        }
+    }
+
+    /// An mpv whose core is held before it starts its playlist, until `release` exists: mpv
+    /// waits for the first lines of its scripts to run before it goes on. The hold gives up
+    /// after about ten seconds on its own, in case even the guard did not run.
+    fn held_mpv(dir: &std::path::Path) -> (Arc<Mpv>, Release) {
+        let release = dir.join("release");
+        let script = dir.join("hold.lua");
+        std::fs::write(
+            &script,
+            format!(
+                "local t = os.time()\nwhile not io.open({:?}) and os.time() - t < 10 do os.execute('sleep 0.01') end\n",
+                release.to_str().unwrap()
+            ),
+        )
+        .unwrap();
+        let mpv = Mpv::with_initializer(|init| {
+            init.set_option("vid", "no")?;
+            init.set_option("ao", "null")?;
+            init.set_option("idle", "yes")?;
+            init.set_option("load-scripts", "no")?;
+            init.set_option("scripts", script.to_str().unwrap())?;
+            Ok(())
+        })
+        .expect("libmpv");
+        (Arc::new(mpv), Release(release))
+    }
+
+    /// Two endless silent tracks, the second one asked first, as `load` does with a start of
+    /// 1; appended then moved, which every mpv knows.
+    fn load_from_the_second(mpv: &Mpv) {
+        let silence = "av://lavfi:anullsrc";
+        mpv.command("loadfile", &[silence, "replace"]).unwrap();
+        mpv.command("loadfile", &[silence, "append"]).unwrap();
+        mpv.command("playlist-move", &["1", "0"]).unwrap();
+        assert_eq!(mpv.get_property::<i64>("playlist-pos").unwrap(), 1);
+    }
+
+    /// The entry mpv really started.
+    fn playing(mpv: &Mpv) -> i64 {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let p = mpv.get_property::<i64>("playlist-playing-pos").unwrap();
+            if p >= 0 || Instant::now() > deadline {
+                return p;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// The cause of #91: mpv's core, as it starts, sends its playlist back to the first entry,
+    /// so what was loaded before plays from the first track whatever was asked. A canary on
+    /// mpv, not on Mélodie: if a future mpv keeps `current` in `prepare_playlist`, it fails
+    /// while the daemon did not regress.
+    #[test]
+    fn mpv_plays_from_the_first_entry_what_was_loaded_before_its_core_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mpv, release) = held_mpv(dir.path());
+        load_from_the_second(&mpv);
+        release.now();
+        assert_eq!(playing(&mpv), 0);
+    }
+
+    /// #91: no request is handled before mpv's core started its playlist, so a play from a
+    /// start is never sent back to the first track.
+    #[test]
+    fn the_daemon_hears_when_mpv_started_its_playlist_and_not_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mpv, release) = held_mpv(dir.path());
+        let (tx, _rx) = channel();
+        let started = spawn_events(&mpv, tx).unwrap();
+        assert!(
+            started.recv_timeout(Duration::from_millis(500)).is_err(),
+            "heard before the core started"
+        );
+        release.now();
+        started
+            .recv_timeout(Duration::from_secs(10))
+            .expect("never heard that the core started");
+        load_from_the_second(&mpv);
+        assert_eq!(playing(&mpv), 1);
     }
 
     /// The daemon has no window, terminal or key bindings: mpv's built-in Lua scripts (OSC,

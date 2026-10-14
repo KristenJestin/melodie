@@ -1038,8 +1038,11 @@ mod tests {
         let a = account(&mut app, &env, &program);
         let notices = notices(&mut app, &a);
         a.update(&mut app, |a, cx| a.set_standing(Standing::Ok, cx));
-        settle(&mut app, |_| calls(&said) == ["sync"]);
-        quiet(&mut app);
+        // its `melodie sync` ended: the window follows the run it found, which it cannot see end
+        settle(&mut app, |app| {
+            a.read_with(app, |a, _| a.follow.as_ref().is_some_and(|f| !f.own))
+        });
+        assert_eq!(calls(&said), ["sync"]);
         assert!(a.read_with(&app, |a, _| a.syncing));
         // that run goes away without finishing: the window takes the copy up, it never says its
         // own run stopped
