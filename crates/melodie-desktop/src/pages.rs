@@ -593,7 +593,7 @@ impl Render for SelectionBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (count, several, playlist) = {
             let c = self.catalog.read(cx);
-            let here = c.here().clone();
+            let here = c.picking();
             let playlist = match c.pages.get(&here).map(Arc::as_ref) {
                 Some(Page::Playlist { playlist, .. }) if c.is_own(playlist) => {
                     Some((playlist.id.clone(), playlist.name.clone()))
@@ -623,10 +623,10 @@ impl Render for SelectionBar {
             move |cx: &App| {
                 let c = catalog.read(cx);
                 // the list the rows were picked in: the search keeps its tables apart
-                let Some(shown) = c.selection.shown(c.here()) else {
+                let Some(shown) = c.selection.shown(&c.picking()) else {
                     return (vec![], vec![]);
                 };
-                let picks = shown.picks(&c.selection, c.here());
+                let picks = shown.picks(&c.selection, &c.picking());
                 let titles = picks
                     .iter()
                     .map(|(rank, _)| shown.tracks[*rank].title.clone())

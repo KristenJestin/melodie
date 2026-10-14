@@ -290,6 +290,15 @@ impl Catalog {
         }
     }
 
+    /// The list the picking keys, the selection bar and Enter act on: the current place, or the
+    /// list of its page the rows were picked in (an artist's appearances).
+    pub fn picking(&self) -> Place {
+        match (self.here(), self.selection.list()) {
+            (Place::Artist(id), Some(l @ Place::Appearances(of))) if of == id => l.clone(),
+            (here, _) => here.clone(),
+        }
+    }
+
     /// A left click on row `ix` of `shown`, the list at `list` (the current place, or a list of
     /// its page): it picks, or plays.
     pub fn left_click(
@@ -690,7 +699,8 @@ mod tests {
     use melodie_core::db;
     use melodie_core::env::Env;
     use melodie_desktop::browse::Place;
-    use melodie_desktop::selection::How;
+    use melodie_desktop::selection::{Click, How};
+    use melodie_desktop::table::Shown;
 
     /// An artist page read from a copy where `ar9` is featured on two tracks of `ar1` and `ar8`
     /// is credited on nothing.
@@ -732,6 +742,17 @@ mod tests {
         let ids: Vec<&str> = appears.iter().map(|t| t.id.as_str()).collect();
         assert_eq!(ids, ["t1", "t3"]);
         assert!(featured.playable());
+        // a row picked there is picked in its own list, which Enter and the bar act on
+        let list = Place::Appearances("ar9".into());
+        let shown = Shown::new(appears.clone(), None);
+        catalog.update(&mut app, |c, cx| {
+            c.left_click(&list, &shown, 1, Click::of(false, false, 1), cx)
+        });
+        catalog.read_with(&app, |c, _| {
+            assert_eq!(c.picking(), list);
+            assert_eq!(c.selection.ranks(&list), [1]);
+            assert_eq!(c.selection.count(&Place::Artist("ar9".into())), 0);
+        });
         assert!(!page(&mut app, "ar8").playable(), "nothing to play");
         assert!(page(&mut app, "ar1").playable());
     }
