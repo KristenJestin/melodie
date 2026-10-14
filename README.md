@@ -195,7 +195,9 @@ Screenshots and a recording of the animations, made with invented data, are in
     to the visit: a list opened anew (the sidebar, a link, a search result) shows its own order,
     one come back to (Back, Forward) keeps its sort, and a new search shows its tracks unsorted.
   - A page for an album (its tracks; play, shuffle, play next, add to the queue, instant mix, add
-    to a playlist), an artist (its top tracks by plays, its albums; play, shuffle, instant mix)
+    to a playlist), an artist (its top tracks by plays, its albums, then under "Appears on" the
+    tracks it is credited on outside its albums, such as featured on another artist's; play,
+    shuffle, instant mix, which cannot be pressed when it is credited on nothing)
     and a playlist (its tracks, as the local copy holds them; play, shuffle, play next, add to the
     queue). A click on a track picks it, a double click (or Enter) plays the list shown from
     this track on, in the order shown: Previous goes back to the tracks above it. At most a

@@ -168,6 +168,8 @@ pub struct RowCtx {
     pub mark: Option<Mark>,
     /// The list the row is shown in, which a click picks in.
     pub shown: Shown,
+    /// Where that list is: a page may hold two lists, picked apart.
+    pub list: Place,
     /// The playlist the row is in, when the user may edit it: remove the row, drag it elsewhere.
     pub playlist: Option<(String, String)>,
     /// Whether the pointer is on the row, for its buttons to fade in (see `row_hover`).
@@ -191,6 +193,7 @@ impl RowCtx {
             selected: selection.has(here, ix),
             mark: row.and_then(|(rank, t)| marks.of(&t.id, rank)),
             shown: shown.clone(),
+            list: here.clone(),
             playlist: None,
             hover,
         }
@@ -291,14 +294,19 @@ pub fn track_row(
     let (accent, selected, mark) = (pal.accent, row.selected, row.mark);
     let numbered = cols.contains(&Col::Number);
     let look = row.hover.look;
-    let (menued, menu_shown, menu_playlist) =
-        (catalog.clone(), row.shown.clone(), row.playlist.clone());
+    let (menued, menu_shown, menu_playlist, menu_list) = (
+        catalog.clone(),
+        row.shown.clone(),
+        row.playlist.clone(),
+        row.list.clone(),
+    );
+    let list = row.list.clone();
     row.hover
         .track(h_flex().id(key("row")))
         .on_mouse_down(MouseButton::Right, move |ev, window, cx| {
             cx.stop_propagation();
             let menu = menued.update(cx, |c, cx| {
-                c.menu_on(&menu_shown, ix, menu_playlist.clone(), cx)
+                c.menu_on(&menu_list, &menu_shown, ix, menu_playlist.clone(), cx)
             });
             if let Some((item, spot)) = menu {
                 context_menu::open(item, spot, None, ev.position, window, cx)
@@ -461,7 +469,7 @@ pub fn track_row(
             })
         })
         .on_click(row_click(move |click, _, cx| {
-            select.update(cx, |c, cx| c.left_click(&shown, ix, click, cx))
+            select.update(cx, |c, cx| c.left_click(&list, &shown, ix, click, cx))
         }))
 }
 

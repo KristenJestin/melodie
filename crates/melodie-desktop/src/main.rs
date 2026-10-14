@@ -489,7 +489,9 @@ impl Render for Root {
             Place::Albums => v.albums.clone().into(),
             Place::Artists => v.artists.clone().into(),
             Place::Tracks => v.tracks.clone().into(),
-            Place::Album(_) | Place::Artist(_) | Place::Playlist(_) => v.page.clone().into(),
+            Place::Album(_) | Place::Artist(_) | Place::Playlist(_) | Place::Appearances(_) => {
+                v.page.clone().into()
+            }
             Place::Search | Place::Found(_) => v.search.clone().into(),
         };
         let (scrim, card_scrim) = (self.shared.clone(), self.shared.clone());

@@ -19,6 +19,9 @@ pub enum Place {
     Search,
     /// Every result of one kind for the text searched.
     Found(crate::launch::Kind),
+    /// The tracks an artist appears on: a list of the artist's page, apart from its top tracks,
+    /// never a place to go.
+    Appearances(String),
 }
 
 impl Place {
