@@ -2,10 +2,11 @@
 //! time, fed by the covers (an id at a tier) that are missing on disk. Nothing here touches the
 //! server or draws; the cover files known so far are looked up here too, for the views.
 
-use melodie_core::cover::{Disk, Tier, Want};
+use melodie_core::cover::{Disk, LOCKED_EXIT, Tier, Want};
 use melodie_core::env::Env;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 /// How many times a cover may come back from a finished `cover-fetch` still missing before the
@@ -210,6 +211,47 @@ pub fn round(env: &Env, batch: &[Want], fetch: impl FnOnce(&[Want]) -> Fetch) ->
         found,
         missing,
         fetch: Some(fetch),
+    }
+}
+
+/// How long one `cover-fetch` may run (a full round of timeouts takes about a minute and a
+/// half): one that never ends, stuck on the keyring or the network, would hold every cover of
+/// the window back until a restart.
+pub const ROUND_LIMIT: Duration = Duration::from_secs(180);
+
+/// `<program> cover-fetch` with the covers on its standard input; waits for it, `limit` at most.
+/// Blocking: run it away from the window.
+pub fn fetch(program: &Path, wants: &[Want], limit: Duration) -> Fetch {
+    let child = std::process::Command::new(program)
+        .arg("cover-fetch")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    let Ok(mut child) = child else {
+        return Fetch::Failed;
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let lines: Vec<String> = wants.iter().map(Want::line).collect();
+        let _ = stdin.write_all(lines.join("\n").as_bytes());
+    }
+    let end = Instant::now() + limit;
+    let code = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status.code(),
+            Ok(None) if Instant::now() < end => std::thread::sleep(Duration::from_millis(50)),
+            _ => {
+                // what it downloaded meanwhile is on disk; the rest counts as a try
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+        }
+    };
+    match code {
+        Some(0) => Fetch::Done,
+        Some(code) if code == i32::from(LOCKED_EXIT) => Fetch::Locked,
+        _ => Fetch::Failed,
     }
 }
 
@@ -426,6 +468,56 @@ mod tests {
             assert!(fetches < 50, "never ends");
         }
         (fetches, all)
+    }
+
+    /// A stand-in for `melodie`: a shell script that keeps its input and its pid, then runs
+    /// `body`.
+    fn program(dir: &Path, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt as _;
+        let path = dir.join("melodie");
+        let script = format!(
+            "#!/bin/sh\necho $$ > {pid}\ncat > {input}\n{body}\n",
+            pid = dir.join("pid").display(),
+            input = dir.join("input").display(),
+        );
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_fetch_says_how_cover_fetch_ended() {
+        let dir = tempfile::tempdir().unwrap();
+        let wants = at(&["a", "b"], Tier::Row);
+        let done = program(dir.path(), "exit 0");
+        assert_eq!(fetch(&done, &wants, ROUND_LIMIT), Fetch::Done);
+        let input = std::fs::read_to_string(dir.path().join("input")).unwrap();
+        assert_eq!(input, "a\t300\nb\t300");
+        let locked = program(dir.path(), &format!("exit {LOCKED_EXIT}"));
+        assert_eq!(fetch(&locked, &wants, ROUND_LIMIT), Fetch::Locked);
+        let broken = program(dir.path(), "exit 3");
+        assert_eq!(fetch(&broken, &wants, ROUND_LIMIT), Fetch::Failed);
+        let missing = dir.path().join("nothing-here");
+        assert_eq!(fetch(&missing, &wants, ROUND_LIMIT), Fetch::Failed);
+    }
+
+    /// Issue #84: a `cover-fetch` that never ends (a keyring prompt nobody answers, a stalled
+    /// connection) kept the round running for good, and no cover of the window was fetched again.
+    #[test]
+    fn a_fetch_that_never_ends_is_stopped_and_counts_as_a_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let stuck = program(dir.path(), "exec sleep 20");
+        let t = Instant::now();
+        let ended = fetch(&stuck, &ids(&["a"]), Duration::from_millis(300));
+        assert!(t.elapsed() < Duration::from_secs(10), "{:?}", t.elapsed());
+        assert_eq!(ended, Fetch::Failed);
+        let pid = std::fs::read_to_string(dir.path().join("pid")).unwrap();
+        let alive = std::process::Command::new("kill")
+            .args(["-0", pid.trim()])
+            .status()
+            .unwrap()
+            .success();
+        assert!(!alive, "the process is stopped, its lock with it");
     }
 
     #[test]
