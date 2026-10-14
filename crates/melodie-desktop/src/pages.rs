@@ -45,6 +45,11 @@ fn and_more(total: usize) -> Option<String> {
     (total > APPEARANCES_SHOWN).then(|| format!("and {} more", total - APPEARANCES_SHOWN))
 }
 
+/// What the buttons that play say while there is nothing for them to play.
+fn unplayable_tip(playable: bool) -> Option<&'static str> {
+    (!playable).then_some("Nothing to play")
+}
+
 /// A quiet line under a page's header, for what it lacks.
 fn quiet_line(text: impl Into<SharedString>, pal: Palette) -> Div {
     div()
@@ -193,6 +198,7 @@ fn actions(
                 .primary()
                 .diameter(38.)
                 .disabled(!playable)
+                .when_some(unplayable_tip(playable), |b, tip| b.tip(tip))
                 .on_click(job(|kind, id| Job::Play {
                     kind,
                     id,
@@ -204,6 +210,7 @@ fn actions(
                 .label("Shuffle")
                 .diameter(38.)
                 .disabled(!playable)
+                .when_some(unplayable_tip(playable), |b, tip| b.tip(tip))
                 .on_click(job(|kind, id| Job::Play {
                     kind,
                     id,
@@ -239,6 +246,7 @@ fn actions(
                     .label("Instant mix")
                     .diameter(38.)
                     .disabled(!playable)
+                    .when_some(unplayable_tip(playable), |b, tip| b.tip(tip))
                     .on_click(job(|kind, id| Job::Mix { kind, id })),
             )
         })
@@ -543,6 +551,12 @@ impl Render for PageView {
                     ),
                     pal,
                 ))
+                .when(!artist_page.playable() && top.is_empty(), |d| {
+                    d.child(
+                        quiet_line("Nothing to play for this artist", pal)
+                            .debug_selector(|| "artist-nothing".into()),
+                    )
+                })
                 .when(!top.is_empty(), |d| {
                     let (shown, cols) = (shown(), cols(Table::TopTracks));
                     let marks = playing.marks(&here, &shown.tracks);
@@ -737,7 +751,7 @@ impl Render for SelectionBar {
 #[cfg(test)]
 mod tests {
     // not `super::*`: it would bring the `test` macro of GPUI along
-    use super::{APPEARANCES_SHOWN, PageView, and_more};
+    use super::{APPEARANCES_SHOWN, PageView, and_more, unplayable_tip};
     use crate::catalog::Catalog;
     use gpui_kit::{AppContext as _, TestAppContext, VisualTestContext};
     use melodie_core::db;
@@ -810,5 +824,19 @@ mod tests {
             Some("and 50 more")
         );
         assert_eq!(and_more(APPEARANCES_SHOWN), None);
+    }
+
+    #[test]
+    fn an_artist_with_nothing_at_all_says_so_in_a_line_of_the_page() {
+        let nothing = ["artist-nothing"];
+        assert_eq!(drawn(2, "ar8", &nothing), [true]);
+        assert_eq!(drawn(2, "ar9", &nothing), [false], "appears somewhere");
+        assert_eq!(drawn(2, "ar1", &nothing), [false], "has an album");
+    }
+
+    #[test]
+    fn the_buttons_that_play_say_why_they_cannot_be_pressed() {
+        assert_eq!(unplayable_tip(false), Some("Nothing to play"));
+        assert_eq!(unplayable_tip(true), None);
     }
 }
