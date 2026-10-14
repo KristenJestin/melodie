@@ -39,6 +39,8 @@ pub enum Page {
         artist: Artist,
         albums: Arc<[Album]>,
         top: Arc<[Track]>,
+        /// The tracks the artist appears on outside their albums (featured on another's).
+        appears: Arc<[Track]>,
     },
     Playlist {
         playlist: Playlist,
@@ -46,6 +48,19 @@ pub enum Page {
     },
     /// Not (or no longer) in the local copy.
     Gone,
+}
+
+impl Page {
+    /// Whether Play, Shuffle and Instant mix have anything to play: an artist credited on no
+    /// track has not.
+    pub fn playable(&self) -> bool {
+        match self {
+            Self::Artist {
+                albums, appears, ..
+            } => !albums.is_empty() || !appears.is_empty(),
+            _ => true,
+        }
+    }
 }
 
 /// Which page of a track to open.
@@ -241,7 +256,14 @@ impl Catalog {
     fn show(&mut self, place: &Place) {
         let tracks = match self.pages.get(place).map(Arc::as_ref) {
             Some(Page::Album { tracks, .. } | Page::Playlist { tracks, .. }) => tracks.clone(),
-            Some(Page::Artist { top, .. }) => top.clone(),
+            Some(Page::Artist { top, appears, .. }) => {
+                if let Place::Artist(id) = place {
+                    let list = Place::Appearances(id.clone());
+                    self.selection
+                        .read_again(&list, &Shown::new(appears.clone(), None));
+                }
+                top.clone()
+            }
             _ => {
                 self.views.remove(place);
                 return;
@@ -275,12 +297,28 @@ impl Catalog {
         }
     }
 
-    /// A left click on row `ix` of `shown`, the list at the current place: it picks, or plays.
-    pub fn left_click(&mut self, shown: &Shown, ix: usize, click: Click, cx: &mut Context<Self>) {
-        let here = self.here().clone();
-        if let Some(played) = self.selection.left_click(&here, shown, ix, click) {
+    /// The list the picking keys, the selection bar and Enter act on: the current place, or the
+    /// list of its page the rows were picked in (an artist's appearances).
+    pub fn picking(&self) -> Place {
+        match (self.here(), self.selection.list()) {
+            (Place::Artist(id), Some(l @ Place::Appearances(of))) if of == id => l.clone(),
+            (here, _) => here.clone(),
+        }
+    }
+
+    /// A left click on row `ix` of `shown`, the list at `list` (the current place, or a list of
+    /// its page): it picks, or plays.
+    pub fn left_click(
+        &mut self,
+        list: &Place,
+        shown: &Shown,
+        ix: usize,
+        click: Click,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(played) = self.selection.left_click(list, shown, ix, click) {
             self.shared
-                .update(cx, |s, cx| s.play_from(&here, played, cx));
+                .update(cx, |s, cx| s.play_from(list, played, cx));
         }
         cx.notify();
     }
@@ -289,15 +327,15 @@ impl Catalog {
     /// else of this row, picked alone. `playlist`: the user's playlist the list is.
     pub fn menu_on(
         &mut self,
+        list: &Place,
         shown: &Shown,
         ix: usize,
         playlist: Option<(String, String)>,
         cx: &mut Context<Self>,
     ) -> Option<(Item, Spot)> {
-        let here = self.here().clone();
-        self.selection.right_click(&here, shown, ix);
+        self.selection.right_click(list, shown, ix);
         cx.notify();
-        menu::of_picked(&self.selection.tracks(&here), playlist)
+        menu::of_picked(&self.selection.tracks(list), playlist)
     }
 
     pub fn unselect(&mut self, cx: &mut Context<Self>) {
@@ -385,7 +423,7 @@ impl Catalog {
     /// Reads again what the current place shows; until it comes, the place shows what it had.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         match self.here().clone() {
-            Place::Player | Place::Search | Place::Found(_) => {}
+            Place::Player | Place::Search | Place::Found(_) | Place::Appearances(_) => {}
             Place::Home => self.load_home(cx),
             Place::Albums => self.load_albums(cx),
             Place::Artists => self.load_artists(cx),
@@ -603,6 +641,7 @@ impl Catalog {
                             artist,
                             albums: lib::artist_albums(c, id)?.into(),
                             top: lib::top_tracks(c, id, TOP_TRACKS)?.into(),
+                            appears: lib::artist_appearances(c, id)?.into(),
                         },
                         None => Page::Gone,
                     },
@@ -662,12 +701,116 @@ impl Catalog {
 #[cfg(test)]
 mod tests {
     // not `super::*`: it would bring the `test` macro of GPUI along
-    use super::Catalog;
+    use super::{Catalog, Page};
     use gpui_kit::{AppContext as _, TestAppContext};
     use melodie_core::db;
     use melodie_core::env::Env;
     use melodie_desktop::browse::Place;
-    use melodie_desktop::selection::How;
+    use melodie_desktop::selection::{Click, How};
+    use melodie_desktop::table::Shown;
+
+    /// An artist page read from a copy where `ar9` is featured on two tracks of `ar1` and `ar8`
+    /// is credited on nothing.
+    #[test]
+    fn an_artist_only_featured_lists_the_tracks_they_appear_on() {
+        let mut app = TestAppContext::single();
+        let d = tempfile::tempdir().unwrap();
+        let env = Env::with_home(d.path());
+        let conn = db::create(&db::db_path(&env)).unwrap();
+        conn.execute_batch(
+            "INSERT INTO artists(id, name, albumCount) VALUES ('ar1', 'Ada Marlow', 1),
+               ('ar9', 'Lior Castell', 0), ('ar8', 'Nova Reyes', 0);
+             INSERT INTO albums(id, name, artistId) VALUES ('al1', 'Lanterns', 'ar1');
+             INSERT INTO tracks(id, title, artistId, albumId, track) VALUES
+               ('t1', 'Harbour Lights', 'ar1', 'al1', 1), ('t2', 'Slow Tide', 'ar1', 'al1', 2),
+               ('t3', 'Paper Boats', 'ar1', 'al1', 3);
+             INSERT INTO track_artists(track, artist) VALUES ('t1', 'ar9'), ('t3', 'ar9');",
+        )
+        .unwrap();
+        drop(conn);
+        let catalog = app.update(|cx| {
+            let shared = crate::app::for_tests(env.clone(), cx);
+            cx.new(|cx| Catalog::new(env.clone(), shared, cx))
+        });
+        let page = |app: &mut TestAppContext, id: &str| {
+            let at = Place::Artist(id.into());
+            catalog.update(app, |c, cx| c.start_at(at.clone(), cx));
+            app.run_until_parked();
+            catalog.read_with(app, |c, _| c.pages[&at].clone())
+        };
+        let featured = page(&mut app, "ar9");
+        let Page::Artist {
+            albums, appears, ..
+        } = featured.as_ref()
+        else {
+            panic!("not an artist page")
+        };
+        assert!(albums.is_empty());
+        let ids: Vec<&str> = appears.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, ["t1", "t3"]);
+        assert!(featured.playable());
+        // a row picked there is picked in its own list, which Enter and the bar act on
+        let list = Place::Appearances("ar9".into());
+        let shown = Shown::new(appears.clone(), None);
+        catalog.update(&mut app, |c, cx| {
+            c.left_click(&list, &shown, 1, Click::of(false, false, 1), cx)
+        });
+        catalog.read_with(&app, |c, _| {
+            assert_eq!(c.picking(), list);
+            assert_eq!(c.selection.ranks(&list), [1]);
+            assert_eq!(c.selection.count(&Place::Artist("ar9".into())), 0);
+        });
+        assert!(!page(&mut app, "ar8").playable(), "nothing to play");
+        assert!(page(&mut app, "ar1").playable());
+    }
+
+    #[test]
+    fn a_row_picked_among_the_appearances_stays_picked_while_the_list_is_the_same() {
+        let mut app = TestAppContext::single();
+        let d = tempfile::tempdir().unwrap();
+        let env = Env::with_home(d.path());
+        let conn = db::create(&db::db_path(&env)).unwrap();
+        conn.execute_batch(
+            "INSERT INTO artists(id, name, albumCount) VALUES ('ar1', 'Ada Marlow', 1),
+               ('ar9', 'Lior Castell', 0);
+             INSERT INTO albums(id, name, artistId) VALUES ('al1', 'Lanterns', 'ar1');
+             INSERT INTO tracks(id, title, artistId, albumId, track) VALUES
+               ('t1', 'Harbour Lights', 'ar1', 'al1', 1), ('t2', 'Slow Tide', 'ar1', 'al1', 2),
+               ('t3', 'Paper Boats', 'ar1', 'al1', 3);
+             INSERT INTO track_artists(track, artist) VALUES ('t1', 'ar9'), ('t3', 'ar9');",
+        )
+        .unwrap();
+        let catalog = app.update(|cx| {
+            let shared = crate::app::for_tests(env.clone(), cx);
+            cx.new(|cx| Catalog::new(env.clone(), shared, cx))
+        });
+        let here = Place::Artist("ar9".into());
+        catalog.update(&mut app, |c, cx| c.start_at(here.clone(), cx));
+        app.run_until_parked();
+        let list = Place::Appearances("ar9".into());
+        let picked = |app: &TestAppContext| catalog.read_with(app, |c, _| c.selection.count(&list));
+        catalog.update(&mut app, |c, cx| {
+            let Page::Artist { appears, .. } = c.pages[&here].as_ref() else {
+                panic!("not an artist page")
+            };
+            let shown = Shown::new(appears.clone(), None);
+            c.left_click(&list, &shown, 1, Click::of(false, false, 1), cx)
+        });
+        assert_eq!(picked(&app), 1);
+        // read again, nothing changed: the row stays picked
+        catalog.update(&mut app, |c, cx| c.reload(cx));
+        app.run_until_parked();
+        assert_eq!(picked(&app), 1);
+        // a track came in among them: the ranks now hold other tracks
+        conn.execute(
+            "INSERT INTO track_artists(track, artist) VALUES ('t2', 'ar9')",
+            [],
+        )
+        .unwrap();
+        catalog.update(&mut app, |c, cx| c.reload(cx));
+        app.run_until_parked();
+        assert_eq!(picked(&app), 0);
+    }
 
     /// A local copy holding the tracks `ids`.
     fn copy_of(env: &Env, ids: &[&str]) {

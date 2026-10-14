@@ -278,7 +278,7 @@ impl Shared {
         let adds = matches!(job, Job::AddToPlaylist { .. });
         let task = cx.background_spawn(async move {
             let input = job.stdin();
-            let out = std::process::Command::new(&program)
+            let out = launch::command(&program)
                 .args(job.args())
                 .stdin(match input {
                     Some(_) => Stdio::piped(),
@@ -353,7 +353,7 @@ impl Shared {
     fn spawn_job(&self, job: Job, playlist: Option<String>, done: Done, cx: &mut Context<Self>) {
         let program = self.program.clone();
         let task = cx.background_spawn(async move {
-            let out = std::process::Command::new(&program)
+            let out = launch::command(&program)
                 .args(job.args())
                 .stdin(std::process::Stdio::null())
                 .output();

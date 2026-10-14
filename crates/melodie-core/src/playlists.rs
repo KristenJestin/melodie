@@ -946,7 +946,7 @@ mod tests {
             "p1",
             &[("s3", "Titre numéro 3", "Beyoncé"), ("s7", "x", "y")],
         );
-        let album = crate::resolve::resolve(&client, Kind::Album, "al1").unwrap();
+        let album = crate::resolve::resolve(&client, &env, Kind::Album, "al1").unwrap();
         assert_eq!(album.len(), 10);
         let r = add_checked(&client, Some(&conn), "p1", &album, false, 0).unwrap();
         assert_eq!(r.added.len(), 8);

@@ -3,6 +3,10 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
+/// Set by the window on every `melodie` it runs: it tells a failure in its own toast, so the
+/// command sends no desktop notification on top. The launcher and the keys leave it unset.
+pub const NO_NOTIFY_VAR: &str = "MELODIE_NO_NOTIFY";
+
 /// The XDG base folders, read once and passed to the functions, so tests never touch the real
 /// environment.
 #[derive(Debug, Clone)]

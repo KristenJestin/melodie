@@ -6,7 +6,7 @@ use crate::rules;
 use anyhow::{Context, Result, anyhow, bail};
 use melodie_core::address::{Address, Place};
 use melodie_core::api::Client;
-use melodie_core::env::Env;
+use melodie_core::env::{Env, NO_NOTIFY_VAR};
 use melodie_core::prefs::{self, Prefs};
 use melodie_core::proto::{self, Now, QueueView, Request, Response};
 use melodie_core::search::Kind;
@@ -39,8 +39,16 @@ fn spawn_daemon(env: &Env) -> Result<std::process::Child> {
         std::fs::File::create(&log).with_context(|| format!("ouverture de {}", log.display()))?;
     let err = out.try_clone()?;
     let exe = std::env::current_exe().context("chemin du programme")?;
+    let mut c = daemon_command(&exe);
+    c.stdin(Stdio::null()).stdout(out).stderr(err);
+    c.spawn().context("lancement du démon")
+}
+
+/// The daemon outlives the command that starts it: started for the window, it still notifies
+/// what it alone sees (a token refused while it plays).
+fn daemon_command(exe: &std::path::Path) -> Command {
     let mut c = Command::new(exe);
-    c.arg("daemon").stdin(Stdio::null()).stdout(out).stderr(err);
+    c.arg("daemon").env_remove(NO_NOTIFY_VAR);
     // SAFETY : `setsid` est sûr entre `fork` et `exec`.
     unsafe {
         c.pre_exec(|| {
@@ -48,7 +56,7 @@ fn spawn_daemon(env: &Env) -> Result<std::process::Child> {
             Ok(())
         });
     }
-    c.spawn().context("lancement du démon")
+    c
 }
 
 /// Connexion au démon, qu'on démarre s'il ne tourne pas.
@@ -271,7 +279,7 @@ fn try_play_or_queue(
     next: bool,
 ) -> Result<usize, Failure> {
     let (client, ready) = prepare(env)?;
-    let result = resolve::resolve(&client, kind, id);
+    let result = resolve::resolve(&client, env, kind, id);
     state::record(env, &result);
     deliver(env, ready, result?, shuffle, queue, next)
 }
@@ -314,7 +322,7 @@ fn try_play_tracks(
         match info {
             Some(t) => tracks.push(t),
             None => {
-                let r = resolve::resolve(&client, Kind::Track, id);
+                let r = resolve::resolve(&client, env, Kind::Track, id);
                 state::record(env, &r);
                 tracks.extend(r?);
             }
@@ -375,7 +383,7 @@ pub fn open(env: &Env, uri: &str) -> ExitCode {
 
 fn try_open(env: &Env, addr: &Address) -> Result<usize, Failure> {
     let (client, ready) = prepare(env)?;
-    let result = resolve::resolve(&client, addr.kind, &addr.id);
+    let result = resolve::resolve(&client, env, addr.kind, &addr.id);
     state::record(env, &result);
     let tracks = result?;
     let n = tracks.len();
@@ -617,6 +625,13 @@ pub fn watch() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_daemon_started_for_the_window_still_notifies() {
+        let c = daemon_command(std::path::Path::new("/bin/melodie"));
+        let env: Vec<_> = c.get_envs().collect();
+        assert!(env.contains(&(std::ffi::OsStr::new(NO_NOTIFY_VAR), None)));
+    }
 
     #[test]
     fn rendu_de_now() {

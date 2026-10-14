@@ -2932,3 +2932,44 @@ fn a_mix_played_next_with_nothing_playing_plays() {
         sb.now()["id"] == picked[0].as_str()
     });
 }
+
+/// `ar9` featured on `t1` and `t2`, `ar8` credited on nothing; neither has an album of their own.
+fn featured_artists(sb: &Sandbox) {
+    *sb.fake.state.featured.lock().unwrap() = vec![
+        json!({"id":"ar9","name":"Lior Castell","albumCount":0}),
+        json!({"id":"ar8","name":"Nova Reyes","albumCount":0}),
+    ];
+    let mut songs = sb.fake.state.songs.lock().unwrap();
+    for s in songs.iter_mut().take(2) {
+        s["artists"] = json!([{"id": s["artistId"], "name": s["artist"]},
+                              {"id": "ar9", "name": "Lior Castell"}]);
+    }
+}
+
+#[test]
+fn an_artist_only_featured_is_played_and_mixed_from_the_tracks_they_appear_on() {
+    let sb = Sandbox::new(true);
+    featured_artists(&sb);
+    sb.ok(&["sync"]);
+    sb.ok(&["play", "artist", "--", "ar9"]);
+    assert_eq!(queue_ids(&sb), ids_of(&["t1", "t2"]));
+    sb.ok(&["mix", "artist", "--", "ar9"]);
+    let mixed = queue_ids(&sb);
+    assert!(mixed.iter().any(|id| id == "t1" || id == "t2"), "{mixed:?}");
+}
+
+#[test]
+fn an_artist_with_nothing_to_play_is_named_and_never_by_id() {
+    let sb = Sandbox::new(true);
+    featured_artists(&sb);
+    sb.ok(&["sync"]);
+    for args in [
+        ["play", "artist", "--", "ar8"],
+        ["mix", "artist", "--", "ar8"],
+    ] {
+        let o = sb.run(&args);
+        assert!(!o.status.success(), "{args:?}");
+        let said = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(said.trim(), "Nothing to play for Nova Reyes", "{args:?}");
+    }
+}

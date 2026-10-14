@@ -51,7 +51,9 @@ configuration (see `AGENTS.md`). The daemon integration test starts its own priv
 - `melodie play <kind> <id> [--shuffle]`: `kind` is `playlist`, `album`, `artist` or `track`.
   Replaces the queue and starts playing. An artist gives all their albums (year, then name), tracks
   in the server's order; a track plays alone. The list comes from the API (`getPlaylist`,
-  `getAlbum`, `getArtist`), not from the local copy; a track is read as `play track` reads it.
+  `getAlbum`, `getArtist`), not from the local copy; a track is read as `play track` reads it. An
+  artist without albums of their own (only featured on others' tracks) gives the tracks the local
+  copy credits them on; with none, "Nothing to play for <name>". `melodie mix artist` does the same.
 - `melodie play track [--from <pos> | --shuffle] <id>…`: plays several tracks, in this order (or
   shuffled), from the one at `pos` (from 1); the ones before it stay in the queue, for Previous.
   One id `-` reads the ids from stdin, one per line, for a list too long for a command line; it
@@ -197,7 +199,9 @@ Screenshots and a recording of the animations, made with invented data, are in
     to the visit: a list opened anew (the sidebar, a link, a search result) shows its own order,
     one come back to (Back, Forward) keeps its sort, and a new search shows its tracks unsorted.
   - A page for an album (its tracks; play, shuffle, play next, add to the queue, instant mix, add
-    to a playlist), an artist (its top tracks by plays, its albums; play, shuffle, instant mix)
+    to a playlist), an artist (its top tracks by plays, its albums, then under "Appears on" the
+    tracks it is credited on outside its albums, such as featured on another artist's; play,
+    shuffle, instant mix, which cannot be pressed when it is credited on nothing)
     and a playlist (its tracks, as the local copy holds them; play, shuffle, play next, add to the
     queue). A click on a track picks it, a double click (or Enter) plays the list shown from
     this track on, in the order shown: Previous goes back to the tracks above it. At most a
@@ -448,7 +452,10 @@ exposed), and keeps the queue in step with mpv's playlist. The daemon does not l
   service removed, socket deleted). SIGTERM too. Clients following the event stream do not keep
   it alive.
 - Log: `~/.local/state/melodie/melodie.log`, overwritten at every start, without token.
-- Variables: `MELODIE_AO` sets mpv's audio output (`null` for tests). Reserved for tests:
+- Variables: `MELODIE_AO` sets mpv's audio output (`null` for tests). `MELODIE_NO_NOTIFY` silences
+  the desktop notification of a failure; the window sets it on every `melodie` it runs, so a
+  failure is told in its own toast and not twice (the daemon such a command starts does not
+  inherit it). Reserved for tests:
   `MELODIE_TEST_SECRET` (a file standing for the keyring; with it set, no notification is sent),
   `MELODIE_MPRIS_NAME` (replaces the bus name suffix), `MELODIE_IDLE_SECS` (the idle delay) and
   `MELODIE_OPEN_URI_HOLD_MS` (holds the MPRIS `OpenUri` answer back).
@@ -622,7 +629,9 @@ once "Copie de la bibliothèque en cours…" (see "Automatic synchronisation").
   favourites, play counters (`getAlbumList2` `recent` and `frequent`, 500; the tracks of an album
   whose counters moved are read again with `getAlbum`); changed: full sync. A copy made by an older
   version gets the new columns and tables there; the date an album was added comes with the next
-  full sync (until then, those albums come last in "recently added").
+  full sync (until then, those albums come last in "recently added"). The artists credited on each
+  track (OpenSubsonic `artists`, featured ones included) are kept in `track_artists`; a copy made
+  before them is made again in full by the next sync, whatever starts it.
 - `melodie playlist add`, `remove`, `duplicates --remove` and `create` change the tracks of the
   playlist in the copy too, as the server did.
 - Search: FTS5 prefixes ("daf pun" finds "Daft Punk"), case and accent insensitive. Order:

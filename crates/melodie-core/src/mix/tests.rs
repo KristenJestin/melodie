@@ -448,7 +448,7 @@ fn artiste_source_poids_et_plafond() {
     let mut total = 0;
     for seed in 0..20 {
         let mut rng = Rng::new(seed);
-        let mix = instant(&lib, &Source::Artist(src.clone()), 50, &mut rng);
+        let mix = instant(&lib, &Source::Artist(src.clone(), Some(0)), 50, &mut rng);
         assert_eq!(mix.len(), 50);
         let n = mix.iter().filter(|i| lib.tracks[**i].artist == 0).count();
         assert!(n <= 15, "plafond de 30 % : {n}");
@@ -494,7 +494,12 @@ fn ouverture_du_mix_instantane() {
     // Sans titre aimé : le plus écouté (9 lectures).
     specs[3].starred = false;
     let lib3 = build(&specs);
-    let mix = instant(&lib3, &Source::Artist((0..10).collect()), 30, &mut rng);
+    let mix = instant(
+        &lib3,
+        &Source::Artist((0..10).collect(), Some(0)),
+        30,
+        &mut rng,
+    );
     assert_eq!(mix[0], 9);
 }
 
@@ -817,7 +822,7 @@ fn sources_par_identifiant_ou_nom() {
         src(SourceKind::Album, "ALBUM 3"),
         src(SourceKind::Album, "al3")
     );
-    let Ok(Source::Artist(v)) = src(SourceKind::Artist, "artiste 1") else {
+    let Ok(Source::Artist(v, _)) = src(SourceKind::Artist, "artiste 1") else {
         panic!()
     };
     assert_eq!(v, (20..40).collect::<Vec<_>>());
@@ -903,4 +908,73 @@ fn the_tracks_of_several_ids_come_from_the_copy_in_their_order() {
             .album_artist,
         "Artiste 0"
     );
+}
+
+#[test]
+fn an_artist_only_featured_is_mixed_from_the_tracks_they_appear_on() {
+    let d = tempfile::tempdir().unwrap();
+    let conn = db::create(&d.path().join("l.db")).unwrap();
+    insert_fake(&conn, 200);
+    conn.execute_batch(
+        "INSERT INTO artists(id, name, albumCount) VALUES ('ar90', 'Lior Castell', 0),
+           ('ar91', 'Nova Reyes', 0);
+         INSERT INTO track_artists(track, artist) VALUES ('t3', 'ar90'), ('t57', 'ar90');",
+    )
+    .unwrap();
+    let lib = Library::load(&conn, NOW).unwrap();
+    let src = |s: &str| find_source(&conn, &lib, SourceKind::Artist, s);
+    let Ok(Source::Artist(v, boost)) = src("ar90") else {
+        panic!("{:?}", src("ar90"))
+    };
+    assert_eq!(v, [3, 57]);
+    assert_eq!(boost, None, "no track of their own: nobody is boosted");
+    let mix = instant(&lib, &Source::Artist(v, boost), 25, &mut Rng::new(7));
+    assert!(
+        mix.contains(&3) || mix.contains(&57),
+        "opened by one of them"
+    );
+    // credited on nothing: said by name, never by id
+    assert_eq!(src("ar91"), Err("Nothing to play for Nova Reyes".into()));
+    assert_eq!(
+        src("Nova Reyes"),
+        Err("Nothing to play for Nova Reyes".into())
+    );
+}
+
+#[test]
+fn the_boost_of_an_artist_mix_goes_to_the_artist_asked_not_to_the_one_they_feature_with() {
+    let d = tempfile::tempdir().unwrap();
+    let conn = db::create(&d.path().join("l.db")).unwrap();
+    insert_fake(&conn, 200);
+    // ar1 (tracks 20..40) is also credited on t3, which belongs to ar0 and comes first
+    conn.execute_batch("INSERT INTO track_artists(track, artist) VALUES ('t3', 'ar1');")
+        .unwrap();
+    let lib = Library::load(&conn, NOW).unwrap();
+    let Ok(Source::Artist(v, boost)) = find_source(&conn, &lib, SourceKind::Artist, "ar1") else {
+        panic!()
+    };
+    assert_eq!(v[0], 3, "the first track is another artist's");
+    assert_eq!(boost, Some(lib.artists["ar1"]));
+    assert_ne!(boost, Some(lib.tracks[3].artist));
+}
+
+#[test]
+fn an_artist_mix_is_seeded_from_their_own_tracks_and_every_appearance() {
+    let d = tempfile::tempdir().unwrap();
+    let conn = db::create(&d.path().join("l.db")).unwrap();
+    insert_fake(&conn, 200);
+    // one own track on a compilation (also credited, as the sync does), three featured
+    conn.execute_batch(
+        "INSERT INTO artists(id, name, albumCount) VALUES ('ar90', 'Lior Castell', 0);
+         UPDATE tracks SET artistId = 'ar90', artist = 'Lior Castell' WHERE id = 't100';
+         INSERT INTO track_artists(track, artist) VALUES ('t100', 'ar90'), ('t3', 'ar90'),
+           ('t57', 'ar90'), ('t150', 'ar90');",
+    )
+    .unwrap();
+    let lib = Library::load(&conn, NOW).unwrap();
+    let Ok(Source::Artist(v, boost)) = find_source(&conn, &lib, SourceKind::Artist, "ar90") else {
+        panic!()
+    };
+    assert_eq!(v, [3, 57, 100, 150]);
+    assert_eq!(boost, Some(lib.artists["ar90"]));
 }

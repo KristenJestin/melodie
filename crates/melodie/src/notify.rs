@@ -1,12 +1,21 @@
 //! Notifications de bureau de l'application « Mélodie ».
 
+use melodie_core::env::NO_NOTIFY_VAR;
 use melodie_core::store::TEST_SECRET_VAR;
+use std::ffi::OsString;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 
-/// En test (secret de test défini), aucune notification réelle.
+/// No real notification in tests (test secret set), nor for a command the window ran (it tells
+/// the failure itself).
 fn muted() -> bool {
-    std::env::var_os(TEST_SECRET_VAR).is_some_and(|v| !v.is_empty())
+    muted_by(|k| std::env::var_os(k))
+}
+
+fn muted_by(var: impl Fn(&str) -> Option<OsString>) -> bool {
+    [TEST_SECRET_VAR, NO_NOTIFY_VAR]
+        .iter()
+        .any(|k| var(k).is_some_and(|v| !v.is_empty()))
 }
 
 /// `notify-send -a Mélodie -- <résumé> <corps>`.
@@ -88,6 +97,18 @@ pub fn reconnect_required() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_command_started_by_the_window_sends_no_notification() {
+        let set = |names: &'static [&'static str]| {
+            move |k: &str| names.contains(&k).then(|| std::ffi::OsString::from("1"))
+        };
+        assert!(!muted_by(set(&[])));
+        assert!(muted_by(set(&[NO_NOTIFY_VAR])));
+        assert!(muted_by(set(&[TEST_SECRET_VAR])));
+        // set but empty: as if unset
+        assert!(!muted_by(|_| Some(std::ffi::OsString::new())));
+    }
 
     #[test]
     fn commande_de_notification() {
