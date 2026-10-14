@@ -2777,3 +2777,39 @@ fn the_wrong_uses_of_several_ids_are_usage_errors() {
         assert!(!sb.socket().exists(), "{args:?}: no daemon started");
     }
 }
+
+/// A daemon from before `start`: it answers every request, and plays from the first track.
+fn old_daemon(sb: &Sandbox) {
+    std::fs::create_dir_all(sb.socket().parent().unwrap()).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(sb.socket()).unwrap();
+    std::thread::spawn(move || {
+        for s in listener.incoming().flatten() {
+            std::thread::spawn(move || {
+                let mut out = s.try_clone().unwrap();
+                for line in BufReader::new(&s).lines().map_while(Result::ok) {
+                    let req: Value = serde_json::from_str(&line).unwrap();
+                    let reply = match req["cmd"].as_str() {
+                        Some("queue_list") => {
+                            json!({"ok": true, "queue": {"current": 0, "tracks": []}})
+                        }
+                        _ => json!({"ok": true}),
+                    };
+                    let _ = out.write_all(format!("{reply}\n").as_bytes());
+                }
+            });
+        }
+    });
+}
+
+#[test]
+fn a_daemon_that_ignores_the_start_is_said() {
+    let sb = Sandbox::new(true);
+    long_album_copied(&sb);
+    old_daemon(&sb);
+    let o = sb.run(&["play", "track", "--from", "3", "--", "t1", "t2", "t3", "t4"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success(), "{err}");
+    assert!(err.contains("melodie quit"), "{err}");
+    // from the first track, it is what it was asked
+    sb.ok(&["play", "track", "--", "t1", "t2"]);
+}

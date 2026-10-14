@@ -247,7 +247,7 @@ pub fn deliver(
 }
 
 /// Sends a request that loads tracks to the daemon (started if needed).
-fn send(env: &Env, ready: Ready, req: &Request) -> Result<(), Failure> {
+fn send(env: &Env, ready: Ready, req: &Request) -> Result<UnixStream, Failure> {
     let stream = match ready.running {
         Some(s) => s,
         None => ensure_daemon(env)?,
@@ -259,7 +259,7 @@ fn send(env: &Env, ready: Ready, req: &Request) -> Result<(), Failure> {
             reply.error.unwrap_or_else(|| "refusé par le démon".into())
         )));
     }
-    Ok(())
+    Ok(stream)
 }
 
 fn try_play_or_queue(
@@ -331,8 +331,26 @@ fn try_play_tracks(
             start,
         }
     };
-    send(env, ready, &req)?;
+    let stream = send(env, ready, &req)?;
+    if start > 0 && !shuffle && !queue {
+        started_at(&stream, start)?;
+    }
     Ok(n)
+}
+
+/// A daemon older than `start` reads the request without it and plays from the first track:
+/// said, rather than playing what was not asked.
+fn started_at(stream: &UnixStream, start: usize) -> Result<(), Failure> {
+    let current = exchange(stream, &Request::QueueList)?
+        .queue
+        .and_then(|q| q.current);
+    match current {
+        Some(c) if c != start => Err(Failure::Internal(anyhow!(
+            "the player running is older than this melodie and started from the first track: \
+             stop it once with `melodie quit`, then play again"
+        ))),
+        _ => Ok(()),
+    }
 }
 
 /// `open`: plays or queues what an address names. A malformed address is refused before
