@@ -174,8 +174,9 @@ impl Render for QueueList {
             // the rows shown ask their covers before anything that waits (#84). Asked later:
             // nothing here reads a file.
             let key = (tracks.as_ptr() as usize, range.start, range.end);
-            if asked.replace(Some(key)) != Some(key) {
-                let ids = thumbs::shown(&tracks, range.clone());
+            let ids = thumbs::shown(&tracks, range.clone());
+            // the row measured alone asks nothing and leaves the key as it is
+            if !ids.is_empty() && asked.replace(Some(key)) != Some(key) {
                 let covers = shared.read(cx).covers.clone();
                 cx.defer(move |cx| covers.update(cx, |c, cx| c.want(ids, Use::SMALL, true, cx)));
             }
