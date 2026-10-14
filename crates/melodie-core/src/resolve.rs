@@ -42,10 +42,10 @@ pub fn album_order(albums: &[Value]) -> Vec<String> {
     v.into_iter().map(|(_, _, id)| id).collect()
 }
 
-/// Morceaux d'une playlist, d'un album, d'un artiste (tous ses albums dans
-/// l'ordre) ou d'un morceau seul. An artist without albums of their own (only featured on the
-/// tracks of others) gives the tracks the local copy credits them on: the server lists no
-/// such tracks. Une liste vide est une erreur, which names what was asked by its name.
+/// The tracks of a playlist, an album, an artist (all their albums in order) or a single track.
+/// An artist without albums of their own (only featured on the tracks of others) gives the tracks
+/// the local copy credits them on: the server lists no such tracks. An empty list is an error,
+/// which names what was asked by its name.
 pub fn resolve(
     client: &Client,
     env: &Env,
