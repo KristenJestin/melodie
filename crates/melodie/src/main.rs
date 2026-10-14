@@ -28,7 +28,7 @@ use std::process::ExitCode;
 #[command(
     name = "melodie",
     bin_name = "melodie",
-    version,
+    version = option_env!("MELODIE_VERSION").unwrap_or("0.0.0-dev"),
     about = "Navidrome client: login, local copy, search"
 )]
 struct Cli {
