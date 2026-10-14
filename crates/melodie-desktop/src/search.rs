@@ -89,8 +89,12 @@ impl SearchView {
                 let before = std::mem::replace(&mut this.seen, here.clone());
                 // the move may have put a list back in its own order
                 this.resort(cx);
+                // a move inside the search: the pointer may have taken the focus (the mouse's
+                // back button reaches the root), the text is left as it is
+                if before.in_search() && here.in_search() {
+                    this.input.update(cx, |i, cx| i.focus(window, cx));
+                }
                 match here {
-                    // moving between the filters leaves the cursor where it is
                     Place::Search if !before.in_search() => this.focus(window, cx),
                     Place::Found(kind) => {
                         this.all.scroll_to_item(0, ScrollStrategy::Top);
@@ -500,11 +504,19 @@ impl Render for SearchView {
                 .when(can_back, |d| {
                     let catalog = catalog.clone();
                     d.child(
-                        div().debug_selector(|| "search-back".into()).child(
-                            IconButton::new("search-back", IconName::ChevronLeft, pal)
-                                .tip("Back")
-                                .on_click(move |_, _, cx| catalog.update(cx, |c, cx| c.back(cx))),
-                        ),
+                        // the press leaves the cursor in the field: the page stays
+                        div()
+                            .debug_selector(|| "search-back".into())
+                            .on_mouse_down(MouseButton::Left, |_, window, _| {
+                                window.prevent_default()
+                            })
+                            .child(
+                                IconButton::new("search-back", IconName::ChevronLeft, pal)
+                                    .tip("Back")
+                                    .on_click(move |_, _, cx| {
+                                        catalog.update(cx, |c, cx| c.back(cx))
+                                    }),
+                            ),
                     )
                 })
                 .child(div().flex_1().min_w_0().child(self.field.clone())),

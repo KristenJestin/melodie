@@ -5,7 +5,8 @@ use crate::catalog::Catalog;
 use gpui_kit::component::input::InputEvent;
 use gpui_kit::{
     AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement, Modifiers,
-    ParentElement as _, Render, Styled as _, TestAppContext, VisualTestContext, Window, div,
+    MouseButton, ParentElement as _, Render, Styled as _, TestAppContext, VisualTestContext,
+    Window, div,
 };
 use melodie_core::db;
 use melodie_core::env::Env;
@@ -278,4 +279,44 @@ fn the_title_of_a_filter_counts_what_was_found() {
     );
     // the number in it is the one of the list: the albums found, not the five of the group
     assert_eq!(shown(&page, cx).2, Some((Kind::Album, 6)));
+}
+
+#[test]
+fn going_back_from_a_filter_to_all_leaves_the_cursor_in_the_field() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = TestAppContext::single();
+    let (page, cx) = rain(dir.path(), &mut app);
+    focus_field(&page, cx);
+    go(&page, Place::Found(Kind::Album), cx);
+
+    // what the window's root does with a press on the mouse's back button
+    let root = page.read_with(cx, |p, _| p.root.clone());
+    cx.update(|window, cx| window.focus(&root, cx));
+    assert!(!field_has_focus(&page, cx));
+
+    let catalog = page.read_with(cx, |p, _| p.catalog.clone());
+    catalog.update(cx, |c, cx| c.back(cx));
+    cx.run_until_parked();
+    assert_eq!(shown(&page, cx).0, Place::Search);
+    assert!(field_has_focus(&page, cx), "the field lost the cursor");
+}
+
+#[test]
+fn pressing_the_back_button_keeps_the_cursor_in_the_field() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = TestAppContext::single();
+    let (page, cx) = rain(dir.path(), &mut app);
+    go(&page, Place::Found(Kind::Album), cx);
+    focus_field(&page, cx);
+
+    let at = cx.debug_bounds("search-back").expect("drawn").center();
+    cx.simulate_mouse_down(at, MouseButton::Left, Modifiers::none());
+    assert!(
+        field_has_focus(&page, cx),
+        "the press alone took the focus from the field"
+    );
+    cx.simulate_mouse_up(at, MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(shown(&page, cx).0, Place::Search);
+    assert!(field_has_focus(&page, cx));
 }
