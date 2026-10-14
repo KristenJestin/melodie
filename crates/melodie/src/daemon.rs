@@ -1447,15 +1447,33 @@ mod tests {
         );
     }
 
+    /// Lets the held core go: written by `now`, and when dropped, so a test that panics before
+    /// it does not leave `Mpv`'s drop joining a core stuck in the hold. Declare it after the mpv
+    /// it releases, so it is dropped first.
+    struct Release(std::path::PathBuf);
+
+    impl Release {
+        fn now(&self) {
+            std::fs::write(&self.0, "").unwrap();
+        }
+    }
+
+    impl Drop for Release {
+        fn drop(&mut self) {
+            let _ = std::fs::write(&self.0, "");
+        }
+    }
+
     /// An mpv whose core is held before it starts its playlist, until `release` exists: mpv
-    /// waits for the first lines of its scripts to run before it goes on.
-    fn held_mpv(dir: &std::path::Path) -> (Arc<Mpv>, std::path::PathBuf) {
+    /// waits for the first lines of its scripts to run before it goes on. The hold gives up
+    /// after about ten seconds on its own, in case even the guard did not run.
+    fn held_mpv(dir: &std::path::Path) -> (Arc<Mpv>, Release) {
         let release = dir.join("release");
         let script = dir.join("hold.lua");
         std::fs::write(
             &script,
             format!(
-                "while not io.open({:?}) do os.execute('sleep 0.01') end\n",
+                "local t = os.time()\nwhile not io.open({:?}) and os.time() - t < 10 do os.execute('sleep 0.01') end\n",
                 release.to_str().unwrap()
             ),
         )
@@ -1469,7 +1487,7 @@ mod tests {
             Ok(())
         })
         .expect("libmpv");
-        (Arc::new(mpv), release)
+        (Arc::new(mpv), Release(release))
     }
 
     /// Two endless silent tracks, the second one asked first, as `load` does with a start of
@@ -1501,7 +1519,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (mpv, release) = held_mpv(dir.path());
         load_from_the_second(&mpv);
-        std::fs::write(&release, "").unwrap();
+        release.now();
         assert_eq!(playing(&mpv), 0);
     }
 
@@ -1517,7 +1535,7 @@ mod tests {
             started.recv_timeout(Duration::from_millis(500)).is_err(),
             "heard before the core started"
         );
-        std::fs::write(&release, "").unwrap();
+        release.now();
         started
             .recv_timeout(Duration::from_secs(10))
             .expect("never heard that the core started");
