@@ -681,7 +681,7 @@ mod tests {
     }
 
     #[test]
-    fn a_new_step_of_the_copy_clears_the_selection_its_rows_may_shift() {
+    fn a_new_step_of_the_copy_keeps_the_selection_unless_its_rows_may_shift() {
         let mut app = TestAppContext::single();
         let d = tempfile::tempdir().unwrap();
         let env = Env::with_home(d.path());
