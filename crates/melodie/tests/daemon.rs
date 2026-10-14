@@ -2813,3 +2813,19 @@ fn a_daemon_that_ignores_the_start_is_said() {
     // from the first track, it is what it was asked
     sb.ok(&["play", "track", "--", "t1", "t2"]);
 }
+
+#[test]
+fn a_start_past_the_end_changes_nothing_on_a_live_queue() {
+    let sb = Sandbox::new(true);
+    sb.play_long_album();
+    let before = sb.queue_list();
+    let t = serde_json::to_value(melodie_core::track::TrackInfo {
+        id: "t2".into(),
+        ..Default::default()
+    })
+    .unwrap();
+    let r = sb.request(json!({"cmd": "play", "tracks": [t.clone(), t], "start": 2}));
+    assert_eq!(r["ok"], false, "{r}");
+    assert_eq!(sb.queue_list(), before);
+    assert_eq!(sb.now()["id"], "t1");
+}
