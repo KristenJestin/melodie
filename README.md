@@ -541,7 +541,12 @@ once "Copie de la bibliothèque en cours…" (see "Automatic synchronisation").
 
 - Full sync: `search3` with an empty query, in pages of 500 (artists, albums with the date each
   was added, tracks), `getPlaylists` and the tracks of each playlist (`getPlaylist`), `getStarred2`,
-  all in one transaction on a temporary file.
+  all in one transaction on a temporary file: a full sync that fails keeps the previous copy.
+- First copy (no copy yet): there is nothing to keep, so it is made in place and each page of 500
+  is committed as it comes; the copy is readable while it fills (the window shows it growing), and
+  `meta` says it is not finished (`copying`, where it goes on from). Cut off, it is taken up again
+  where it stopped by the next synchronisation, whatever starts it. Until it is finished,
+  `search`, `home`, `playlists`, `mixes` and `mix` answer from what is already copied.
 - Incremental sync: `getScanStatus` (`lastScan`) compared with the stored value; unchanged:
   playlists (the tracks of a playlist are read again only when its `changed` date moved),
   favourites, play counters (`getAlbumList2` `recent` and `frequent`, 500; the tracks of an album

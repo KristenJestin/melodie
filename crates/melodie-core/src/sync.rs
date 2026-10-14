@@ -9,6 +9,7 @@ use rusqlite::{Connection, Transaction};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::io::IsTerminal;
+use std::path::{Path, PathBuf};
 
 const PAGE: usize = 500;
 
@@ -47,18 +48,38 @@ fn last_scan(client: &Client) -> Result<String, Failure> {
         .to_string())
 }
 
-/// Parcourt `search3` avec une requête vide, par pages de 500, jusqu'à épuisement.
-/// `kind` : `artist`, `album` ou `song`. `insert` renvoie `true` pour un élément nouveau.
+type Insert = fn(&Transaction, &Value) -> anyhow::Result<bool>;
+
+/// What `search3` is paged through for, in order: kind, label, how a row is kept.
+const KINDS: [(&str, &str, Insert); 3] = [
+    ("artist", "Artistes", db::insert_artist),
+    ("album", "Albums", db::insert_album),
+    ("song", "Morceaux", db::insert_track),
+];
+
+/// Keeps a page of `items`; how many were new.
+fn insert_all(tx: &Transaction, items: &[Value], insert: Insert) -> Result<usize, Failure> {
+    let mut fresh = 0;
+    for v in items {
+        if insert(tx, v)? {
+            fresh += 1;
+        }
+    }
+    Ok(fresh)
+}
+
+/// Parcourt `search3` avec une requête vide, par pages de 500, à partir de `offset`, jusqu'à
+/// épuisement. `kind` : `artist`, `album` ou `song`. `keep` garde une page, avec le décalage de la
+/// suivante, et renvoie combien d'éléments étaient nouveaux.
 fn page_through(
     client: &Client,
     kind: &str,
     label: &str,
-    tx: &Transaction,
-    insert: fn(&Transaction, &Value) -> anyhow::Result<bool>,
+    mut offset: usize,
+    mut keep: impl FnMut(&[Value], usize) -> Result<usize, Failure>,
 ) -> Result<usize, Failure> {
     let tty = std::io::stderr().is_terminal();
     let mut total = 0;
-    let mut offset = 0;
     loop {
         let mut p = vec![("query", String::new())];
         for k in ["artist", "album", "song"] {
@@ -88,12 +109,7 @@ fn page_through(
         if items.is_empty() {
             break;
         }
-        let mut fresh = 0;
-        for v in &items {
-            if insert(tx, v)? {
-                fresh += 1;
-            }
-        }
+        let fresh = keep(&items, offset + items.len())?;
         // Un serveur qui ignore le décalage renverrait toujours la même page.
         if fresh == 0 {
             break;
@@ -163,12 +179,16 @@ fn refresh_playlists_and_starred(
     Ok(())
 }
 
+fn tmp_path(target: &Path) -> PathBuf {
+    let mut tmp = target.as_os_str().to_owned();
+    tmp.push(".tmp");
+    PathBuf::from(tmp)
+}
+
 /// Copie complète dans un fichier temporaire, puis remplacement atomique.
 fn full(env: &Env, client: &Client) -> Result<Report, Failure> {
     let target = db::db_path(env);
-    let mut tmp = target.as_os_str().to_owned();
-    tmp.push(".tmp");
-    let tmp = std::path::PathBuf::from(tmp);
+    let tmp = tmp_path(&target);
     let result = full_into(client, &tmp);
     match result {
         Ok(report) => {
@@ -194,9 +214,11 @@ fn full_into(client: &Client, path: &std::path::Path) -> Result<Report, Failure>
     let mut conn = db::create(path)?;
     {
         let tx = conn.transaction()?;
-        page_through(client, "artist", "Artistes", &tx, db::insert_artist)?;
-        page_through(client, "album", "Albums", &tx, db::insert_album)?;
-        page_through(client, "song", "Morceaux", &tx, db::insert_track)?;
+        for (kind, label, insert) in KINDS {
+            page_through(client, kind, label, 0, |items, _| {
+                insert_all(&tx, items, insert)
+            })?;
+        }
         refresh_playlists_and_starred(client, &tx, true)?;
         db::set_meta(&tx, "lastScan", &scan)?;
         db::set_meta(&tx, "synced_at", &now_secs().to_string())?;
@@ -208,6 +230,73 @@ fn full_into(client: &Client, path: &std::path::Path) -> Result<Report, Failure>
     Ok(Report {
         kind: Kind::Full,
         counts,
+    })
+}
+
+/// The `lastScan` the server gave when the first copy began, stored at its end: a scan made while
+/// it ran, interruptions included, brings a full copy next.
+const COPY_SCAN: &str = "copy_scan";
+
+/// Starts a first copy: an empty copy that says it is not finished, put in place at once (made
+/// aside then renamed, so that no reader ever sees half a schema).
+fn start_first(client: &Client, target: &Path) -> Result<Connection, Failure> {
+    let scan = last_scan(client)?;
+    let tmp = tmp_path(target);
+    {
+        let conn = db::create(&tmp)?;
+        db::set_meta(&conn, db::COPYING, &format!("{}:0", KINDS[0].0))?;
+        db::set_meta(&conn, COPY_SCAN, &scan)?;
+    }
+    std::fs::rename(&tmp, target)
+        .map_err(|e| anyhow::anyhow!("mise en place de {} : {e}", target.display()))?;
+    let conn = Connection::open(target)?;
+    conn.busy_timeout(std::time::Duration::from_secs(2))?;
+    Ok(conn)
+}
+
+/// The first copy, made in place rather than aside: there is no previous copy to protect, and
+/// each page is committed as it comes, so that the window shows the library while it fills. Where
+/// it stands is committed with each page (`db::COPYING`): a copy cut off is taken up again there by
+/// the next run, whatever asked for it.
+fn first(env: &Env, client: &Client, partial: Option<Connection>) -> Result<Report, Failure> {
+    let mut conn = match partial {
+        Some(c) => c,
+        None => start_first(client, &db::db_path(env))?,
+    };
+    let at = db::get_meta(&conn, db::COPYING).unwrap_or_default();
+    let (from, offset) = at.split_once(':').unwrap_or_default();
+    let offset: usize = offset.parse().unwrap_or(0);
+    // `end`, or anything not understood: only what follows the pages is left.
+    let start = KINDS
+        .iter()
+        .position(|k| k.0 == from)
+        .unwrap_or(KINDS.len());
+    for (i, (kind, label, insert)) in KINDS.into_iter().enumerate().skip(start) {
+        let offset = if i == start { offset } else { 0 };
+        page_through(client, kind, label, offset, |items, next| {
+            let tx = conn.transaction()?;
+            let fresh = insert_all(&tx, items, insert)?;
+            db::set_meta(&tx, db::COPYING, &format!("{kind}:{next}"))?;
+            tx.commit()?;
+            Ok(fresh)
+        })?;
+        let then = KINDS.get(i + 1).map_or("end", |k| k.0);
+        db::set_meta(&conn, db::COPYING, &format!("{then}:0"))?;
+    }
+    let tx = conn.transaction()?;
+    refresh_playlists_and_starred(client, &tx, true)?;
+    let scan = db::get_meta(&tx, COPY_SCAN).unwrap_or_default();
+    db::set_meta(&tx, "lastScan", &scan)?;
+    db::set_meta(&tx, "synced_at", &now_secs().to_string())?;
+    db::set_meta(&tx, "full_synced_at", &now_secs().to_string())?;
+    tx.execute(
+        "DELETE FROM meta WHERE key IN (?1, ?2)",
+        [db::COPYING, COPY_SCAN],
+    )?;
+    tx.commit()?;
+    Ok(Report {
+        kind: Kind::Full,
+        counts: db::counts(&conn)?,
     })
 }
 
@@ -244,13 +333,16 @@ fn light(client: &Client, conn: &mut Connection) -> Result<Report, Failure> {
     })
 }
 
-/// Met la copie à jour. `force_full` : copie complète sans comparer `lastScan`.
+/// Met la copie à jour. `force_full` : copie complète sans comparer `lastScan`. Without a copy, or
+/// with a first copy left unfinished, the first copy (see `first`).
 pub fn run(env: &Env, client: &Client, force_full: bool) -> Result<Report, Failure> {
-    if force_full {
-        return full(env, client);
-    }
-    let Some(mut conn) = db::open_existing(env)? else {
-        return full(env, client);
+    let mut conn = match db::open_existing(env) {
+        Ok(None) => return first(env, client, None),
+        Ok(Some(c)) if db::is_partial(&c) => return first(env, client, Some(c)),
+        // Asked for, or over a copy that cannot be read: made aside, the copy kept if it fails.
+        _ if force_full => return full(env, client),
+        Ok(Some(c)) => c,
+        Err(e) => return Err(e.into()),
     };
     let stored = db::get_meta(&conn, "lastScan").unwrap_or_default();
     let current = last_scan(client)?;
@@ -514,6 +606,73 @@ mod tests {
         assert!(run(&env, &client, true).is_err());
         let conn = db::open_existing(&env).unwrap().unwrap();
         assert_eq!(db::counts(&conn).unwrap().tracks, 10);
+        assert!(!db::db_path(&env).with_extension("db.tmp").exists());
+    }
+
+    #[test]
+    fn a_first_copy_interrupted_halfway_stays_readable_and_the_next_one_completes_it() {
+        let (_d, env, fake, client) = setup(1203);
+        *fake.state.fail_from_song.lock().unwrap() = Some(500);
+        assert!(run(&env, &client, false).is_err());
+        // What came before the cut is there, and says it is not finished.
+        let conn = db::open_existing(&env).unwrap().unwrap();
+        assert!(db::is_partial(&conn));
+        let c = db::counts(&conn).unwrap();
+        assert_eq!((c.artists, c.albums, c.tracks), (2, 1, 500));
+        assert_eq!(db::get_meta(&conn, "synced_at"), None);
+        let hits = search::search(&conn, "daf pun").unwrap();
+        assert!(hits.iter().any(|h| h.name == "Daft Punk"));
+        drop(conn);
+
+        // `login` asks for a full copy: it completes this one, from where it stopped.
+        *fake.state.fail_from_song.lock().unwrap() = None;
+        fake.clear_calls();
+        let r = run(&env, &client, true).unwrap();
+        assert_eq!(r.kind, Kind::Full);
+        assert_eq!(r.counts.tracks, 1203);
+        // Two more pages of songs and the empty one; the artists and albums are not read again.
+        assert_eq!(fake.calls_of("search3"), 3);
+        let conn = db::open_existing(&env).unwrap().unwrap();
+        assert!(!db::is_partial(&conn));
+        assert_eq!(
+            db::get_meta(&conn, "lastScan").as_deref(),
+            Some("2026-10-01T10:00:00Z")
+        );
+        assert!(db::get_meta(&conn, "synced_at").is_some());
+        assert_eq!(playlist_tracks(&env).len(), 1203);
+        drop(conn);
+        // A complete copy: the next sync is a light one.
+        assert_eq!(run(&env, &client, false).unwrap().kind, Kind::Light);
+    }
+
+    #[test]
+    fn a_first_copy_cut_between_two_kinds_goes_on_with_the_next() {
+        let (_d, env, fake, client) = setup(10);
+        *fake.state.fail_from_song.lock().unwrap() = Some(0);
+        assert!(run(&env, &client, false).is_err());
+        let conn = db::open_existing(&env).unwrap().unwrap();
+        let c = db::counts(&conn).unwrap();
+        assert_eq!((c.artists, c.albums, c.tracks), (2, 1, 0));
+        drop(conn);
+        *fake.state.fail_from_song.lock().unwrap() = None;
+        fake.clear_calls();
+        assert_eq!(run(&env, &client, false).unwrap().counts.tracks, 10);
+        assert_eq!(
+            fake.calls_of("search3"),
+            2,
+            "one page of songs and the empty one"
+        );
+    }
+
+    #[test]
+    fn a_later_full_copy_that_fails_still_keeps_the_previous_one() {
+        let (_d, env, fake, client) = setup(1203);
+        run(&env, &client, false).unwrap();
+        *fake.state.fail_from_song.lock().unwrap() = Some(500);
+        assert!(run(&env, &client, true).is_err());
+        let conn = db::open_existing(&env).unwrap().unwrap();
+        assert!(!db::is_partial(&conn));
+        assert_eq!(db::counts(&conn).unwrap().tracks, 1203);
         assert!(!db::db_path(&env).with_extension("db.tmp").exists());
     }
 
