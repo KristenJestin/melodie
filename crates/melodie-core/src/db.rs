@@ -70,12 +70,12 @@ pub fn create(path: &std::path::Path) -> Result<Connection> {
 }
 
 /// A copy as the versions before the library browsing made it: no `albums.created`, no
-/// `playlist_tracks`. For tests of the upgrade, which must start from a schema that truly lacks
-/// them.
+/// `playlist_tracks`, no `track_artists`. For tests of the upgrade, which must start from a schema
+/// that truly lacks them.
 #[cfg(any(test, feature = "fake"))]
 pub fn create_before_browsing(path: &std::path::Path) -> Result<Connection> {
     let conn = create(path)?;
-    conn.execute_batch("DROP TABLE playlist_tracks; DROP TABLE playlist_synced; ALTER TABLE albums DROP COLUMN created;")?;
+    conn.execute_batch("DROP TABLE playlist_tracks; DROP TABLE playlist_synced; DROP TABLE track_artists; ALTER TABLE albums DROP COLUMN created;")?;
     Ok(conn)
 }
 
@@ -846,7 +846,18 @@ mod tests {
     fn an_older_copy_opened_by_several_processes_at_once_is_upgraded_once() {
         let d = tempfile::tempdir().unwrap();
         let env = Env::with_home(d.path());
-        create_before_browsing(&db_path(&env)).unwrap();
+        let old = create_before_browsing(&db_path(&env)).unwrap();
+        let has = |conn: &Connection| -> bool {
+            conn.query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name = 'track_artists'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+                > 0
+        };
+        assert!(!has(&old), "the copy to upgrade must lack the table");
+        drop(old);
         let start = std::sync::Barrier::new(4);
         std::thread::scope(|s| {
             let runs: Vec<_> = (0..4)
@@ -861,6 +872,7 @@ mod tests {
                 assert!(r.join().unwrap().unwrap(), "a lost race must not fail");
             }
         });
+        assert!(has(&open_existing(&env).unwrap().unwrap()));
     }
 
     #[test]
