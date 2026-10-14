@@ -280,11 +280,7 @@ impl Account {
                 Ok(o) => (
                     o.status.code(),
                     store::auth_refused_marked(&env),
-                    String::from_utf8_lossy(&o.stderr)
-                        .lines()
-                        .next()
-                        .unwrap_or_default()
-                        .to_string(),
+                    account::last_said(&String::from_utf8_lossy(&o.stderr)),
                 ),
                 Err(e) => (None, false, format!("melodie: {}", e.kind())),
             }

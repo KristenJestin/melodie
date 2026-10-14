@@ -275,6 +275,16 @@ pub fn copy_notice(c: db::Counts) -> String {
     }
 }
 
+/// What a failed `melodie sync` said: its last line, the progress lines come before.
+pub fn last_said(stderr: &str) -> String {
+    stderr
+        .lines()
+        .map(str::trim)
+        .rfind(|l| !l.is_empty())
+        .unwrap_or_default()
+        .to_string()
+}
+
 /// "Synced 5 min ago", for the settings.
 pub fn synced_text(synced_at: Option<u64>, now: u64) -> String {
     let Some(at) = synced_at else {
@@ -657,6 +667,13 @@ mod tests {
         *fake.state.fail_from_song.lock().unwrap() = None;
         sync::run(&env, &client, false).unwrap();
         assert!(matches!(copy_state(&env), CopyState::Complete(at) if at > 0));
+    }
+
+    #[test]
+    fn a_failure_mid_copy_says_its_last_line_not_the_progress() {
+        let said = "Artistes : 2\nAlbums : 1\nerreur : boom\n\n";
+        assert_eq!(last_said(said), "erreur : boom");
+        assert_eq!(last_said(""), "");
     }
 
     #[test]
