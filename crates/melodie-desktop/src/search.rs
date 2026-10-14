@@ -1,6 +1,6 @@
-//! The search: one field, the results grouped by kind as the user types, and every result of one
-//! kind on a page of its own. The local copy is read away from the window's thread, and the
-//! answer to an older keystroke is dropped (`find::Latest`).
+//! The search: one field, the results grouped by kind as the user types, and under the field the
+//! filters by kind: the same page shows every result of one kind. The local copy is read away
+//! from the window's thread, and the answer to an older keystroke is dropped (`find::Latest`).
 
 use crate::albums::{PAD, content_width, cover_box, empty_state};
 use crate::app::Shared;
@@ -49,8 +49,9 @@ pub struct SearchView {
     all: UniformListScrollHandle,
     /// The tracks found as their tables show them, by place.
     tables: HashMap<Place, Shown>,
-    /// The step of the place last seen, to focus the field when the search is opened.
+    /// The step and the place last seen, to focus the field when the search is opened.
     step: u64,
+    seen: Place,
     _subs: Vec<Subscription>,
 }
 
@@ -85,10 +86,12 @@ impl SearchView {
                     return;
                 }
                 this.step = step;
+                let before = std::mem::replace(&mut this.seen, here.clone());
                 // the move may have put a list back in its own order
                 this.resort(cx);
                 match here {
-                    Place::Search => this.focus(window, cx),
+                    // moving between the filters leaves the cursor where it is
+                    Place::Search if !before.in_search() => this.focus(window, cx),
                     Place::Found(kind) => {
                         this.all.scroll_to_item(0, ScrollStrategy::Top);
                         if this.asked_all != Some(kind) {
@@ -118,6 +121,7 @@ impl SearchView {
             all: UniformListScrollHandle::new(),
             tables: HashMap::new(),
             step: 0,
+            seen: Place::Home,
             _subs: subs,
         }
     }
@@ -154,10 +158,7 @@ impl SearchView {
     /// Reads the local copy for the text of the field, away from the window.
     fn ask(&mut self, cx: &mut Context<Self>) {
         let text = self.text.clone();
-        let all = match self.catalog.read(cx).here() {
-            Place::Found(kind) => Some(*kind),
-            _ => None,
-        };
+        let all = find::filter_of(self.catalog.read(cx).here());
         self.asked_all = all;
         let n = self.latest.ask();
         let env = self.env.clone();
@@ -424,6 +425,37 @@ fn tabulate(a: &Answer, sorts: &Sorts) -> HashMap<Place, Shown> {
         .collect()
 }
 
+/// The filters under the field, as chips like the sort choices of the lists: a click picks one,
+/// and the press leaves the cursor in the field, so typing goes on.
+fn filter_chips(here: &Place, pal: Palette, catalog: &Entity<Catalog>) -> Div {
+    h_flex()
+        .px(px(PAD))
+        .pb_2()
+        .gap_1()
+        .children(find::filters().into_iter().map(|(place, label)| {
+            let on = *here == place;
+            let catalog = catalog.clone();
+            h_flex()
+                .id(ElementId::Name(format!("search-filter-{label}").into()))
+                .h(px(30.))
+                .px_3()
+                .items_center()
+                .rounded_full()
+                .cursor_pointer()
+                .text_sm()
+                .text_color(if on { pal.fg } else { pal.secondary })
+                .bg(Hsla {
+                    a: if on { 0.12 } else { 0.0 },
+                    ..pal.fg
+                })
+                .hover(|s| s.bg(Hsla { a: 0.08, ..pal.fg }))
+                // the window's root takes the focus from any press that reaches it
+                .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+                .on_click(move |_, _, cx| catalog.update(cx, |c, cx| c.go(place.clone(), cx)))
+                .child(label)
+        }))
+}
+
 fn hint(id: &'static str, text: String, pal: Palette) -> AnyElement {
     div()
         .id(id)
@@ -450,21 +482,24 @@ impl Render for SearchView {
         };
         let text = self.text.clone();
         let catalog = &self.catalog;
-        let field = h_flex()
-            .px(px(PAD))
-            .pt_4()
-            .pb_3()
-            .gap_2()
-            .items_center()
-            .when(can_back, |d| {
-                let catalog = catalog.clone();
-                d.child(
-                    IconButton::new("search-back", IconName::ChevronLeft, pal)
-                        .tip("Back")
-                        .on_click(move |_, _, cx| catalog.update(cx, |c, cx| c.back(cx))),
-                )
-            })
-            .child(div().flex_1().min_w_0().child(self.field.clone()));
+        // a row of the field's height whether the back button is there or not: the filters
+        // under it do not move when one is picked
+        let field = div().px(px(PAD)).pt_4().pb_2().child(
+            h_flex()
+                .h(px(44.))
+                .gap_2()
+                .items_center()
+                .when(can_back, |d| {
+                    let catalog = catalog.clone();
+                    d.child(
+                        IconButton::new("search-back", IconName::ChevronLeft, pal)
+                            .tip("Back")
+                            .on_click(move |_, _, cx| catalog.update(cx, |c, cx| c.back(cx))),
+                    )
+                })
+                .child(div().flex_1().min_w_0().child(self.field.clone())),
+        );
+        let chips = filter_chips(&here, pal, catalog);
         let answer = self.answer.clone().filter(|_| !text.trim().is_empty());
         let cols = Table::Search.cols(content_width(window, &self.shared, cx));
         let tracks = self.tables.get(&Place::Search);
@@ -483,6 +518,7 @@ impl Render for SearchView {
                     let header = self.header(here.clone(), &cols, pal, cx);
                     let rows = cols.clone();
                     v_flex()
+                        .id("found-track")
                         .size_full()
                         .child(found_title(Kind::Track, shown.len(), &a.text, pal, window))
                         .child(header)
@@ -500,6 +536,7 @@ impl Render for SearchView {
                             .track_scroll(&self.all)
                             .flex_1(),
                         )
+                        .with_animation("found-track", motion::enter(), |el, t| el.opacity(t))
                         .into_any_element()
                 }
             },
@@ -508,7 +545,10 @@ impl Render for SearchView {
                 Some((kind, hits)) => {
                     let hits = Arc::clone(hits);
                     let c = catalog.clone();
+                    // one id per kind: another filter fades in, the same one typed in does not
+                    let id = ElementId::Name(format!("found-{}", kind.word()).into());
                     v_flex()
+                        .id(id.clone())
                         .size_full()
                         .child(found_title(*kind, hits.len(), &a.text, pal, window))
                         .child(
@@ -531,6 +571,7 @@ impl Render for SearchView {
                             .track_scroll(&self.all)
                             .flex_1(),
                         )
+                        .with_animation(id, motion::enter(), |el, t| el.opacity(t))
                         .into_any_element()
                 }
             },
@@ -582,6 +623,10 @@ impl Render for SearchView {
                                             .hover(|s| {
                                                 s.text_color(pal.fg).bg(Hsla { a: 0.07, ..pal.fg })
                                             })
+                                            // the cursor stays in the field: it is the same page
+                                            .on_mouse_down(MouseButton::Left, |_, window, _| {
+                                                window.prevent_default()
+                                            })
                                             .on_click(move |_, _, cx| {
                                                 c.update(cx, |c, cx| c.go(Place::Found(kind), cx))
                                             })
@@ -614,6 +659,11 @@ impl Render for SearchView {
             .size_full()
             .relative()
             .child(field)
+            .child(chips)
             .child(div().flex_1().min_h_0().child(body))
     }
 }
+
+// the tests read and write the local copy: out of this file, which the guard of the drawing path scans
+#[cfg(test)]
+mod tests;

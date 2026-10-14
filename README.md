@@ -205,7 +205,10 @@ Screenshots and a recording of the animations, made with invented data, are in
 - **The search**, first in the sidebar: one field, and as you type the artists, albums, tracks and
   playlists of the local copy, grouped by kind. The kind whose best result is the most relevant
   comes first (at equal relevance: artists, albums, tracks, playlists), each with its five best
-  results, ranked as `melodie search` ranks them; "See all" lists every result of that kind. A
+  results, ranked as `melodie search` ranks them. Under the field, filters by kind (All, Tracks,
+  Albums, Artists, Playlists) keep the same page and the same text: "See all" of a group picks
+  its filter, which lists every result of that kind ("9 for “…”"); a new text keeps the filter;
+  the back button and Escape return to All. A
   click on a track plays it, on the rest opens its page; on a row's hover: play, shuffle (not for a
   single track), play next, add to the queue, open the album (a track), add to a playlist (a track
   or an album). The local copy is read away from the window's thread, and the answer to an older
