@@ -51,11 +51,14 @@ configuration (see `AGENTS.md`). The daemon integration test starts its own priv
 - `melodie play <kind> <id> [--shuffle]`: `kind` is `playlist`, `album`, `artist` or `track`.
   Replaces the queue and starts playing. An artist gives all their albums (year, then name), tracks
   in the server's order; a track plays alone. The list comes from the API (`getPlaylist`,
-  `getAlbum`, `getArtist`, `getSong`), not from the local copy.
-- `melodie play track [--from <pos>] <id>…`: plays several tracks, in this order, from the one
-  at `pos` (from 1); the ones before it stay in the queue, for Previous. One id `-` reads the ids
-  from stdin, one per line, for a list too long for a command line. The tracks come from the
-  local copy, as a mix's do; only those it does not hold yet are asked with `getSong`.
+  `getAlbum`, `getArtist`), not from the local copy; a track is read as `play track` reads it.
+- `melodie play track [--from <pos> | --shuffle] <id>…`: plays several tracks, in this order (or
+  shuffled), from the one at `pos` (from 1); the ones before it stay in the queue, for Previous.
+  One id `-` reads the ids from stdin, one per line, for a list too long for a command line; it
+  is refused beside other ids or on a terminal, as is a `pos` past the end. The tracks come from
+  the local copy, as a mix's do; only those it does not hold yet are asked with `getSong`. A
+  player started by an older `melodie` ignores `--from`: `melodie` says so, and `melodie quit`
+  once makes the next play start the new one.
 - `melodie queue [--next] <kind> <id>`: adds to the queue, at the end or, with `--next`, right
   after the current track (starts playing if nothing plays). `queue [--next] track <id>…` adds
   several tracks in this order, as `play track` reads them.
@@ -179,7 +182,8 @@ Screenshots and a recording of the animations, made with invented data, are in
     to a playlist), an artist (its top tracks by plays, its albums; play, shuffle, instant mix)
     and a playlist (its tracks, as the local copy holds them; play, shuffle, play next, add to the
     queue). A click on a track picks it, a double click (or Enter) plays the list shown from
-    this track on, in the order shown: Previous goes back to the tracks above it. On a row's
+    this track on, in the order shown: Previous goes back to the tracks above it. At most a
+    thousand tracks go to the queue: up to a hundred before this one, the rest after it. On a row's
     hover, play it next, add it to the queue, add it to a playlist, or start an instant mix from
     it. The back arrow (or Escape) goes back to where the page was opened from.
   - **Playlists**: the + beside "Playlists" in the sidebar creates one. The page of one of the
@@ -195,11 +199,12 @@ Screenshots and a recording of the animations, made with invented data, are in
     focus or the settings or the queue cover the list. With two tracks picked or more, a bar adds
     them to a playlist, or removes them from the user's playlist shown (after a confirmation
     naming them), and Escape unpicks them before going back; one track picked (a plain click)
-    shows no bar, and Escape goes back at once. A right click on a picked row opens the menu of
-    all of them, in the order shown: play, play next, add to the queue, add to a playlist, and in
-    the user's playlist remove them (after the same confirmation); each is one `melodie play` or
-    `melodie queue` with all their ids. A right click on a row outside them picks that row alone,
-    then opens its menu.
+    shows no bar, and Escape goes back at once (or unpicks it, with no page to go back to). A right
+    click on a picked row opens the menu of all of them, in the order shown: play, play next, add to
+    the queue, add to a playlist, and in the user's playlist remove them (after the same
+    confirmation); each is one `melodie play` or `melodie queue` with all their ids, run after the
+    plays asked before it, so the last click wins. A right click on a row outside them picks that
+    row alone, then opens its menu.
   - **Adding to a playlist** (a track, the rows picked, an album, the current track from the
     player): a dialog lists the user's playlists and "New playlist…". The playlist is read first
     (`playlist add --dry-run`): when nothing is there yet, it is added at once; otherwise the window
