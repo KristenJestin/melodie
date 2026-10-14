@@ -566,7 +566,7 @@ impl Render for SearchView {
             (Place::Found(Kind::Track), Some(a)) => match self.tables.get(&here).cloned() {
                 None => div().into_any_element(),
                 // the title stays: it says how many, and zero is an answer
-                Some(shown) if shown.len() == 0 => empty_filter(Kind::Track, &a.text, pal, window),
+                Some(shown) if shown.is_empty() => empty_filter(Kind::Track, &a.text, pal, window),
                 Some(shown) => {
                     let c = catalog.clone();
                     let sorted = shown.sort.is_some();
