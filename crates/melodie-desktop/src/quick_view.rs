@@ -6,6 +6,7 @@
 use crate::albums::cover_box;
 use crate::app::{Shared, Started};
 use crate::catalog::Catalog;
+use crate::equaliser::{Equaliser, badge};
 use crate::motion;
 use crate::player::palette;
 use crate::search;
@@ -23,6 +24,7 @@ use melodie_desktop::covers::{Covers, Use};
 use melodie_desktop::find::{self, Latest};
 use melodie_desktop::keys::{self, PaletteClick};
 use melodie_desktop::launch::Job;
+use melodie_desktop::playing::{Mark, Playing};
 use melodie_desktop::quick::{self, Do, Group, How, Item, Recent, Section, Seen};
 use melodie_desktop::theme::{Palette, Settings};
 use std::sync::Arc;
@@ -475,6 +477,19 @@ fn about(item: &Item, section: Section) -> String {
     }
 }
 
+fn is_track(item: &Item) -> bool {
+    matches!(item, Item::Found(h) if h.kind == core::Kind::Track)
+}
+
+/// The side of the badge on the cover of the album playing.
+const BADGE: f32 = 16.;
+
+/// The colour of a result's name: the accent when it is the music playing.
+fn name_color(mark: Option<Mark>, pal: Palette) -> Hsla {
+    if mark.is_some() { pal.accent } else { pal.fg }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn row(
     this: &Entity<QuickSearch>,
     ix: usize,
@@ -482,8 +497,15 @@ fn row(
     section: Section,
     chosen: bool,
     covers: &Covers,
+    playing: &Playing,
     pal: Palette,
 ) -> AnyElement {
+    let mark = quick::mark(item, playing);
+    // what the row's own parts are called: the genres have no id, their name stands for it
+    let key = match item {
+        Item::Found(h) => h.id.clone(),
+        Item::Genre(g) => g.name.clone(),
+    };
     let (name, picture) = match item {
         Item::Found(h) => {
             let round = if h.kind == core::Kind::Artist {
@@ -492,7 +514,16 @@ fn row(
                 5.
             };
             let path = h.cover.as_ref().and_then(|c| covers.get(c, 36.));
-            (h.name.clone(), cover_box(path, 36., round, pal))
+            let cover = div()
+                .debug_selector(|| format!("quick-cover-{key}"))
+                .relative()
+                .flex_none()
+                .child(cover_box(path, 36., round, pal))
+                // the album playing: its cover wears the badge
+                .when_some(mark.filter(|_| h.kind == core::Kind::Album), |d, mark| {
+                    d.child(badge(format!("quick-eq-{key}"), mark, BADGE, pal.accent))
+                });
+            (h.name.clone(), cover)
         }
         Item::Genre(g) => (
             g.name.clone(),
@@ -514,6 +545,7 @@ fn row(
     let (hover, click) = (this.clone(), this.clone());
     h_flex()
         .id(("quick-row", ix))
+        .debug_selector(|| format!("quick-row-{key}"))
         .h(px(ROW))
         .flex_none()
         .w_full()
@@ -531,7 +563,13 @@ fn row(
             v_flex()
                 .flex_1()
                 .min_w_0()
-                .child(div().truncate().text_sm().text_color(pal.fg).child(name))
+                .child(
+                    div()
+                        .truncate()
+                        .text_sm()
+                        .text_color(name_color(mark, pal))
+                        .child(name),
+                )
                 .child(
                     div()
                         .truncate()
@@ -540,6 +578,14 @@ fn row(
                         .child(about(item, section)),
                 ),
         )
+        // the track playing: the equaliser at the right end of its row
+        .when_some(mark.filter(|_| is_track(item)), |d, mark| {
+            d.child(div().pr_2().flex_none().child(Equaliser::new(
+                format!("quick-eq-{key}"),
+                mark,
+                pal.accent,
+            )))
+        })
         .into_any_element()
 }
 
@@ -581,6 +627,7 @@ impl Render for QuickSearch {
         let pal = palette(&self.shared, window, cx);
         let covers = Covers::new(self.catalog.read(cx).covers.clone(), window.scale_factor());
         let this = cx.entity();
+        let playing = self.shared.read(cx).playing.clone();
         let groups: Arc<[Group]> = match &self.shown {
             Shown::Rows(g) => g.clone(),
             _ => Arc::from([]),
@@ -601,7 +648,9 @@ impl Render for QuickSearch {
             );
             for item in &g.items {
                 let chosen = ix == self.chosen;
-                children.push(row(&this, ix, item, g.section, chosen, &covers, pal));
+                children.push(row(
+                    &this, ix, item, g.section, chosen, &covers, &playing, pal,
+                ));
                 ix += 1;
             }
         }
@@ -744,6 +793,12 @@ mod tests {
         )
         .unwrap();
         db::insert_track(&tx, &json!({"id":"t1","title":"Drift","artist":"Nightfall","album":"Elsewhere","albumId":"al1","genres":[{"name":"Ambient"}]})).unwrap();
+        db::insert_album(
+            &tx,
+            &json!({"id":"al2","name":"High Tide","artist":"Nightfall","artistId":"ar1"}),
+        )
+        .unwrap();
+        db::insert_track(&tx, &json!({"id":"t2","title":"Driftwood","artist":"Nightfall","album":"High Tide","albumId":"al2"})).unwrap();
         tx.commit().unwrap();
     }
 
@@ -932,6 +987,137 @@ mod tests {
         assert_eq!(quick.read_with(cx, |q, cx| q.input.read(cx).value()), "ti");
     }
 
+    /// The music playing is track `t1`, of the album `al1`, in the state `state`; none when
+    /// `None`.
+    fn play(
+        quick: &Entity<QuickSearch>,
+        state: Option<melodie_desktop::model::PlayState>,
+        cx: &mut VisualTestContext,
+    ) {
+        use melodie_core::proto::QueueEntry;
+        use melodie_desktop::model::Player;
+        use melodie_desktop::playing::Origin;
+        let player = state.map(|state| Player {
+            following: true,
+            state,
+            tracks: vec![QueueEntry {
+                entry: 1,
+                id: "t1".into(),
+                ..QueueEntry::default()
+            }]
+            .into(),
+            current: Some(0),
+            ..Player::default()
+        });
+        let shared = quick.read_with(cx, |q, _| q.shared.clone());
+        shared.update(cx, |s, _| {
+            s.playing.follow(&player.unwrap_or_default());
+            s.playing.wants_origin();
+            s.playing.set_origin(
+                "t1",
+                Some(Origin {
+                    album: Some("al1".into()),
+                    artist: Some("ar1".into()),
+                }),
+            );
+        });
+        quick.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+    }
+
+    fn search(quick: &Entity<QuickSearch>, text: &str, cx: &mut VisualTestContext) {
+        toggle(quick, cx);
+        cx.simulate_input(text);
+        cx.run_until_parked();
+    }
+
+    #[test]
+    fn the_track_playing_shows_the_equaliser_at_the_right_of_its_row() {
+        use melodie_desktop::model::PlayState;
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        library(&env);
+        let mut app = TestAppContext::single();
+        let (quick, cx) = palette(&env, &mut app);
+        play(&quick, Some(PlayState::Playing), cx);
+        search(&quick, "drift", cx);
+        let eq = cx.debug_bounds("quick-eq-t1").expect("the track playing");
+        let row = cx.debug_bounds("quick-row-t1").expect("its row");
+        assert!(
+            eq.right() <= row.right() && row.right() - eq.right() <= gpui_kit::px(16.),
+            "at the right end of the row: {eq:?} in {row:?}"
+        );
+        assert!(
+            cx.debug_bounds("quick-eq-t2").is_none(),
+            "another track with a name alike is not marked"
+        );
+        assert!(
+            cx.debug_bounds("quick-eq-t1-badge").is_none(),
+            "a badge is for a cover, not a track"
+        );
+        play(&quick, Some(PlayState::Paused), cx);
+        assert!(cx.debug_bounds("quick-eq-t1").is_some(), "still, but there");
+    }
+
+    #[test]
+    fn the_album_playing_shows_the_badge_on_the_corner_of_its_cover() {
+        use melodie_desktop::model::PlayState;
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        library(&env);
+        let mut app = TestAppContext::single();
+        let (quick, cx) = palette(&env, &mut app);
+        play(&quick, Some(PlayState::Playing), cx);
+        search(&quick, "tide", cx);
+        let badge = cx
+            .debug_bounds("quick-eq-al1-badge")
+            .expect("the album playing");
+        let cover = cx.debug_bounds("quick-cover-al1").expect("its cover");
+        let near = |a: gpui_kit::Pixels, b: gpui_kit::Pixels| (a - b).abs() <= gpui_kit::px(4.);
+        assert!(
+            near(badge.right(), cover.right()) && near(badge.bottom(), cover.bottom()),
+            "bottom-right corner: {badge:?} on {cover:?}"
+        );
+        assert!(badge.size.width < cover.size.width / 2.0, "small");
+        assert!(
+            cx.debug_bounds("quick-eq-al1").is_some(),
+            "holding the bars"
+        );
+        assert!(
+            cx.debug_bounds("quick-eq-al2-badge").is_none()
+                && cx.debug_bounds("quick-eq-al2").is_none(),
+            "another album is not marked"
+        );
+        assert!(
+            cx.debug_bounds("quick-eq-t1").is_none(),
+            "no track in the results"
+        );
+    }
+
+    #[test]
+    fn the_palette_marks_nothing_when_nothing_plays() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        library(&env);
+        let mut app = TestAppContext::single();
+        let (quick, cx) = palette(&env, &mut app);
+        play(&quick, None, cx);
+        for text in ["drift", "tide"] {
+            search(&quick, text, cx);
+            for selector in [
+                "quick-eq-t1",
+                "quick-eq-al1",
+                "quick-eq-al1-badge",
+                "quick-eq-t2",
+                "quick-eq-al2",
+                "quick-eq-al2-badge",
+            ] {
+                assert!(cx.debug_bounds(selector).is_none(), "{text}: {selector}");
+            }
+            toggle(&quick, cx);
+        }
+    }
+
     #[test]
     fn the_field_has_room_around_its_text_as_high_as_a_result() {
         let dir = tempfile::tempdir().unwrap();
@@ -942,5 +1128,15 @@ mod tests {
         toggle(&quick, cx);
         let field = cx.debug_bounds("quick-field").expect("the field");
         assert_eq!(field.size.height, gpui_kit::px(super::ROW));
+    }
+
+    #[test]
+    fn the_title_of_the_music_playing_is_in_the_accent_colour() {
+        use melodie_desktop::playing::Mark;
+        use melodie_desktop::theme::Palette;
+        let pal = Palette::base(None, true);
+        assert_eq!(super::name_color(Some(Mark::Playing), pal), pal.accent);
+        assert_eq!(super::name_color(Some(Mark::Paused), pal), pal.accent);
+        assert_eq!(super::name_color(None, pal), pal.fg);
     }
 }

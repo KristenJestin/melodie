@@ -5,6 +5,7 @@
 use crate::browse::Place;
 use crate::find::Action;
 use crate::launch::{Job, Kind};
+use crate::playing::{Mark, Playing};
 use melodie_core::db;
 use melodie_core::env::Env;
 use melodie_core::library as lib;
@@ -160,6 +161,16 @@ pub fn hints(item: Option<&Item>) -> Vec<(&'static str, &'static str)> {
     }
     out.push(("Esc", "Close"));
     out
+}
+
+/// How the row shows that its music is the one playing: a track or an album only, the palette
+/// has no mark for the rest.
+pub fn mark(item: &Item, playing: &Playing) -> Option<Mark> {
+    match item {
+        Item::Found(h) if h.kind == search::Kind::Track => playing.track(&h.id),
+        Item::Found(h) if h.kind == search::Kind::Album => playing.album(&h.id),
+        _ => None,
+    }
 }
 
 /// Something opened or played lately.
@@ -389,6 +400,60 @@ mod tests {
             album_id: None,
             artist_id: None,
         }
+    }
+
+    /// What plays: track `t1`, of the album `al1` and the artist `ar1`.
+    fn playing_state(state: crate::model::PlayState) -> Playing {
+        use melodie_core::proto::QueueEntry;
+        let player = crate::model::Player {
+            following: true,
+            state,
+            tracks: vec![QueueEntry {
+                entry: 1,
+                id: "t1".into(),
+                ..QueueEntry::default()
+            }]
+            .into(),
+            current: Some(0),
+            ..crate::model::Player::default()
+        };
+        let mut p = Playing::default();
+        p.follow(&player);
+        p.wants_origin();
+        p.set_origin(
+            "t1",
+            Some(crate::playing::Origin {
+                album: Some("al1".into()),
+                artist: Some("ar1".into()),
+            }),
+        );
+        p
+    }
+
+    #[test]
+    fn the_result_that_is_the_music_playing_is_marked() {
+        use crate::model::PlayState;
+        let row = |kind, id| Item::Found(hit(kind, id));
+        let marks = |p: &Playing| {
+            [
+                mark(&row(search::Kind::Track, "t1"), p),
+                mark(&row(search::Kind::Track, "t2"), p),
+                mark(&row(search::Kind::Album, "al1"), p),
+                mark(&row(search::Kind::Album, "al2"), p),
+                // the palette marks tracks and albums, not the artist or the playlist
+                mark(&row(search::Kind::Artist, "ar1"), p),
+                mark(&row(search::Kind::Playlist, "t1"), p),
+                mark(&genre("Ambient"), p),
+            ]
+        };
+        let (playing, paused) = (Some(Mark::Playing), Some(Mark::Paused));
+        let on = playing_state(PlayState::Playing);
+        assert_eq!(marks(&on), [playing, None, playing, None, None, None, None]);
+        assert_eq!(
+            marks(&playing_state(PlayState::Paused)),
+            [paused, None, paused, None, None, None, None]
+        );
+        assert_eq!(marks(&Playing::default()), [None; 7], "nothing plays");
     }
 
     /// `Input::h` sets the height of a field of several lines only: the single line of the

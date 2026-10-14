@@ -22,6 +22,9 @@ const TICK: Duration = Duration::from_millis(80);
 /// Where the bars stand when they do not move: apart from each other.
 const STILL: f32 = 0.3;
 
+/// How much of a badge its bars take.
+const BADGE_BARS: f32 = 0.6;
+
 /// The clock of every mark, so that they all tick in the same frame and move in phase.
 fn epoch() -> Instant {
     static EPOCH: OnceLock<Instant> = OnceLock::new();
@@ -34,33 +37,36 @@ fn wait(since: Duration) -> Duration {
     Duration::from_nanos((tick - since.as_nanos() % tick) as u64)
 }
 
-fn bar(color: Hsla, height: f32) -> Div {
+/// A bar of the mark of side `side`: the bars keep their proportions when it is smaller.
+fn bar(side: f32, color: Hsla, height: f32) -> Div {
     div()
-        .w(px(BAR))
-        .h(px(SIDE * height))
+        .w(px(BAR * side / SIDE))
+        .h(px(side * height))
         .rounded_sm()
         .flex_none()
         .bg(color)
 }
 
-fn frame() -> Div {
+fn frame(side: f32) -> Div {
+    let bar = BAR * side / SIDE;
     h_flex()
-        .w(px(SIDE))
-        .h(px(SIDE))
+        .w(px(side))
+        .h(px(side))
         .flex_none()
         .items_end()
-        .gap(px((SIDE - BAR * BARS as f32) / (BARS as f32 - 1.0)))
+        .gap(px((side - bar * BARS as f32) / (BARS as f32 - 1.0)))
 }
 
 /// The bars moving.
 struct Moving {
     id: ElementId,
+    side: f32,
     color: Hsla,
     _tick: Task<()>,
 }
 
 impl Moving {
-    fn new(id: ElementId, color: Hsla, cx: &mut Context<Self>) -> Self {
+    fn new(id: ElementId, side: f32, color: Hsla, cx: &mut Context<Self>) -> Self {
         let tick = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
@@ -74,6 +80,7 @@ impl Moving {
         });
         Self {
             id,
+            side,
             color,
             _tick: tick,
         }
@@ -83,9 +90,9 @@ impl Moving {
 impl Render for Moving {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let t = (epoch().elapsed().as_secs_f32() / TURN.as_secs_f32()).fract();
-        frame()
+        frame(self.side)
             .debug_selector(|| self.id.to_string())
-            .children((0..BARS).map(|i| bar(self.color, level(i, t))))
+            .children((0..BARS).map(|i| bar(self.side, self.color, level(i, t))))
     }
 }
 
@@ -95,6 +102,7 @@ pub struct Equaliser {
     id: ElementId,
     mark: Mark,
     color: Hsla,
+    side: f32,
 }
 
 impl Equaliser {
@@ -103,24 +111,36 @@ impl Equaliser {
             id: id.into(),
             mark,
             color,
+            side: SIDE,
         }
+    }
+
+    /// Smaller (or larger) than the mark of a row.
+    pub fn side(mut self, side: f32) -> Self {
+        self.side = side;
+        self
     }
 }
 
 impl RenderOnce for Equaliser {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let Self { id, mark, color } = self;
+        let Self {
+            id,
+            mark,
+            color,
+            side,
+        } = self;
         match mark {
-            Mark::Paused => frame()
+            Mark::Paused => frame(side)
                 .debug_selector(|| id.to_string())
-                .children((0..BARS).map(|i| bar(color, level(i, STILL))))
+                .children((0..BARS).map(|i| bar(side, color, level(i, STILL))))
                 .into_any_element(),
             Mark::Playing => {
-                let moving =
-                    window.use_keyed_state(id.clone(), cx, |_, cx| Moving::new(id, color, cx));
+                let moving = window
+                    .use_keyed_state(id.clone(), cx, |_, cx| Moving::new(id, side, color, cx));
                 moving.update(cx, |m, cx| {
-                    if m.color != color {
-                        m.color = color;
+                    if (m.color, m.side) != (color, side) {
+                        (m.color, m.side) = (color, side);
                         cx.notify();
                     }
                 });
@@ -128,6 +148,25 @@ impl RenderOnce for Equaliser {
             }
         }
     }
+}
+
+/// The mark on the corner of a cover: a small dark square holding the equaliser, laid over the
+/// bottom-right corner of the nearest `relative` parent. `id` names the equaliser; the badge is
+/// `<id>-badge`.
+pub fn badge(id: impl Into<ElementId>, mark: Mark, side: f32, accent: Hsla) -> Div {
+    let id: ElementId = id.into();
+    div()
+        .debug_selector(|| format!("{id}-badge"))
+        .absolute()
+        .right(px(-2.))
+        .bottom(px(-2.))
+        .size(px(side))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(side / 4.))
+        .bg(hsla(0., 0., 0., 0.78))
+        .child(Equaliser::new(id, mark, accent).side(side * BADGE_BARS))
 }
 
 /// A name on its line: when the music of what it names plays, in the accent and with the
