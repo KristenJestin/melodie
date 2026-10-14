@@ -68,6 +68,17 @@ pub struct Account {
 
 impl Account {
     pub fn new(env: Env, shared: Entity<Shared>, cx: &mut Context<Self>) -> Self {
+        Self::with(env, shared, program(), account::sync_lock(), cx)
+    }
+
+    /// `program`: the `melodie` the window runs; `sync_lock`: the lock its `sync` holds.
+    fn with(
+        env: Env,
+        shared: Entity<Shared>,
+        program: PathBuf,
+        sync_lock: Option<PathBuf>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let mut was_open = false;
         let subs = vec![cx.observe(&shared, move |this: &mut Self, shared, cx| {
             let s = shared.read(cx);
@@ -95,8 +106,8 @@ impl Account {
             first_started: false,
             follow: None,
             following: 0,
-            program: program(),
-            sync_lock: account::sync_lock(),
+            program,
+            sync_lock,
             signing_out: false,
             copy_step: 0,
             env,
@@ -400,8 +411,9 @@ impl Account {
         }
         self.signing_out = true;
         cx.notify();
+        let program = self.program.clone();
         let task = cx.background_spawn(async move {
-            std::process::Command::new(program())
+            std::process::Command::new(program)
                 .arg("logout")
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
@@ -831,13 +843,9 @@ mod tests {
     fn account(app: &mut TestAppContext, env: &Env, program: &Path) -> Entity<Account> {
         app.update(|cx| {
             let shared = crate::app::for_tests(env.clone(), cx);
-            cx.new(|cx| {
-                let mut a = Account::new(env.clone(), shared, cx);
-                a.program = program.to_path_buf();
-                // never the lock of a real `melodie sync`
-                a.sync_lock = Some(program.with_file_name("sync.lock"));
-                a
-            })
+            // never the lock of a real `melodie sync`
+            let lock = Some(program.with_file_name("sync.lock"));
+            cx.new(|cx| Account::with(env.clone(), shared, program.to_path_buf(), lock, cx))
         })
     }
 
