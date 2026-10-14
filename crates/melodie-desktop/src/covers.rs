@@ -2,19 +2,31 @@
 //! time, fed by the covers (an id at a tier) that are missing on disk. Nothing here touches the
 //! server or draws; the cover files known so far are looked up here too, for the views.
 
-use melodie_core::cover::{Disk, Tier, Want};
+use melodie_core::cover::{Disk, LOCKED_EXIT, Tier, Want};
 use melodie_core::env::Env;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 /// How many times a cover may come back from a finished `cover-fetch` still missing before the
-/// window leaves it to what it has (the server errs on it, or the process stopped before it).
+/// window leaves it to what it has for a while (the server errs on it, or the process stopped
+/// before it, failing): see [`RETRY_AFTER`].
 pub const MAX_TRIES: u32 = 3;
 /// The covers a round hands to one `cover-fetch`.
 const BATCH: usize = 48;
+/// How long a cover given up waits before a view that shows it may ask for it again; doubled
+/// each time it is given up again, up to [`RETRY_MAX`].
+pub const RETRY_AFTER: Duration = Duration::from_secs(60);
+/// The longest a cover given up waits: never left to the glyph for longer, while a cover the
+/// server keeps failing on costs one request every so often.
+pub const RETRY_MAX: Duration = Duration::from_secs(30 * 60);
 /// How long to wait before asking again when another `cover-fetch` held the lock.
 pub const LOCK_WAIT: Duration = Duration::from_secs(2);
+/// How long the rounds pause after a `cover-fetch` stopped for running past [`ROUND_LIMIT`]. Its
+/// likeliest hang is a keyring unlock prompt nobody answers: going on at once would open a new
+/// prompt every few minutes, for hours with a large backlog, and the covers are not to blame.
+pub const STALLED_WAIT: Duration = Duration::from_secs(10 * 60);
 
 /// The side, in logical pixels, a cover is drawn at: which tier it needs depends on it and on
 /// the screen's scale factor. Callers pass the side they draw; the constants are the usual ones.
@@ -55,8 +67,12 @@ pub enum Fetch {
     Done,
     /// Another one held the lock: nothing was done.
     Locked,
-    /// It could not run at all.
+    /// It could not start, or it ended with an error: what it got is on disk, the rest counts
+    /// as a try.
     Failed,
+    /// It ran past [`ROUND_LIMIT`] and was stopped: something held it (the keyring, the network),
+    /// not the covers.
+    Stopped,
 }
 
 /// How long a larger cover shows its smaller one under it, fading in. Longer than the fade, so
@@ -208,6 +224,72 @@ pub fn round(env: &Env, batch: &[Want], fetch: impl FnOnce(&[Want]) -> Fetch) ->
     }
 }
 
+/// How long one `cover-fetch` may run (a full round of timeouts takes about a minute and a
+/// half): one that never ends, stuck on the keyring or the network, would hold every cover of
+/// the window back until a restart.
+pub const ROUND_LIMIT: Duration = Duration::from_secs(180);
+
+/// `<program> cover-fetch` with the covers on its standard input; waits for it, `limit` at most.
+/// Blocking: run it away from the window.
+pub fn fetch(program: &Path, wants: &[Want], limit: Duration) -> Fetch {
+    let child = std::process::Command::new(program)
+        .arg("cover-fetch")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    let Ok(mut child) = child else {
+        return Fetch::Failed;
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let lines: Vec<String> = wants.iter().map(Want::line).collect();
+        let _ = stdin.write_all(lines.join("\n").as_bytes());
+    }
+    let end = Instant::now() + limit;
+    let code = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status.code(),
+            Ok(None) if Instant::now() < end => std::thread::sleep(Duration::from_millis(50)),
+            Ok(None) => {
+                // what it downloaded meanwhile is on disk
+                let _ = child.kill();
+                let _ = child.wait();
+                return Fetch::Stopped;
+            }
+            Err(_) => break None,
+        }
+    };
+    match code {
+        Some(0) => Fetch::Done,
+        Some(code) if code == i32::from(LOCKED_EXIT) => Fetch::Locked,
+        _ => Fetch::Failed,
+    }
+}
+
+/// How old a temporary file of the covers folders is before it is taken for one left by a
+/// process stopped while writing (none takes this long to write a picture).
+const TMP_LEFT: Duration = Duration::from_secs(3600);
+
+/// Removes the temporary files a `cover-fetch` stopped while writing left behind (see
+/// [`ROUND_LIMIT`]). Reads folders: run it away from the window's thread.
+pub fn sweep(env: &Env, now: std::time::SystemTime) {
+    for tier in Tier::ALL {
+        let file = melodie_core::cover::tier_path(env, "x", tier);
+        let Some(Ok(entries)) = file.parent().map(std::fs::read_dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let old = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .is_ok_and(|at| now.duration_since(at).is_ok_and(|age| age > TMP_LEFT));
+            if old && entry.file_name().to_string_lossy().ends_with(".tmp") {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+}
+
 /// The covers asked, and those still to get.
 #[derive(Default)]
 pub struct Queue {
@@ -217,6 +299,12 @@ pub struct Queue {
     waiting: HashSet<Want>,
     tries: HashMap<Want, u32>,
     running: bool,
+    /// A round asked for a pause: none starts until [`Queue::resume`], whatever is asked
+    /// meanwhile.
+    paused: bool,
+    /// How many times each cover was given up, and when the last time lets it be asked again.
+    given_up: HashMap<Want, u32>,
+    retry_at: HashMap<Want, Instant>,
     /// The largest side each cover was asked at: asked again at the right tier when the scale
     /// factor changes. One entry per cover, whatever the sides it was drawn at (a window being
     /// resized draws the grid at a different side at every step).
@@ -224,34 +312,72 @@ pub struct Queue {
 }
 
 impl Queue {
-    /// The covers not asked before (each is looked up once, then queued if missing).
-    pub fn see(&mut self, wants: impl IntoIterator<Item = Want>) -> Vec<Want> {
+    /// The covers not asked before (each is looked up once, then queued if missing), and those
+    /// given up whose wait is over: a cover is never left to the glyph for good.
+    pub fn see(&mut self, wants: impl IntoIterator<Item = Want>, now: Instant) -> Vec<Want> {
         wants
             .into_iter()
-            .filter(|w| self.seen.insert(w.clone()))
+            .filter(|w| self.seen.insert(w.clone()) || self.due(w, now))
             .collect()
     }
 
+    /// The first time after `after` (or from now on) a cover given up may be asked again.
+    pub fn next_retry(&self, after: Option<Instant>) -> Option<Instant> {
+        self.retry_at
+            .values()
+            .filter(|at| after.is_none_or(|after| **at > after))
+            .min()
+            .copied()
+    }
+
+    /// A cover given up whose wait is over: true once.
+    fn due(&mut self, w: &Want, now: Instant) -> bool {
+        let due = self.retry_at.get(w).is_some_and(|at| *at <= now);
+        if due {
+            self.retry_at.remove(w);
+        }
+        due
+    }
+
     /// Asks for covers drawn as `usage` on a screen of this scale factor: those not asked before
-    /// at that tier, to look up on disk.
-    pub fn ask(&mut self, ids: Vec<String>, usage: Use, scale: f32) -> Vec<Want> {
+    /// at that tier, to look up on disk. With `first` (they are on screen), those already waiting
+    /// go before the rest: asked long ago, they would wait behind everything asked since.
+    pub fn ask(
+        &mut self,
+        ids: Vec<String>,
+        usage: Use,
+        scale: f32,
+        now: Instant,
+        first: bool,
+    ) -> Vec<Want> {
         let tier = usage.tier(scale);
         for id in &ids {
             let largest = self.asked.entry(id.clone()).or_insert(usage);
             *largest = (*largest).max_side(usage);
         }
-        self.see(ids.into_iter().map(|id| Want::new(id, tier)))
+        let wants: Vec<Want> = ids.into_iter().map(|id| Want::new(id, tier)).collect();
+        if first {
+            let waiting: Vec<Want> = wants
+                .iter()
+                .filter(|w| self.waiting.contains(w))
+                .cloned()
+                .collect();
+            if !waiting.is_empty() {
+                self.missing_first(waiting);
+            }
+        }
+        self.see(wants, now)
     }
 
     /// The screen's scale factor changed: what was asked, at the tier that suits it now (what the
     /// new tier already has is not asked twice).
-    pub fn ask_again(&mut self, scale: f32) -> Vec<Want> {
+    pub fn ask_again(&mut self, scale: f32, now: Instant) -> Vec<Want> {
         let again: Vec<Want> = self
             .asked
             .iter()
             .map(|(id, usage)| Want::new(id.clone(), usage.tier(scale)))
             .collect();
-        self.see(again)
+        self.see(again, now)
     }
 
     /// Queues covers that have no file yet, behind those already waiting.
@@ -266,10 +392,20 @@ impl Queue {
     /// Queues covers that have no file yet, before those already waiting: what is playing, what
     /// is on screen.
     pub fn missing_first(&mut self, wants: Vec<Want>) {
-        let rest = std::mem::take(&mut self.pending);
-        self.waiting.clear();
-        self.missing(wants);
-        self.missing(rest);
+        let mut front = Vec::with_capacity(wants.len());
+        let mut moved = HashSet::with_capacity(wants.len());
+        for w in wants {
+            if moved.insert(w.clone()) {
+                front.push(w);
+            }
+        }
+        // a view asking again for the rows it shows: they are ahead already
+        if self.pending.starts_with(&front) {
+            return;
+        }
+        self.pending.retain(|w| !moved.contains(w));
+        self.waiting.extend(moved);
+        self.pending.splice(0..0, front);
     }
 
     fn forget(&mut self, gone: impl Fn(&Want) -> bool) {
@@ -286,37 +422,101 @@ impl Queue {
     /// The covers for the next round, unless one is running or nothing waits. A round takes a
     /// bounded share, so that what is asked meanwhile does not wait for a whole library.
     pub fn start(&mut self) -> Option<Vec<Want>> {
-        if self.running || self.pending.is_empty() {
+        if self.running || self.paused || self.pending.is_empty() {
             return None;
         }
         self.running = true;
         Some(self.pending.iter().take(BATCH).cloned().collect())
     }
 
-    /// Takes a finished round in; true when it hit the lock and should be asked again after
-    /// [`LOCK_WAIT`].
-    pub fn finish(&mut self, batch: &[Want], round: &Round) -> bool {
+    /// The pause a round asked for is over.
+    pub fn resume(&mut self) {
+        self.paused = false;
+    }
+
+    /// Takes a finished round in; how long to wait before the next one, when it should not
+    /// follow at once: no round starts until [`Queue::resume`].
+    pub fn finish(&mut self, batch: &[Want], round: &Round, now: Instant) -> Option<Duration> {
+        let wait = self.take_in(batch, round, now);
+        self.paused = wait.is_some();
+        wait
+    }
+
+    fn take_in(&mut self, batch: &[Want], round: &Round, now: Instant) -> Option<Duration> {
         self.running = false;
         let gone: HashSet<&Want> = batch
             .iter()
             .filter(|w| !round.missing.contains(w))
             .collect();
         self.forget(|w| gone.contains(w));
+        for w in &gone {
+            self.tries.remove(*w);
+            self.given_up.remove(*w);
+            self.retry_at.remove(*w);
+        }
         match round.fetch {
             None => {}
             // nothing was done: the covers keep their tries
-            Some(Fetch::Locked) => return true,
+            Some(Fetch::Locked) => return Some(LOCK_WAIT),
+            Some(Fetch::Stopped) => return Some(STALLED_WAIT),
             Some(Fetch::Done | Fetch::Failed) => {
                 for w in &round.missing {
                     let tries = self.tries.entry(w.clone()).or_default();
                     *tries += 1;
                     if *tries >= MAX_TRIES {
                         self.forget(|p| p == w);
+                        self.tries.remove(w);
+                        let times = self.given_up.entry(w.clone()).or_default();
+                        *times += 1;
+                        let wait = RETRY_AFTER
+                            .saturating_mul(1 << (*times - 1).min(16))
+                            .min(RETRY_MAX);
+                        self.retry_at.insert(w.clone(), now + wait);
                     }
                 }
             }
         }
-        false
+        None
+    }
+}
+
+/// When the views ask again for the covers they show: a view asks only when what it shows
+/// changes, so a cover given up while on screen would wait on the glyph until a scroll. A timer
+/// rings when the first wait is over; each ring is a new [`Retries::round`], which the views
+/// showing covers take as a change.
+#[derive(Default)]
+pub struct Retries {
+    planned: Option<Instant>,
+    last: Option<Instant>,
+    round: u64,
+}
+
+impl Retries {
+    /// When to set a timer for, if one is needed: one is set for the next wait to end, unless a
+    /// timer rings sooner. A wait that ended at a ring already is left to the views (a cover no
+    /// longer shown is asked again only when shown).
+    pub fn plan(&mut self, queue: &Queue) -> Option<Instant> {
+        let next = queue.next_retry(self.last)?;
+        if self.planned.is_some_and(|planned| planned <= next) {
+            return None;
+        }
+        self.planned = Some(next);
+        Some(next)
+    }
+
+    /// The timer set for `at` rang; false when another one replaced it.
+    pub fn rang(&mut self, at: Instant) -> bool {
+        if self.planned != Some(at) {
+            return false;
+        }
+        self.planned = None;
+        self.last = Some(at);
+        self.round += 1;
+        true
+    }
+
+    pub fn round(&self) -> u64 {
+        self.round
     }
 }
 
@@ -360,6 +560,15 @@ mod tests {
     fn drain(
         env: &Env,
         queue: &mut Queue,
+        fetch: impl FnMut(&[Want]) -> Fetch,
+    ) -> (usize, HashMap<String, Disk>) {
+        drain_at(env, queue, Instant::now(), fetch)
+    }
+
+    fn drain_at(
+        env: &Env,
+        queue: &mut Queue,
+        now: Instant,
         mut fetch: impl FnMut(&[Want]) -> Fetch,
     ) -> (usize, HashMap<String, Disk>) {
         let (mut fetches, mut all) = (0, HashMap::new());
@@ -369,10 +578,127 @@ mod tests {
                 fetch(wants)
             });
             all.extend(r.found.clone());
-            queue.finish(&batch, &r);
+            queue.finish(&batch, &r, now);
+            queue.resume();
             assert!(fetches < 50, "never ends");
         }
         (fetches, all)
+    }
+
+    /// A stand-in for `melodie`: a shell script that keeps its input and its pid, then runs
+    /// `body`.
+    fn program(dir: &Path, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt as _;
+        let path = dir.join("melodie");
+        let script = format!(
+            "#!/bin/sh\necho $$ > {pid}\ncat > {input}\n{body}\n",
+            pid = dir.join("pid").display(),
+            input = dir.join("input").display(),
+        );
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_fetch_says_how_cover_fetch_ended() {
+        let dir = tempfile::tempdir().unwrap();
+        let wants = at(&["a", "b"], Tier::Row);
+        let done = program(dir.path(), "exit 0");
+        assert_eq!(fetch(&done, &wants, ROUND_LIMIT), Fetch::Done);
+        let input = std::fs::read_to_string(dir.path().join("input")).unwrap();
+        assert_eq!(input, "a\t300\nb\t300");
+        let locked = program(dir.path(), &format!("exit {LOCKED_EXIT}"));
+        assert_eq!(fetch(&locked, &wants, ROUND_LIMIT), Fetch::Locked);
+        let broken = program(dir.path(), "exit 3");
+        assert_eq!(fetch(&broken, &wants, ROUND_LIMIT), Fetch::Failed);
+        let missing = dir.path().join("nothing-here");
+        assert_eq!(fetch(&missing, &wants, ROUND_LIMIT), Fetch::Failed);
+    }
+
+    /// Issue #84: a `cover-fetch` that never ends (a keyring prompt nobody answers, a stalled
+    /// connection) kept the round running for good, and no cover of the window was fetched again.
+    #[test]
+    fn a_fetch_that_never_ends_is_stopped() {
+        let dir = tempfile::tempdir().unwrap();
+        let stuck = program(dir.path(), "exec sleep 20");
+        let t = Instant::now();
+        let ended = fetch(&stuck, &ids(&["a"]), Duration::from_secs(1));
+        assert!(t.elapsed() < Duration::from_secs(10), "{:?}", t.elapsed());
+        assert_eq!(ended, Fetch::Stopped);
+        // under load the shell may not have written its pid yet when it was stopped
+        let pid_file = dir.path().join("pid");
+        let wait = Instant::now();
+        while !pid_file.exists() && wait.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let Ok(pid) = std::fs::read_to_string(&pid_file) else {
+            return; // stopped before it ran its first line: nothing of it is left
+        };
+        let alive = std::process::Command::new("kill")
+            .args(["-0", pid.trim()])
+            .status()
+            .unwrap()
+            .success();
+        assert!(!alive, "the process is stopped, its lock with it");
+    }
+
+    /// Review of #84: the likeliest hang is a keyring unlock prompt. Charging the covers a try
+    /// and starting the next round at once burned a whole backlog to "given up" for a reason
+    /// that is not theirs, with a new prompt every few minutes.
+    #[test]
+    fn a_stopped_fetch_charges_no_try_and_pauses_the_rounds() {
+        let (_d, env) = env();
+        let mut q = Queue::default();
+        q.missing(ids(&["a"]));
+        for _ in 0..(MAX_TRIES * 2) {
+            let batch = q.start().unwrap();
+            let r = round(&env, &batch, |_| Fetch::Stopped);
+            assert_eq!(
+                q.finish(&batch, &r, Instant::now()),
+                Some(STALLED_WAIT),
+                "the next round waits"
+            );
+            q.missing(ids(&["asked-meanwhile"]));
+            assert!(q.start().is_none(), "even for what is asked meanwhile");
+            q.resume();
+        }
+        assert!(q.given_up.is_empty(), "not given up for a hang");
+        let (_, found) = drain(&env, &mut q, |wants| {
+            wants.iter().for_each(|w| put_want(&env, w));
+            Fetch::Done
+        });
+        assert!(found.contains_key("a"));
+    }
+
+    /// Review of #84: a `cover-fetch` stopped while it wrote a cover leaves its temporary file.
+    #[test]
+    fn temporary_files_left_by_a_stopped_fetch_are_removed() {
+        let (_d, env) = env();
+        let now = std::time::SystemTime::now();
+        let file = |tier: Tier, name: &str, age: Duration| {
+            let dir = cover::tier_path(&env, "x", tier)
+                .parent()
+                .unwrap()
+                .to_path_buf();
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join(name);
+            std::fs::write(&path, "").unwrap();
+            let f = std::fs::File::options().write(true).open(&path).unwrap();
+            f.set_modified(now - age).unwrap();
+            path
+        };
+        let hours = Duration::from_secs(2 * 3600);
+        let old: Vec<PathBuf> = Tier::ALL
+            .iter()
+            .map(|t| file(*t, "a.img.123-4.tmp", hours))
+            .collect();
+        let writing = file(Tier::Row, "b.img.123-5.tmp", Duration::from_secs(60));
+        let cover = file(Tier::Row, "c.img", hours);
+        sweep(&env, now);
+        assert!(old.iter().all(|p| !p.exists()), "left over: removed");
+        assert!(writing.exists(), "maybe being written: kept");
+        assert!(cover.exists(), "a cover: kept");
     }
 
     #[test]
@@ -383,7 +709,13 @@ mod tests {
         let batch = q.start().unwrap();
         let r = round(&env, &batch, |_| Fetch::Locked);
         assert!(r.found.is_empty());
-        assert!(q.finish(&batch, &r), "told to wait, then ask again");
+        assert_eq!(
+            q.finish(&batch, &r, Instant::now()),
+            Some(LOCK_WAIT),
+            "told to wait, then ask again"
+        );
+        assert!(q.start().is_none(), "not before the wait is over");
+        q.resume();
         let batch = q.start().expect("the ids are still wanted");
         assert_eq!(batch, ids(&["a", "b"]));
         let r = round(&env, &batch, |wants| {
@@ -391,7 +723,7 @@ mod tests {
             Fetch::Done
         });
         assert_eq!(r.found.len(), 2);
-        assert!(!q.finish(&batch, &r));
+        assert_eq!(q.finish(&batch, &r, Instant::now()), None);
         assert!(q.start().is_none(), "nothing is lost, nothing is left");
     }
 
@@ -403,7 +735,8 @@ mod tests {
         for _ in 0..(MAX_TRIES * 4) {
             let batch = q.start().unwrap();
             let r = round(&env, &batch, |_| Fetch::Locked);
-            q.finish(&batch, &r);
+            q.finish(&batch, &r, Instant::now());
+            q.resume();
         }
         let (_, found) = drain(&env, &mut q, |wants| {
             wants.iter().for_each(|w| put_want(&env, w));
@@ -446,7 +779,7 @@ mod tests {
     fn a_placeholder_is_not_asked_again_at_any_size() {
         let (_d, env) = env();
         let mut q = Queue::default();
-        assert_eq!(q.see(ids(&["p"])), ids(&["p"]));
+        assert_eq!(q.see(ids(&["p"]), Instant::now()), ids(&["p"]));
         put_placeholder(&env, "p");
         for tier in Tier::ALL {
             q.missing(at(&["p"], tier));
@@ -455,7 +788,7 @@ mod tests {
         assert_eq!(fetches, 0);
         assert!(found.is_empty(), "the glyph stays");
         assert!(
-            q.see(ids(&["p"])).is_empty(),
+            q.see(ids(&["p"]), Instant::now()).is_empty(),
             "and it is not looked up again"
         );
 
@@ -490,7 +823,153 @@ mod tests {
         assert_eq!(asked[0], ids(&["bad", "good"]));
         assert_eq!(asked[1], ids(&["bad"]), "what arrived is not asked again");
         assert!(found.contains_key("good"));
-        assert!(q.start().is_none(), "left to the glyph for good");
+        assert!(
+            q.start().is_none(),
+            "left to the glyph until shown again later"
+        );
+    }
+
+    /// Issue #84: the server failed a while (a long queue, a slow or unreachable server); the
+    /// covers of the rows were given up, and a queue showing them later stayed on the glyph
+    /// until the window was restarted.
+    #[test]
+    fn a_cover_given_up_is_asked_again_when_shown_after_a_while() {
+        let (_d, env) = env();
+        let mut q = Queue::default();
+        let t0 = Instant::now();
+        let row = |q: &mut Queue, at: Instant| q.ask(vec!["c1".into()], Use::SMALL, 1.0, at, false);
+        let new = row(&mut q, t0);
+        q.missing(new);
+        let (fetches, _) = drain_at(&env, &mut q, t0, |_| Fetch::Done);
+        assert_eq!(fetches as u32, MAX_TRIES, "the server errs: given up");
+
+        assert!(
+            row(&mut q, t0 + Duration::from_secs(5)).is_empty(),
+            "shown again at once: no request storm"
+        );
+        let later = t0 + RETRY_AFTER;
+        let again = row(&mut q, later);
+        assert_eq!(again, at(&["c1"], Tier::Thumb), "shown after a while");
+        assert!(row(&mut q, later).is_empty(), "asked once, not per frame");
+        q.missing(again);
+        let (fetches, found) = drain_at(&env, &mut q, later, |wants| {
+            wants.iter().for_each(|w| put_want(&env, w));
+            Fetch::Done
+        });
+        assert_eq!(fetches, 1);
+        assert!(found.contains_key("c1"), "the row gets its cover back");
+    }
+
+    /// Review of #84: the server fails two minutes, the 30 covers of the queue on screen are
+    /// given up, it comes back; the queue stays open, nobody scrolls. Asking again was left to a
+    /// view asking again, which it does only when its rows change: they stayed on the glyph.
+    #[test]
+    fn covers_given_up_on_screen_come_back_without_a_scroll() {
+        let (_d, env) = env();
+        let (mut q, mut retries, t0) = (Queue::default(), Retries::default(), Instant::now());
+        let rows: Vec<String> = (0..30).map(|i| format!("c{i}")).collect();
+        let shown = |q: &mut Queue, at: Instant| q.ask(rows.clone(), Use::SMALL, 1.0, at, true);
+        let new = shown(&mut q, t0);
+        q.missing_first(new);
+        drain_at(&env, &mut q, t0, |_| Fetch::Failed);
+        assert!(q.start().is_none(), "all given up");
+
+        let at = retries.plan(&q).expect("a timer is set");
+        assert_eq!(at, t0 + RETRY_AFTER);
+        assert_eq!(retries.plan(&q), None, "one timer, not one per round");
+        assert_eq!(retries.round(), 0);
+        assert!(retries.rang(at));
+        assert_eq!(retries.round(), 1, "the views showing covers ask again");
+        let again = shown(&mut q, at);
+        assert_eq!(again.len(), 30);
+        q.missing_first(again);
+        let (_, found) = drain_at(&env, &mut q, at, |wants| {
+            wants.iter().for_each(|w| put_want(&env, w));
+            Fetch::Done
+        });
+        assert_eq!(found.len(), 30, "every row gets its cover back");
+        assert_eq!(retries.plan(&q), None, "nothing left to wait for");
+    }
+
+    #[test]
+    fn a_cover_given_up_and_no_longer_shown_does_not_ring_again() {
+        let (_d, env) = env();
+        let (mut q, mut retries, t0) = (Queue::default(), Retries::default(), Instant::now());
+        q.missing(ids(&["gone"]));
+        drain_at(&env, &mut q, t0, |_| Fetch::Failed);
+        let t1 = t0 + Duration::from_secs(10);
+        q.missing(ids(&["later"]));
+        drain_at(&env, &mut q, t1, |_| Fetch::Failed);
+
+        let first = retries.plan(&q).unwrap();
+        assert_eq!(first, t0 + RETRY_AFTER);
+        assert!(retries.rang(first));
+        // nobody shows `gone` any more: it waits, due, for a view to ask for it
+        let second = retries.plan(&q).unwrap();
+        assert_eq!(second, t1 + RETRY_AFTER, "the next one, not `gone` again");
+        assert!(!retries.rang(first), "a timer replaced is ignored");
+        assert!(retries.rang(second));
+        assert_eq!(retries.plan(&q), None);
+        assert_eq!(retries.round(), 2);
+    }
+
+    #[test]
+    fn a_cover_given_up_again_waits_longer_each_time() {
+        let (_d, env) = env();
+        let mut q = Queue::default();
+        let mut now = Instant::now();
+        let row =
+            |q: &mut Queue, at: Instant| q.ask(vec!["bad".into()], Use::SMALL, 1.0, at, false);
+        let new = row(&mut q, now);
+        q.missing(new);
+        let mut waits = Vec::new();
+        for _ in 0..8 {
+            drain_at(&env, &mut q, now, |_| Fetch::Failed);
+            let mut wait = Duration::ZERO;
+            let again = loop {
+                wait += Duration::from_secs(30);
+                assert!(wait < Duration::from_secs(4 * 3600), "never asked again");
+                let again = row(&mut q, now + wait);
+                if !again.is_empty() {
+                    break again;
+                }
+            };
+            waits.push(wait);
+            now += wait;
+            q.missing(again);
+        }
+        assert_eq!(waits[0], RETRY_AFTER);
+        assert_eq!(waits[1], RETRY_AFTER * 2);
+        assert!(waits.windows(2).all(|w| w[0] <= w[1]), "{waits:?}");
+        assert_eq!(*waits.last().unwrap(), RETRY_MAX, "but not for ever");
+    }
+
+    /// A cover that arrives starts afresh: given up once long ago, it does not wait twice as
+    /// long the next time the server fails on it.
+    #[test]
+    fn a_cover_that_arrives_is_no_longer_given_up() {
+        let (_d, env) = env();
+        let mut q = Queue::default();
+        let t0 = Instant::now();
+        let row = |q: &mut Queue, at: Instant| q.ask(vec!["c1".into()], Use::SMALL, 1.0, at, false);
+        let new = row(&mut q, t0);
+        q.missing(new);
+        drain_at(&env, &mut q, t0, |_| Fetch::Done);
+        let t1 = t0 + RETRY_AFTER;
+        let again = row(&mut q, t1);
+        q.missing(again);
+        let (_, found) = drain_at(&env, &mut q, t1, |wants| {
+            wants.iter().for_each(|w| put_want(&env, w));
+            Fetch::Done
+        });
+        assert!(found.contains_key("c1"));
+        assert!(q.given_up.is_empty() && q.retry_at.is_empty());
+
+        // the file goes (the cache was cleared) and the server fails on it again
+        std::fs::remove_file(cover::thumb_path(&env, "c1")).unwrap();
+        q.missing(at(&["c1"], Tier::Thumb));
+        drain_at(&env, &mut q, t1, |_| Fetch::Done);
+        assert_eq!(q.retry_at[&Want::new("c1", Tier::Thumb)], t1 + RETRY_AFTER);
     }
 
     #[test]
@@ -514,7 +993,7 @@ mod tests {
             wants.iter().for_each(|w| put_want(&env, w));
             Fetch::Done
         });
-        q.finish(&first, &r);
+        q.finish(&first, &r, Instant::now());
         assert_eq!(
             q.start().unwrap(),
             ids(&["b"]),
@@ -539,8 +1018,11 @@ mod tests {
     #[test]
     fn an_id_asked_twice_is_queued_once() {
         let mut q = Queue::default();
-        assert_eq!(q.see(ids(&["a", "b", "a"])), ids(&["a", "b"]));
-        assert!(q.see(ids(&["b"])).is_empty());
+        assert_eq!(
+            q.see(ids(&["a", "b", "a"]), Instant::now()),
+            ids(&["a", "b"])
+        );
+        assert!(q.see(ids(&["b"]), Instant::now()).is_empty());
         q.missing(ids(&["a", "a"]));
         assert_eq!(q.start().unwrap(), ids(&["a"]));
     }
@@ -548,9 +1030,9 @@ mod tests {
     #[test]
     fn the_same_cover_asked_at_another_tier_is_a_new_ask() {
         let mut q = Queue::default();
-        assert_eq!(q.see(ids(&["a"])).len(), 1);
+        assert_eq!(q.see(ids(&["a"]), Instant::now()).len(), 1);
         assert_eq!(
-            q.see(at(&["a"], Tier::Row)),
+            q.see(at(&["a"], Tier::Row), Instant::now()),
             at(&["a"], Tier::Row),
             "a larger size is not the same cover to fetch"
         );
@@ -676,22 +1158,29 @@ mod tests {
         let mut q = Queue::default();
         let ids = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert_eq!(
-            q.ask(ids(&["a", "b"]), Use::TILE, 1.0),
+            q.ask(ids(&["a", "b"]), Use::TILE, 1.0, Instant::now(), false),
             at(&["a", "b"], Tier::Row)
         );
-        q.ask(ids(&["s"]), Use::SMALL, 1.0);
-        assert!(q.ask(ids(&["a"]), Use::TILE, 1.0).is_empty(), "once");
-        assert!(q.ask_again(1.0).is_empty(), "same scale, nothing new");
-        let mut again = q.ask_again(2.0);
+        q.ask(ids(&["s"]), Use::SMALL, 1.0, Instant::now(), false);
+        assert!(
+            q.ask(ids(&["a"]), Use::TILE, 1.0, Instant::now(), false)
+                .is_empty(),
+            "once"
+        );
+        assert!(
+            q.ask_again(1.0, Instant::now()).is_empty(),
+            "same scale, nothing new"
+        );
+        let mut again = q.ask_again(2.0, Instant::now());
         again.sort_by_key(|w| w.id.clone());
         assert_eq!(
             again,
             at(&["a", "b"], Tier::Large),
             "the tiles need more pixels; the small one is still a thumbnail"
         );
-        assert!(q.ask_again(2.0).is_empty(), "and only once");
+        assert!(q.ask_again(2.0, Instant::now()).is_empty(), "and only once");
         assert_eq!(
-            q.ask_again(1.0).len(),
+            q.ask_again(1.0, Instant::now()).len(),
             0,
             "back on the first screen: seen already"
         );
@@ -700,11 +1189,23 @@ mod tests {
     #[test]
     fn only_what_was_seen_is_asked_again_and_a_resize_does_not_grow_it() {
         let mut q = Queue::default();
-        q.ask(vec!["seen".to_string()], Use::TILE, 1.0);
-        assert_eq!(q.ask_again(2.0), at(&["seen"], Tier::Large));
+        q.ask(
+            vec!["seen".to_string()],
+            Use::TILE,
+            1.0,
+            Instant::now(),
+            false,
+        );
+        assert_eq!(q.ask_again(2.0, Instant::now()), at(&["seen"], Tier::Large));
         // a window being resized draws its grid at a different side at every step
         for side in 160..260 {
-            q.ask(vec!["seen".to_string()], Use::of(side as f32), 1.0);
+            q.ask(
+                vec!["seen".to_string()],
+                Use::of(side as f32),
+                1.0,
+                Instant::now(),
+                false,
+            );
         }
         assert_eq!(q.asked.len(), 1);
     }
@@ -730,6 +1231,41 @@ mod tests {
         q.missing(at(&["old"], Tier::Row));
         q.missing_first(at(&["new"], Tier::Row));
         assert_eq!(q.start().unwrap(), at(&["new", "old"], Tier::Row));
+    }
+
+    /// Issue #84: a long queue left a thousand covers waiting; a short queue played next showed
+    /// some of them, which waited behind all the rest (and behind every grid asked since).
+    #[test]
+    fn a_cover_already_waiting_jumps_ahead_when_it_shows() {
+        let (mut q, now) = (Queue::default(), Instant::now());
+        let long: Vec<String> = (0..1000).map(|i| format!("t{i}")).collect();
+        let new = q.ask(long, Use::SMALL, 1.0, now, false);
+        q.missing(new);
+        let shown = vec!["t900".to_string(), "t950".to_string()];
+        assert!(
+            q.ask(shown, Use::SMALL, 1.0, now, true).is_empty(),
+            "looked up already"
+        );
+        let batch = q.start().unwrap();
+        assert_eq!(batch[..2], at(&["t900", "t950"], Tier::Thumb));
+        assert_eq!(batch[2], Want::new("t0", Tier::Thumb), "the rest follows");
+    }
+
+    /// Review of #84: the queue panel asks for the covers of its rows on screen at every frame
+    /// that changes them; asking for those already ahead rebuilt the whole waiting list (a
+    /// thousand covers cloned, twice a frame, while hovering).
+    #[test]
+    fn an_ask_for_covers_already_ahead_leaves_the_waiting_list_as_it_is() {
+        let (mut q, now) = (Queue::default(), Instant::now());
+        let long: Vec<String> = (0..1000).map(|i| format!("t{i}")).collect();
+        let new = q.ask(long, Use::SMALL, 1.0, now, false);
+        q.missing(new);
+        let shown = || vec!["t900".to_string(), "t950".to_string()];
+        q.ask(shown(), Use::SMALL, 1.0, now, true);
+        let (list, order) = (q.pending.as_ptr(), q.pending.clone());
+        q.ask(shown(), Use::SMALL, 1.0, now, true);
+        assert_eq!(q.pending, order, "nothing moves");
+        assert_eq!(q.pending.as_ptr(), list, "nothing is rebuilt");
     }
 
     #[test]

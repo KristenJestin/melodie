@@ -74,7 +74,7 @@ impl Waves {
             None => false,
             // nothing was done: the tracks keep their tries
             Some(Fetch::Locked) => true,
-            Some(Fetch::Done | Fetch::Failed) => {
+            Some(Fetch::Done | Fetch::Failed | Fetch::Stopped) => {
                 for id in round.missing {
                     *self.tries.entry(id).or_default() += 1;
                 }

@@ -3,13 +3,13 @@
 //! views are told when a file lands. The window never talks to the server.
 
 use gpui_kit::*;
-use melodie_core::cover::LOCKED_EXIT;
 use melodie_core::cover::{Disk, Want};
 use melodie_core::env::Env;
-use melodie_desktop::covers::{self, FADE_KEEP, Fetch, Files, LOCK_WAIT, Queue, Use, resolve};
+use melodie_desktop::covers::{
+    self, FADE_KEEP, Fetch, Files, Queue, ROUND_LIMIT, Retries, Use, resolve,
+};
 use melodie_desktop::launch;
 use std::collections::HashMap;
-use std::io::Write as _;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -20,6 +20,9 @@ pub struct CoverCache {
     pub files: Arc<Files>,
     /// The screen's scale factor: a cover is asked at the pixels it is drawn with.
     scale: f32,
+    retries: Retries,
+    /// The temporary files left by a stopped fetch are removed before the first round.
+    swept: bool,
 }
 
 impl CoverCache {
@@ -29,11 +32,19 @@ impl CoverCache {
             queue: Queue::default(),
             files: Arc::default(),
             scale,
+            retries: Retries::default(),
+            swept: false,
         }
     }
 
     pub fn scale(&self) -> f32 {
         self.scale
+    }
+
+    /// Grows when covers given up may be asked again: a view that asks for the covers it shows
+    /// only when they change takes it as a change (see [`Retries`]).
+    pub fn retry_round(&self) -> u64 {
+        self.retries.round()
     }
 
     /// The window moved to a screen of another scale factor: what was asked is asked again at
@@ -43,13 +54,13 @@ impl CoverCache {
             return;
         }
         self.scale = scale;
-        let new = self.queue.ask_again(scale);
+        let new = self.queue.ask_again(scale, Instant::now());
         self.look_up(new, false, cx);
     }
 
-    /// Looks up the covers not asked before; those with no file as large as `usage` draws them
-    /// are fetched, a few at a time, until they are on disk, are the server's default image or
-    /// have failed for good. With `first`, the missing ones go before those already waiting:
+    /// Looks up the covers not asked before, and those given up whose wait is over; those with
+    /// no file as large as `usage` draws them are fetched, a few at a time, until they are on
+    /// disk, are the server's default image or have failed a few times in a row. With `first`, the missing ones go before those already waiting:
     /// what is on screen does not wait for a library.
     pub fn want(
         &mut self,
@@ -58,7 +69,13 @@ impl CoverCache {
         first: bool,
         cx: &mut Context<Self>,
     ) {
-        let new = self.queue.ask(ids.into_iter().collect(), usage, self.scale);
+        let new = self.queue.ask(
+            ids.into_iter().collect(),
+            usage,
+            self.scale,
+            Instant::now(),
+            first,
+        );
         self.look_up(new, first, cx);
     }
 
@@ -84,29 +101,56 @@ impl CoverCache {
     }
 
     /// Starts a round if none runs; the next one follows when it is done (after a pause when
-    /// another `cover-fetch` held the lock).
+    /// another `cover-fetch` held the lock, or this one had to be stopped).
     fn pump(&mut self, cx: &mut Context<Self>) {
         let Some(batch) = self.queue.start() else {
             return;
         };
         let env = self.env.clone();
+        let sweep = !std::mem::replace(&mut self.swept, true);
         let task = cx.background_spawn({
             let batch = batch.clone();
-            async move { covers::round(&env, &batch, fetch_covers) }
+            async move {
+                if sweep {
+                    covers::sweep(&env, std::time::SystemTime::now());
+                }
+                covers::round(&env, &batch, fetch_covers)
+            }
         });
         cx.spawn(async move |this, cx| {
             let round = task.await;
             let Ok(wait) = this.update(cx, |this, cx| {
-                let wait = this.queue.finish(&batch, &round);
+                let wait = this.queue.finish(&batch, &round, Instant::now());
                 this.add(round.found, cx);
+                this.plan_retry(cx);
                 wait
             }) else {
                 return;
             };
-            if wait {
-                cx.background_executor().timer(LOCK_WAIT).await;
+            if let Some(wait) = wait {
+                cx.background_executor().timer(wait).await;
             }
-            let _ = this.update(cx, |this, cx| this.pump(cx));
+            let _ = this.update(cx, |this, cx| {
+                this.queue.resume();
+                this.pump(cx)
+            });
+        })
+        .detach();
+    }
+
+    fn plan_retry(&mut self, cx: &mut Context<Self>) {
+        let Some(at) = self.retries.plan(&self.queue) else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let wait = at.saturating_duration_since(Instant::now());
+            cx.background_executor().timer(wait).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.retries.rang(at) {
+                    cx.notify();
+                    this.plan_retry(cx);
+                }
+            });
         })
         .detach();
     }
@@ -131,26 +175,9 @@ impl CoverCache {
     }
 }
 
-/// `melodie cover-fetch` with the covers on its standard input; waits for it. Blocking: run it
-/// away from the window.
+/// `melodie cover-fetch` with the covers on its standard input. Blocking: run it away from the
+/// window.
 fn fetch_covers(wants: &[Want]) -> Fetch {
     let program = launch::program(std::env::current_exe().ok().as_deref());
-    let child = std::process::Command::new(program)
-        .arg("cover-fetch")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
-    let Ok(mut child) = child else {
-        return Fetch::Failed;
-    };
-    if let Some(mut stdin) = child.stdin.take() {
-        let lines: Vec<String> = wants.iter().map(Want::line).collect();
-        let _ = stdin.write_all(lines.join("\n").as_bytes());
-    }
-    match child.wait().map(|s| s.code()) {
-        Ok(Some(0)) => Fetch::Done,
-        Ok(Some(code)) if code == i32::from(LOCKED_EXIT) => Fetch::Locked,
-        _ => Fetch::Failed,
-    }
+    covers::fetch(&program, wants, ROUND_LIMIT)
 }
