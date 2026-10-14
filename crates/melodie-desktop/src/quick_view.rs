@@ -23,7 +23,7 @@ use melodie_desktop::find::{self, Latest};
 use melodie_desktop::keys::{self, PaletteClick};
 use melodie_desktop::launch::Job;
 use melodie_desktop::quick::{self, Do, Group, How, Item, Recent, Section, Seen};
-use melodie_desktop::theme::Palette;
+use melodie_desktop::theme::{Palette, Settings};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -94,19 +94,20 @@ impl QuickSearch {
                 }
                 step = Some(c.nav.step);
                 if let Some(seen) = Seen::of_place(c.here()) {
-                    this.recent.note(seen);
+                    this.note(seen);
                 }
             }),
             // and what the user starts playing: not what the daemon goes on to play by itself
             cx.subscribe(&shared, |this, _, Started(seen): &Started, _| {
-                this.recent.note(seen.clone())
+                this.note(seen.clone())
             }),
         ];
         let field = cx.new(|_| Field {
             input: input.clone(),
             shared: shared.clone(),
         });
-        Self {
+        let saved = Recent::from_saved(Settings::load(&env).recent);
+        let mut this = Self {
             shared,
             catalog,
             env,
@@ -119,11 +120,54 @@ impl QuickSearch {
             chosen: 0,
             genres: None,
             openings: Latest::default(),
-            recent: Recent::default(),
+            recent: saved,
             scroll: ScrollHandle::new(),
             before: None,
             _subs: subs,
+        };
+        this.drop_what_left(cx);
+        this
+    }
+
+    /// Remembers it, and keeps the list for the next launch when it changed.
+    fn note(&mut self, seen: Seen) {
+        if self.recent.note(seen) {
+            self.keep();
         }
+    }
+
+    /// Writes the list with the window's other state. Silent when it fails: the list is a
+    /// convenience, and the window would have nothing to do about it.
+    fn keep(&self) {
+        let list = self.recent.list().to_vec();
+        let _ = Settings::update(&self.env, |s| s.recent = list);
+    }
+
+    /// What the last launch left may have left the local copy since: read away from the window,
+    /// then dropped from the list (and from the file). Only what is named is dropped, so what
+    /// was noted meanwhile stays.
+    fn drop_what_left(&mut self, cx: &mut Context<Self>) {
+        let saved = self.recent.list().to_vec();
+        if saved.is_empty() {
+            return;
+        }
+        let env = self.env.clone();
+        let task = cx.background_spawn(async move {
+            let kept = quick::existing(&env, &saved);
+            saved
+                .into_iter()
+                .filter(|s| !kept.contains(s))
+                .collect::<Vec<_>>()
+        });
+        cx.spawn(async move |this, cx| {
+            let gone = task.await;
+            let _ = this.update(cx, |this, _| {
+                if this.recent.forget(&gone) {
+                    this.keep()
+                }
+            });
+        })
+        .detach();
     }
 
     pub fn has_focus(&self, window: &Window, cx: &App) -> bool {
