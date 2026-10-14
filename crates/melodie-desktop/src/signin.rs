@@ -747,7 +747,7 @@ pub fn settings_section(account: &Entity<Account>, pal: Palette, cx: &App) -> im
     } else if a.syncing {
         "Syncing…".to_string()
     } else if a.incomplete {
-        "The copy of the library is not finished: Sync now goes on with it".to_string()
+        "Copy not finished".to_string()
     } else {
         account::synced_text(a.synced_at, now_secs())
     };
