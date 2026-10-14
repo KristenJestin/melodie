@@ -237,7 +237,10 @@ Screenshots and a recording of the animations, made with invented data, are in
   plays a genre's mix; Shift+Enter adds to the queue; Ctrl+Enter opens a track's album, or plays
   an album, an artist or a playlist. The keys of the row chosen are shown at the bottom. Before
   anything is typed it lists what was opened (album, artist and playlist pages) or played (tracks,
-  genre mixes) in the window since it started, then the albums played last according to the local copy.
+  genre mixes) in the window, the last eight, kept between two launches, then the albums played
+  last according to the local copy; what the local copy no longer holds is dropped when the
+  window starts. Closed and opened again, it shows the last text typed, selected (typing replaces
+  it, Enter runs the same search again); Escape closes it, whatever the field holds.
 - **Keys**: Ctrl+F, or / when not typing, opens the search and puts the cursor in its field;
   Space plays or pauses (in the field, it is a space); `q` shows or hides the queue (in the field,
   it is a letter); Escape closes a dialog, else the queue laid over a narrow window or the
@@ -492,7 +495,7 @@ result), `--size N` (50 by default).
 - `~/.cache/melodie/waveforms/<id>.wave`: the waveforms of the window's position bar (404 bytes
   each).
 - `~/.cache/melodie/auth-refused`: marker of the last refusal by the server (see below).
-- `~/.local/state/melodie/window.toml`: the window's theme choice, and whether the queue is shown.
+- `~/.local/state/melodie/window.toml`: the window's theme choice, whether the queue is shown, and the palette's recents.
 - `~/.local/state/melodie/state.toml`: remembered volume; `melodie.log`: the daemon's log;
   `sync.log`: the log of background synchronisations. `XDG_STATE_HOME` honoured.
 - `$XDG_RUNTIME_DIR/melodie/melodie.sock`, `melodie.lock`: the daemon's socket and lock;
