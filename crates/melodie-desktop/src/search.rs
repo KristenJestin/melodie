@@ -462,7 +462,7 @@ fn filter_chips(here: &Place, pal: Palette, catalog: &Entity<Catalog>) -> Div {
                 .hover(|s| s.bg(Hsla { a: 0.08, ..pal.fg }))
                 // the window's root takes the focus from any press that reaches it
                 .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
-                .on_click(move |_, _, cx| catalog.update(cx, |c, cx| c.go(place.clone(), cx)))
+                .on_click(move |_, _, cx| catalog.update(cx, |c, cx| c.filter(place.clone(), cx)))
                 .child(label)
         }))
 }

@@ -12,6 +12,7 @@ use melodie_core::db;
 use melodie_core::env::Env;
 use melodie_desktop::browse::Place;
 use melodie_desktop::launch::Kind;
+use melodie_desktop::table::{Col, ColSort};
 use serde_json::json;
 
 /// The search page and the catalog it follows, as `main` builds them, under a root that takes
@@ -319,4 +320,32 @@ fn pressing_the_back_button_keeps_the_cursor_in_the_field() {
     cx.run_until_parked();
     assert_eq!(shown(&page, cx).0, Place::Search);
     assert!(field_has_focus(&page, cx));
+}
+
+#[test]
+fn the_all_chip_goes_back_and_keeps_what_all_had() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = TestAppContext::single();
+    let (page, cx) = rain(dir.path(), &mut app);
+    let catalog = page.read_with(cx, |p, _| p.catalog.clone());
+    let by_title = Some(ColSort {
+        col: Col::Title,
+        descending: true,
+    });
+    catalog.update(cx, |c, _| c.sorts.set(Place::Search, by_title));
+
+    click("search-filter-Albums", cx);
+    click("search-filter-All", cx);
+    let (here, text, _) = shown(&page, cx);
+    assert_eq!((here, text.as_str()), (Place::Search, "rain"));
+    assert_eq!(
+        catalog.read_with(cx, |c, _| c.sorts.get(&Place::Search)),
+        by_title,
+        "the sort of the tracks of All was dropped"
+    );
+    assert_eq!(
+        catalog.read_with(cx, |c, _| c.nav.ahead().to_vec()),
+        [Place::Found(Kind::Album)],
+        "the way forward was dropped"
+    );
 }
