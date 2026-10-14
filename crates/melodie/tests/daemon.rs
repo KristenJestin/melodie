@@ -2868,3 +2868,67 @@ fn a_start_past_the_end_changes_nothing_on_a_live_queue() {
     assert_eq!(sb.queue_list(), before);
     assert_eq!(sb.now()["id"], "t1");
 }
+
+/// The ids of the mix `args` would play, computed alone with `--json` (same seed, same mix).
+fn mix_ids(sb: &Sandbox, args: &[&str]) -> Vec<String> {
+    let list: Value = serde_json::from_str(&sb.ok(&[args, &["--json"]].concat())).unwrap();
+    list.as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            let c = e["action"]["command"].as_str().unwrap();
+            c.rsplit(' ').next().unwrap().to_string()
+        })
+        .collect()
+}
+
+#[test]
+fn a_mix_played_next_goes_after_the_current_track_without_interrupting_it() {
+    let sb = Sandbox::new(true);
+    long_album_copied(&sb);
+    let mix = ["mix", "me", "--seed", "1", "--size", "3"];
+    let picked = mix_ids(&sb, &mix);
+    assert_eq!(picked.len(), 3);
+    sb.ok(&["play", "track", "--", "t1", "t2"]);
+    wait_until(5, "t1 playing", || sb.now()["state"] == "playing");
+    let out = sb.ok(&[&mix[..], &["--next"]].concat());
+    assert!(out.contains("3 morceaux"), "{out}");
+    let mut expected = ids_of(&["t1"]);
+    expected.extend(picked);
+    expected.push("t2".into());
+    assert_eq!(queue_ids(&sb), expected);
+    let now = sb.now();
+    assert_eq!(
+        (now["id"].as_str(), now["state"].as_str()),
+        (Some("t1"), Some("playing"))
+    );
+    assert_eq!(sb.queue_list()["current"], 0);
+}
+
+#[test]
+fn a_mix_added_to_the_queue_goes_at_its_end() {
+    let sb = Sandbox::new(true);
+    long_album_copied(&sb);
+    let mix = ["mix", "me", "--seed", "2", "--size", "2"];
+    let picked = mix_ids(&sb, &mix);
+    sb.ok(&["play", "track", "--", "t1", "t2"]);
+    wait_until(5, "t1 playing", || sb.now()["state"] == "playing");
+    sb.ok(&[&mix[..], &["--queue"]].concat());
+    let mut expected = ids_of(&["t1", "t2"]);
+    expected.extend(picked);
+    assert_eq!(queue_ids(&sb), expected);
+    assert_eq!(sb.now()["id"], "t1");
+}
+
+#[test]
+fn a_mix_played_next_with_nothing_playing_plays() {
+    let sb = Sandbox::new(true);
+    long_album_copied(&sb);
+    let mix = ["mix", "me", "--seed", "3", "--size", "3"];
+    let picked = mix_ids(&sb, &mix);
+    sb.ok(&[&mix[..], &["--next"]].concat());
+    assert_eq!(queue_ids(&sb), picked);
+    wait_until(5, "the mix playing", || {
+        sb.now()["id"] == picked[0].as_str()
+    });
+}

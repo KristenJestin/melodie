@@ -286,8 +286,7 @@ pub fn actions(t: &Target) -> Vec<Action> {
                 rows.extend([Rename, Delete]);
             }
         }
-        // `melodie mix` plays or adds at the end: there is no "next" for a mix
-        Item::Mix(_) => rows.extend([Play, Last]),
+        Item::Mix(_) => rows.extend([Play, Next, Last]),
         Item::Tracks { .. } => {
             rows.extend([Play, Next, Last, AddToPlaylist]);
             if matches!(t.spot, Spot::Playlist { .. }) {
@@ -400,7 +399,10 @@ pub fn effect(action: Action, t: &Target) -> Option<Effect> {
     if let Item::Mix(m) = &t.item {
         return match action {
             Play => Some(Effect::Run(m.job())),
-            Last => Some(Effect::Run(Job::QueueMix(Box::new(m.job())))),
+            Next | Last => Some(Effect::Run(Job::QueueMix {
+                mix: Box::new(m.job()),
+                next: action == Next,
+            })),
             _ => None,
         };
     }
@@ -975,8 +977,7 @@ mod tests {
     }
 
     #[test]
-    fn a_genre_or_a_mix_card_plays_or_goes_at_the_end_of_the_queue() {
-        // `melodie mix` adds at the end only: no "play next"
+    fn a_genre_or_a_mix_card_plays_next_or_goes_at_the_end_of_the_queue() {
         for m in [
             Mix::Mine,
             Mix::Rediscover,
@@ -985,7 +986,10 @@ mod tests {
                 tracks: 40,
             },
         ] {
-            assert_eq!(actions(&target(Item::Mix(m), Spot::Library)), [Play, Last]);
+            assert_eq!(
+                actions(&target(Item::Mix(m), Spot::Library)),
+                [Play, Next, Last]
+            );
         }
     }
 
@@ -1030,9 +1034,11 @@ mod tests {
             Spot::Library,
         );
         assert_eq!(run(Play, &genre), ["mix", "genre", "--", "Jazz"]);
+        assert_eq!(run(Next, &genre), ["mix", "--next", "genre", "--", "Jazz"]);
         assert_eq!(run(Last, &genre), ["mix", "--queue", "genre", "--", "Jazz"]);
         let mine = target(Item::Mix(Mix::Mine), Spot::Library);
         assert_eq!(run(Play, &mine), ["mix", "me"]);
+        assert_eq!(run(Next, &mine), ["mix", "--next", "me"]);
         assert_eq!(run(Last, &mine), ["mix", "--queue", "me"]);
     }
 

@@ -23,7 +23,8 @@ pub enum How {
     Main,
     /// Adds it to the queue.
     Queue,
-    /// What the click does not: a track's album opens, an album, an artist or a playlist plays.
+    /// What the click does not: a track's album opens, an album, an artist or a playlist plays,
+    /// a genre's mix goes next.
     Other,
 }
 
@@ -104,13 +105,21 @@ pub enum Do {
     Hit(Action),
     /// The genre's mix.
     Mix,
+    /// The genre's mix, after the current track (`next`) or at the end of the queue.
+    QueueMix { next: bool },
 }
 
-/// What `how` does to the row; `None` when it does nothing to it (a track with no album, a
-/// genre added to the queue).
+/// What `how` does to the row; `None` when it does nothing to it (a track with no album). A
+/// genre has no page: what a click does not is to play its mix next.
 pub fn what(item: &Item, how: How) -> Option<Do> {
     let hit = match item {
-        Item::Genre(_) => return (how == How::Main).then_some(Do::Mix),
+        Item::Genre(_) => {
+            return Some(match how {
+                How::Main => Do::Mix,
+                How::Queue => Do::QueueMix { next: false },
+                How::Other => Do::QueueMix { next: true },
+            });
+        }
         Item::Found(hit) => hit,
     };
     let track = hit.kind == search::Kind::Track;
@@ -139,6 +148,8 @@ pub fn hints(item: Option<&Item>) -> Vec<(&'static str, &'static str)> {
             let does = match what(item, how) {
                 None => continue,
                 Some(Do::Mix) => "Play mix",
+                Some(Do::QueueMix { next: true }) => "Play next",
+                Some(Do::QueueMix { next: false }) => "Add to queue",
                 Some(Do::Hit(Action::Last)) => "Add to queue",
                 Some(Do::Hit(Action::Open)) if how == How::Other => "Open album",
                 Some(Do::Hit(Action::Open)) => "Open",
@@ -506,8 +517,14 @@ mod tests {
                 "{kind:?}"
             );
         }
-        assert_eq!(what(&genre("Rock"), How::Queue), None);
-        assert_eq!(what(&genre("Rock"), How::Other), None);
+        assert_eq!(
+            what(&genre("Rock"), How::Queue),
+            Some(Do::QueueMix { next: false })
+        );
+        assert_eq!(
+            what(&genre("Rock"), How::Other),
+            Some(Do::QueueMix { next: true })
+        );
     }
 
     #[test]
@@ -545,7 +562,13 @@ mod tests {
         );
         assert_eq!(
             hints(Some(&genre("Rock"))),
-            [("↑↓", "Move"), ("Enter", "Play mix"), ("Esc", "Close")]
+            [
+                ("↑↓", "Move"),
+                ("Enter", "Play mix"),
+                ("Shift+Enter", "Add to queue"),
+                ("Ctrl+Enter", "Play next"),
+                ("Esc", "Close")
+            ]
         );
         assert_eq!(hints(None), [("Esc", "Close")]);
     }

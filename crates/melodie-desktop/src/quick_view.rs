@@ -371,6 +371,10 @@ impl QuickSearch {
             (Do::Mix, Item::Genre(g)) => self
                 .catalog
                 .update(cx, |c, cx| c.run(Job::MixGenre { name: g.name }, cx)),
+            (Do::QueueMix { next }, Item::Genre(g)) => self.catalog.update(cx, |c, cx| {
+                let mix = Box::new(Job::MixGenre { name: g.name });
+                c.run(Job::QueueMix { mix, next }, cx)
+            }),
             _ => {}
         }
     }

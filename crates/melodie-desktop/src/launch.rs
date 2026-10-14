@@ -109,8 +109,12 @@ pub enum Job {
     MixGenre {
         name: String,
     },
-    /// A mix (`PlayMix`, `Rediscover` or `MixGenre`) added at the end of the queue.
-    QueueMix(Box<Job>),
+    /// A mix (`PlayMix`, `Rediscover` or `MixGenre`) added after the current track (`next`) or
+    /// at the end of the queue.
+    QueueMix {
+        mix: Box<Job>,
+        next: bool,
+    },
 }
 
 /// What is added to a playlist.
@@ -154,7 +158,7 @@ impl Job {
             | Self::Mix { .. }
             | Self::CreatePlaylist { .. }
             | Self::MixGenre { .. }
-            | Self::QueueMix(_) => None,
+            | Self::QueueMix { .. } => None,
         }
     }
 
@@ -264,10 +268,10 @@ impl Job {
                 a.push(name.clone());
                 a
             }
-            // `--queue` belongs to `mix`: before the dashes that end the options
-            Self::QueueMix(mix) => {
+            // `--next` and `--queue` belong to `mix`: before the dashes that end the options
+            Self::QueueMix { mix, next } => {
                 let mut a = mix.args();
-                a.insert(1, "--queue".into());
+                a.insert(1, if *next { "--next" } else { "--queue" }.into());
                 a
             }
             Self::Star { kind, id, starred } => vec![
@@ -295,7 +299,20 @@ impl Job {
                 | Self::QueueTracks { .. }
                 | Self::Mix { .. }
                 | Self::MixGenre { .. }
-                | Self::QueueMix(_)
+                | Self::QueueMix { .. }
+        )
+    }
+
+    /// It replaces the queue: what waits to change the queue before it would be wiped anyway.
+    pub fn replaces(&self) -> bool {
+        matches!(
+            self,
+            Self::PlayMix
+                | Self::Rediscover
+                | Self::Play { .. }
+                | Self::PlayTracks { .. }
+                | Self::Mix { .. }
+                | Self::MixGenre { .. }
         )
     }
 
@@ -383,6 +400,13 @@ impl<T> Lanes<T> {
         }
     }
 
+    /// Forgets the jobs waiting on `lane`; the one running, if any, goes on.
+    pub fn drop_waiting(&mut self, lane: &str) {
+        if let Some(behind) = self.waiting.get_mut(lane) {
+            behind.clear();
+        }
+    }
+
     /// The job of `playlist` that ran is done: the next one to start, if any.
     pub fn done(&mut self, playlist: &str) -> Option<T> {
         let next = self.waiting.get_mut(playlist)?.pop_front();
@@ -422,6 +446,70 @@ mod tests {
         assert_eq!(lanes.done("p1"), None);
         assert_eq!(lanes.start("p1", "again"), Some("again"), "nothing runs");
         assert_eq!(lanes.done("p2"), None);
+    }
+
+    #[test]
+    fn the_jobs_waiting_in_a_lane_can_be_dropped_and_the_one_running_stays() {
+        let mut lanes = Lanes::default();
+        assert_eq!(lanes.start("player", "first"), Some("first"));
+        assert_eq!(lanes.start("player", "second"), None);
+        assert_eq!(lanes.start("other", "alone"), Some("alone"));
+        lanes.drop_waiting("player");
+        assert_eq!(lanes.start("player", "third"), None, "first still runs");
+        assert_eq!(lanes.done("player"), Some("third"));
+        assert_eq!(lanes.done("player"), None);
+        // nothing runs: nothing to drop, and the next one starts at once
+        lanes.drop_waiting("player");
+        assert_eq!(lanes.start("player", "fourth"), Some("fourth"));
+    }
+
+    #[test]
+    fn the_jobs_that_replace_the_queue_are_told_apart_from_those_that_add_to_it() {
+        let id = || "x".to_string();
+        for job in [
+            Job::PlayMix,
+            Job::Rediscover,
+            Job::Play {
+                kind: Kind::Album,
+                id: id(),
+                shuffle: false,
+            },
+            Job::PlayTracks {
+                ids: vec![id()],
+                from: 0,
+            },
+            Job::Mix {
+                kind: Kind::Artist,
+                id: id(),
+            },
+            Job::MixGenre { name: id() },
+        ] {
+            assert!(job.replaces(), "{job:?}");
+            assert!(job.plays(), "{job:?}");
+        }
+        for job in [
+            Job::Queue {
+                kind: Kind::Track,
+                id: id(),
+                next: true,
+            },
+            Job::QueueTracks {
+                ids: vec![id()],
+                next: false,
+            },
+            Job::QueueMix {
+                mix: Box::new(Job::PlayMix),
+                next: true,
+            },
+            Job::Star {
+                kind: Kind::Track,
+                id: id(),
+                starred: true,
+            },
+            Job::DeletePlaylist { id: id() },
+        ] {
+            assert!(!job.replaces(), "{job:?}");
+        }
     }
 
     #[test]
@@ -502,20 +590,33 @@ mod tests {
     }
 
     #[test]
-    fn a_mix_goes_at_the_end_of_the_queue_with_the_flag_before_the_dashes() {
-        let genre = Job::QueueMix(Box::new(Job::MixGenre {
+    fn a_mix_goes_next_or_at_the_end_of_the_queue_with_the_flag_before_the_dashes() {
+        let queue = |mix: Job, next| Job::QueueMix {
+            mix: Box::new(mix),
+            next,
+        };
+        let genre = || Job::MixGenre {
             name: "-Hip Hop".into(),
-        }));
-        assert_eq!(genre.args(), ["mix", "--queue", "genre", "--", "-Hip Hop"]);
+        };
         assert_eq!(
-            Job::QueueMix(Box::new(Job::PlayMix)).args(),
-            ["mix", "--queue", "me"]
+            queue(genre(), false).args(),
+            ["mix", "--queue", "genre", "--", "-Hip Hop"]
         );
         assert_eq!(
-            Job::QueueMix(Box::new(Job::Rediscover)).args(),
+            queue(genre(), true).args(),
+            ["mix", "--next", "genre", "--", "-Hip Hop"]
+        );
+        assert_eq!(queue(Job::PlayMix, false).args(), ["mix", "--queue", "me"]);
+        assert_eq!(queue(Job::PlayMix, true).args(), ["mix", "--next", "me"]);
+        assert_eq!(
+            queue(Job::Rediscover, false).args(),
             ["mix", "--queue", "rediscover"]
         );
-        assert_eq!(Job::QueueMix(Box::new(Job::PlayMix)).playlist(), None);
+        assert_eq!(
+            queue(Job::Rediscover, true).args(),
+            ["mix", "--next", "rediscover"]
+        );
+        assert_eq!(queue(Job::PlayMix, true).playlist(), None);
     }
 
     #[test]
