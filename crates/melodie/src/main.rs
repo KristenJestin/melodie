@@ -321,6 +321,9 @@ enum Cmd {
         /// Adds to the queue instead of replacing it
         #[arg(long, global = true)]
         queue: bool,
+        /// Adds right after the current track instead of replacing the queue
+        #[arg(long, global = true)]
+        next: bool,
         /// Prints the list without playing anything
         #[arg(long, global = true)]
         print: bool,
@@ -475,6 +478,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Cmd::Mix {
             what,
             queue,
+            next,
             print,
             json,
             seed,
@@ -493,7 +497,8 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 }
             };
             let o = mixcmd::Opts {
-                queue,
+                queue: queue || next,
+                next,
                 print,
                 json,
                 seed,

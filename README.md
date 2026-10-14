@@ -478,7 +478,8 @@ Computed on `library.db`, without network and without radio, in about twenty mil
 call per track) and sends them to the daemon like `play`; the stream address is still built by the
 daemon.
 
-Options of `mix`: `--queue` (appends to the queue), `--print` (prints the list without playing),
+Options of `mix`: `--queue` (appends to the queue), `--next` (puts the tracks right after the
+current one without stopping it; with nothing playing, plays them), `--print` (prints the list without playing),
 `--json` (track entries in the launcher format, without playing), `--seed N` (reproducible
 result), `--size N` (50 by default).
 
