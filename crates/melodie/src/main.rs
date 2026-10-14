@@ -28,7 +28,7 @@ use std::process::ExitCode;
 #[command(
     name = "melodie",
     bin_name = "melodie",
-    version,
+    version = option_env!("MELODIE_VERSION").unwrap_or("0.0.0-dev"),
     about = "Navidrome client: login, local copy, search"
 )]
 struct Cli {
@@ -281,6 +281,8 @@ enum Cmd {
     Prev,
     /// Stops playback and empties the queue
     Stop,
+    /// Quits the player (never starts it)
+    Quit,
     /// Volume: without an argument shows it; `<0-100>`, `+5` or `-5` sets it (remembered)
     Volume {
         #[arg(allow_hyphen_values = true)]
@@ -459,6 +461,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Cmd::Next => Ok(ctl::control(proto::Request::Next)),
         Cmd::Prev => Ok(ctl::control(proto::Request::Prev)),
         Cmd::Stop => Ok(ctl::control(proto::Request::Stop)),
+        Cmd::Quit => Ok(ctl::quit()),
         Cmd::Volume { change } => Ok(ctl::volume(&env, change.as_deref())),
         Cmd::Now { json } => Ok(ctl::now(json)),
         Cmd::Like { kind, id, toggle } => {

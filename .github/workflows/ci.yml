@@ -14,7 +14,11 @@ jobs:
         with:
           fetch-depth: 0
       # The first push of a branch has no `before` (forty zeros): every commit it holds is checked.
+      # Not on `main`, nor on a pull request into it (the release, `dev` merged by a merge commit):
+      # it brings commits already judged as pull requests, and GitHub squashed them with ` (#n)`
+      # added to the subject, so one of them is past 72 characters for good.
       - name: Check the Angular commit convention
+        if: github.base_ref != 'main' && github.ref != 'refs/heads/main'
         run: |
           base="${{ github.event.pull_request.base.sha || github.event.before }}"
           head="${{ github.event.pull_request.head.sha || github.sha }}"
@@ -37,12 +41,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # `dbus` provides the `dbus-daemon` the daemon test starts privately; without it the MPRIS checks are skipped.
-      # The rest is what the window (GPUI) links against: fonts, keyboard maps, Wayland and X11.
-      - run: >-
-          sudo apt-get update && sudo apt-get install -y libmpv-dev dbus
-          libfontconfig-dev libfreetype-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev
-          libx11-xcb-dev libvulkan-dev
+      # The one list of system libraries, shared with the release and beta builds.
+      - run: tools/install-build-libraries.sh
       - run: rustup component add rustfmt clippy
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
