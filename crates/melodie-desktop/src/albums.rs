@@ -15,10 +15,12 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use melodie_core::library::{Album, AlbumBy, Sort};
 use melodie_desktop::browse::{self, Place};
+use melodie_desktop::card::play_job;
 use melodie_desktop::covers::{Cover, Covers, Use};
 use melodie_desktop::launch::{Job, Kind};
 use melodie_desktop::layout;
 use melodie_desktop::menu::{Item, Spot};
+use melodie_desktop::reveal;
 use melodie_desktop::theme::Palette;
 use std::cell::Cell;
 use std::path::PathBuf;
@@ -210,6 +212,35 @@ impl RenderOnce for AlbumCell {
                     .child(artist),
             )
     }
+}
+
+/// The round play button that fades in over the cover of an artist (`id` names it; place it with
+/// `absolute`, it takes no room). It asks for what the "Play" of the right-click menu asks for.
+pub fn artist_play(
+    id: &str,
+    item: &Item,
+    diameter: f32,
+    look: reveal::Look,
+    pal: Palette,
+    catalog: &Entity<Catalog>,
+) -> Option<Div> {
+    let job = play_job(item)?;
+    let catalog = catalog.clone();
+    Some(
+        div().revealed(look, false).child(
+            IconButton::new(ElementId::Name(id.to_string().into()), IconName::Play, pal)
+                .primary()
+                .diameter(diameter)
+                .tip("Play")
+                .on_click(move |_, _, cx| {
+                    cx.stop_propagation();
+                    if cx.has_active_drag() {
+                        return;
+                    }
+                    catalog.update(cx, |c, cx| c.run(job.clone(), cx))
+                }),
+        ),
+    )
 }
 
 /// A centred line saying why a view is empty.
