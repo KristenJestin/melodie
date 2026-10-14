@@ -241,9 +241,10 @@ Screenshots and a recording of the animations, made with invented data, are in
   anything is typed it lists what was opened (album, artist and playlist pages) or played (tracks,
   genre mixes) in the window, the last eight, kept between two launches, then the albums played
   last according to the local copy; what the local copy no longer holds is dropped when the
-  window starts. Closed (Ctrl+K, or a click outside) and opened again, it shows the last text typed, selected (typing replaces
-  it, Enter runs the same search again); Escape empties a filled field (back to
-  the recents) and closes an empty one, as on the search page.
+  window starts. Closed (Escape, Ctrl+K, a click outside, a result run) and opened again, it shows the last
+  non-empty text searched, selected (typing replaces it, Enter runs the same search again);
+  Escape empties a filled field (back to the recents) and closes an empty one, as on the search
+  page, and emptying the field does not make it forget that text.
 - **Keys**: Ctrl+F, or / when not typing, opens the search and puts the cursor in its field;
   Space plays or pauses (in the field, it is a space); `q` shows or hides the queue (in the field,
   it is a letter); Escape closes a dialog, else the queue laid over a narrow window or the

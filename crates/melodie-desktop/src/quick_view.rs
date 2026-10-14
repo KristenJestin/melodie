@@ -50,6 +50,9 @@ pub struct QuickSearch {
     field: Entity<Field>,
     pub open: bool,
     text: String,
+    /// The last text searched that was not empty: Escape empties the field but not this, so the
+    /// next opening still finds it.
+    last: String,
     latest: Latest,
     shown: Shown,
     /// The row chosen, counted across the groups.
@@ -88,6 +91,9 @@ impl QuickSearch {
             cx.subscribe(&input, |this, input, ev: &InputEvent, cx| {
                 if matches!(ev, InputEvent::Change) {
                     this.text = input.read(cx).value().to_string();
+                    if !this.text.trim().is_empty() {
+                        this.last = this.text.clone();
+                    }
                     this.ask(None, cx)
                 }
             }),
@@ -125,6 +131,7 @@ impl QuickSearch {
             field,
             open: false,
             text: String::new(),
+            last: String::new(),
             latest: Latest::default(),
             shown: Shown::Rows(Arc::from([])),
             chosen: 0,
@@ -215,7 +222,7 @@ impl QuickSearch {
         }
     }
 
-    /// Opens it on the last text typed, selected so that typing replaces it and Enter runs the
+    /// Opens it on the last text searched, selected so that typing replaces it and Enter runs the
     /// same search again; on what was seen lately when there is none. What the last opening left
     /// is gone: Enter has nothing to run until this opening's own answer is in.
     fn show(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -224,6 +231,7 @@ impl QuickSearch {
         self.genres = None;
         self.shown = Shown::Rows(Arc::from([]));
         self.chosen = 0;
+        self.text = self.last.clone();
         let text = self.text.clone();
         // no change event for this one
         self.input.update(cx, |i, cx| {
@@ -241,7 +249,7 @@ impl QuickSearch {
     }
 
     /// Empties the field, as Escape does on the search page: the palette stays open on what was
-    /// seen lately.
+    /// seen lately. The last text searched is kept for the next opening.
     pub fn clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.text.clear();
         // no change event for this one
@@ -883,9 +891,38 @@ mod tests {
         assert_eq!(value, "", "the field is empty");
         assert!(empty && open, "and it stays open");
         assert_eq!(rows, 0, "the results of the text are gone");
-        // closed and opened again: the recents, not the old text
+    }
+
+    #[test]
+    fn escape_twice_does_not_make_the_palette_forget_its_last_search() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        library(&env);
+        let mut app = TestAppContext::single();
+        let (quick, cx) = palette(&env, &mut app);
         toggle(&quick, cx);
+        cx.simulate_input("low");
+        cx.run_until_parked();
+        // the first Escape empties the field, the second closes the palette
+        quick.update_in(cx, |q, window, cx| q.clear(window, cx));
+        cx.run_until_parked();
         toggle(&quick, cx);
-        assert_eq!(quick.read_with(cx, |q, cx| q.input.read(cx).value()), "");
+        assert!(!quick.read_with(cx, |q, _| q.open));
+        toggle(&quick, cx);
+        let (value, sections) = quick.read_with(cx, |q, cx| {
+            let sections = match &q.shown {
+                Shown::Rows(g) => g.iter().map(|g| g.section).collect::<Vec<_>>(),
+                _ => Vec::new(),
+            };
+            (q.input.read(cx).value(), sections)
+        });
+        assert_eq!(value, "low", "the last text searched is back");
+        assert_eq!(sections.len(), 1, "with its results");
+        assert!(!sections.contains(&Section::Recent), "not the recent list");
+        assert!(quick.read_with(cx, |q, _| q.ready()), "Enter runs it again");
+        // selected: typing replaces it
+        cx.simulate_input("ti");
+        cx.run_until_parked();
+        assert_eq!(quick.read_with(cx, |q, cx| q.input.read(cx).value()), "ti");
     }
 }
