@@ -14,7 +14,7 @@ use anyhow::{Context, Result, bail};
 use libmpv2::events::{Event as MpvRaw, PropertyData};
 use libmpv2::{Format, Mpv};
 use melodie_core::address::Address;
-use melodie_core::api::Client;
+use melodie_core::api::{Client, SecretUrl};
 use melodie_core::cover;
 use melodie_core::db;
 use melodie_core::env::Env;
@@ -350,6 +350,8 @@ struct Engine {
     last_position: Option<Instant>,
     /// Connection state: `ok`, `unreachable` or `auth-refused`.
     link: &'static str,
+    /// mpv takes `loadfile <url> insert-at <index>`, until it refuses it once.
+    insert_at: bool,
 }
 
 /// What the event stream last said, to announce only what changed.
@@ -747,7 +749,7 @@ impl Engine {
         self.queue_rev += 1;
         let base = self.queue.len();
         // mpv plays the first file it loads: `start` goes in first, and the tracks before it are
-        // moved in front of it afterwards, so the first track never starts for an instant.
+        // put in front of it afterwards, so the first track never starts for an instant.
         let mut tracks: Vec<_> = tracks.into_iter().map(Some).collect();
         let order: Vec<usize> = (start..tracks.len()).chain(0..start).collect();
         for i in order {
@@ -755,19 +757,18 @@ impl Engine {
                 continue;
             };
             let url = self.client.stream_url(&info.id);
-            let mode = if first { "replace" } else { "append" };
-            self.mpv
-                .command("loadfile", &[url.expose(), mode])
-                .map_err(|e| format!("lecture impossible : {e}"))?;
+            let pos = base + i;
+            if i < start {
+                self.load_at(&url, pos)?;
+            } else {
+                let mode = if first { "replace" } else { "append" };
+                self.mpv
+                    .command("loadfile", &[url.expose(), mode])
+                    .map_err(|e| format!("lecture impossible : {e}"))?;
+            }
             if first {
                 first = false;
                 self.set_pause(false)?;
-            }
-            let (end, pos) = (self.queue.len(), base + i);
-            if i < start {
-                self.mpv
-                    .command("playlist-move", &[&end.to_string(), &pos.to_string()])
-                    .map_err(mpv_err)?;
             }
             self.next_seq += 1;
             let entry = Entry {
@@ -782,6 +783,29 @@ impl Engine {
         }
         self.reconcile();
         Ok(())
+    }
+
+    /// Puts a track at `pos` of mpv's playlist: in one command where mpv knows `insert-at`
+    /// (0.38 and later), else appended then moved.
+    fn load_at(&mut self, url: &SecretUrl, pos: usize) -> Res<()> {
+        let at = pos.to_string();
+        if self.insert_at {
+            match self
+                .mpv
+                .command("loadfile", &[url.expose(), "insert-at", &at])
+            {
+                Ok(()) => return Ok(()),
+                // an older mpv refuses the flag and loads nothing
+                Err(_) => self.insert_at = false,
+            }
+        }
+        self.mpv
+            .command("loadfile", &[url.expose(), "append"])
+            .map_err(|e| format!("lecture impossible : {e}"))?;
+        let end = self.queue.len().to_string();
+        self.mpv
+            .command("playlist-move", &[&end, &at])
+            .map_err(mpv_err)
     }
 
     /// Adds tracks right after the current one (`next`) or at the end; starts
@@ -1343,6 +1367,7 @@ pub fn run(env: &Env) -> Result<()> {
             link: "ok",
         },
         last_position: None,
+        insert_at: true,
         link: "ok",
     };
     engine.sync_at_start();
