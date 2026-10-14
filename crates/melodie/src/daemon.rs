@@ -1515,7 +1515,9 @@ mod tests {
     }
 
     /// The cause of #91: mpv's core, as it starts, sends its playlist back to the first entry,
-    /// so what was loaded before plays from the first track whatever was asked.
+    /// so what was loaded before plays from the first track whatever was asked. A canary on
+    /// mpv, not on Mélodie: if a future mpv keeps `current` in `prepare_playlist`, it fails
+    /// while the daemon did not regress.
     #[test]
     fn mpv_plays_from_the_first_entry_what_was_loaded_before_its_core_started() {
         let dir = tempfile::tempdir().unwrap();
