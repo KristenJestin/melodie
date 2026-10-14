@@ -16,6 +16,7 @@ pub mod layout;
 pub mod link;
 pub mod menu;
 pub mod model;
+pub mod playing;
 pub mod playlists;
 pub mod quick;
 pub mod reveal;
