@@ -11,16 +11,18 @@ use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::Icon;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use melodie_core::proto::Request;
+use melodie_core::proto::{QueueEntry, Request};
 use melodie_desktop::covers::Use;
 use melodie_desktop::figures::{Figures as _, clock_text, count_text};
 use melodie_desktop::menu::{Item, Spot};
 use melodie_desktop::model::Row;
 use melodie_desktop::theme::Palette;
 use melodie_desktop::thumbs;
-use std::cell::Cell;
+use std::cell::RefCell;
+use std::ops::Range;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::{Arc, Weak};
 
 const ROW: f32 = 56.0;
 
@@ -116,7 +118,20 @@ pub struct QueueList {
     scroll: UniformListScrollHandle,
     /// The queue and the rows whose covers were last asked, so that a frame showing the same
     /// rows asks nothing.
-    asked: Rc<Cell<Option<(usize, usize, usize)>>>,
+    asked: Rc<RefCell<Option<Asked>>>,
+}
+
+/// Rows of a queue whose covers were asked. The queue is held weakly: its address cannot be
+/// reused by another while this is kept, so a new queue is never taken for the old one.
+struct Asked {
+    queue: Weak<[QueueEntry]>,
+    rows: Range<usize>,
+}
+
+impl Asked {
+    fn is(&self, queue: &Arc<[QueueEntry]>, rows: &Range<usize>) -> bool {
+        std::ptr::addr_eq(self.queue.as_ptr(), Arc::as_ptr(queue)) && self.rows == *rows
+    }
 }
 
 /// A row being dragged: what the drop needs and what the pointer carries.
@@ -173,10 +188,17 @@ impl Render for QueueList {
         uniform_list("queue-rows", len, move |range, window, cx| {
             // the rows shown ask their covers before anything that waits (#84). Asked later:
             // nothing here reads a file.
-            let key = (tracks.as_ptr() as usize, range.start, range.end);
             let ids = thumbs::shown(&tracks, range.clone());
+            let same = asked
+                .borrow()
+                .as_ref()
+                .is_some_and(|a| a.is(&tracks, &range));
             // the row measured alone asks nothing and leaves the key as it is
-            if !ids.is_empty() && asked.replace(Some(key)) != Some(key) {
+            if !ids.is_empty() && !same {
+                *asked.borrow_mut() = Some(Asked {
+                    queue: Arc::downgrade(&tracks),
+                    rows: range.clone(),
+                });
                 let covers = shared.read(cx).covers.clone();
                 cx.defer(move |cx| covers.update(cx, |c, cx| c.want(ids, Use::SMALL, true, cx)));
             }
