@@ -229,8 +229,11 @@ impl QuickSearch {
         let known = self.genres.clone().unwrap_or_else(|| Arc::from([]));
         let started = Instant::now();
         let task = cx.background_spawn(async move {
-            let genres = opening.map(|_| load_genres(&env));
-            (genres, read(&env, &text, &seen, &known))
+            let fresh = opening.map(|_| load_genres(&env));
+            // an opening has cleared the genres: the text it opens on matches the ones it reads
+            let genres = fresh.as_deref().unwrap_or(&known);
+            let shown = read(&env, &text, &seen, genres);
+            (fresh, shown)
         });
         cx.spawn(async move |this, cx| {
             let (genres, shown) = task.await;
@@ -678,6 +681,7 @@ mod tests {
             &json!({"id":"al1","name":"Low Tide","artist":"Nightfall","artistId":"ar1"}),
         )
         .unwrap();
+        db::insert_track(&tx, &json!({"id":"t1","title":"Drift","artist":"Nightfall","album":"Elsewhere","albumId":"al1","genres":[{"name":"Ambient"}]})).unwrap();
         tx.commit().unwrap();
     }
 
@@ -720,5 +724,28 @@ mod tests {
         cx.simulate_input("ti");
         cx.run_until_parked();
         assert_eq!(quick.read_with(cx, |q, cx| q.input.read(cx).value()), "ti");
+    }
+
+    #[test]
+    fn reopening_on_a_genre_name_still_shows_the_genres() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        library(&env);
+        let mut app = TestAppContext::single();
+        let (quick, cx) = palette(&env, &mut app);
+        toggle(&quick, cx);
+        cx.simulate_input("ambient");
+        cx.run_until_parked();
+        let genres = |q: &QuickSearch| match &q.shown {
+            Shown::Rows(g) => g.iter().any(|g| g.section == Section::Genres),
+            _ => false,
+        };
+        assert!(quick.read_with(cx, |q, _| genres(q)), "found when typed");
+        toggle(&quick, cx);
+        toggle(&quick, cx);
+        assert!(
+            quick.read_with(cx, |q, _| genres(q)),
+            "and again once reopened on the same text"
+        );
     }
 }
