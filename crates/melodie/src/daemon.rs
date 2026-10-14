@@ -60,6 +60,8 @@ const SUBSCRIBER_BUFFER: usize = 64;
 const POSITION_EVERY: Duration = Duration::from_secs(1);
 /// Time left to subscribers to receive the last events when the daemon quits.
 const FAREWELL: Duration = Duration::from_secs(1);
+/// Longest wait for mpv's core to start its playlist before the daemon answers anyway.
+const MPV_START: Duration = Duration::from_secs(2);
 
 /// Fin de lecture demandée par SIGTERM ou SIGINT.
 static TERMINATED: AtomicBool = AtomicBool::new(false);
@@ -194,8 +196,11 @@ fn event_handle(mpv: &Arc<Mpv>) -> Arc<Mpv> {
     mpv.clone()
 }
 
-/// mpv's event thread.
-fn spawn_events(mpv: &Arc<Mpv>, tx: Sender<Msg>) -> Result<()> {
+/// mpv's event thread. The receiver hears once that mpv's core started its playlist: as it
+/// starts, the core sends the playlist back to its first entry (`prepare_playlist`), so a play
+/// handled before would start at the first track instead of the one asked. mpv tells it with
+/// its `idle` event, deprecated but sent to every client unless refused.
+fn spawn_events(mpv: &Arc<Mpv>, tx: Sender<Msg>) -> Result<Receiver<()>> {
     let ev = event_handle(mpv);
     for (id, name, fmt) in [
         (1, "playlist-pos", Format::Int64),
@@ -206,10 +211,20 @@ fn spawn_events(mpv: &Arc<Mpv>, tx: Sender<Msg>) -> Result<()> {
         ev.observe_property(name, fmt, id)
             .map_err(|e| anyhow::anyhow!("observation de {name} : {e}"))?;
     }
+    let (started, heard) = channel();
+    let mut started = Some(started);
     std::thread::spawn(move || {
         loop {
             let msg = match ev.wait_event(1.0) {
                 None => continue,
+                Some(Ok(MpvRaw::Deprecated(e)))
+                    if e.event_id == libmpv2_sys::mpv_event_id_MPV_EVENT_IDLE =>
+                {
+                    if let Some(s) = started.take() {
+                        let _ = s.send(());
+                    }
+                    continue;
+                }
                 Some(Ok(MpvRaw::PropertyChange { change, .. })) => {
                     let _ = matches!(change, PropertyData::Flag(_));
                     MpvEvent::Prop
@@ -224,7 +239,7 @@ fn spawn_events(mpv: &Arc<Mpv>, tx: Sender<Msg>) -> Result<()> {
             }
         }
     });
-    Ok(())
+    Ok(heard)
 }
 
 /// Turns a connection into the event stream: the engine queues lines, this
@@ -1303,7 +1318,7 @@ pub fn run(env: &Env) -> Result<()> {
     let volume = Prefs::load(env).volume();
     let mpv = Arc::new(new_mpv(volume)?);
     let (tx, rx) = channel::<Msg>();
-    spawn_events(&mpv, tx.clone())?;
+    let mpv_started = spawn_events(&mpv, tx.clone())?;
 
     let shared = Arc::new(Mutex::new(Snapshot {
         volume: f64::from(volume) / 100.0,
@@ -1336,6 +1351,10 @@ pub fn run(env: &Env) -> Result<()> {
         });
     }
 
+    // Bounded: an mpv that no longer sends `idle` must not keep the daemon from answering.
+    if mpv_started.recv_timeout(MPV_START).is_err() {
+        dlog!("mpv did not say its core started");
+    }
     let mut engine = Engine {
         env: env.clone(),
         mpv: mpv.clone(),
@@ -1484,6 +1503,26 @@ mod tests {
         load_from_the_second(&mpv);
         std::fs::write(&release, "").unwrap();
         assert_eq!(playing(&mpv), 0);
+    }
+
+    /// #91: no request is handled before mpv's core started its playlist, so a play from a
+    /// start is never sent back to the first track.
+    #[test]
+    fn the_daemon_hears_when_mpv_started_its_playlist_and_not_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mpv, release) = held_mpv(dir.path());
+        let (tx, _rx) = channel();
+        let started = spawn_events(&mpv, tx).unwrap();
+        assert!(
+            started.recv_timeout(Duration::from_millis(500)).is_err(),
+            "heard before the core started"
+        );
+        std::fs::write(&release, "").unwrap();
+        started
+            .recv_timeout(Duration::from_secs(10))
+            .expect("never heard that the core started");
+        load_from_the_second(&mpv);
+        assert_eq!(playing(&mpv), 1);
     }
 
     /// The daemon has no window, terminal or key bindings: mpv's built-in Lua scripts (OSC,

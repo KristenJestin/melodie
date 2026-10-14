@@ -12,6 +12,7 @@ clap = { version = "4", features = ["derive"] }
 getrandom = "0.3"
 libc = "0.2"
 libmpv2 = "6"
+libmpv2-sys = "4"
 melodie-core = { path = "../melodie-core" }
 rpassword = "7"
 rusqlite = { version = "0.37", features = ["bundled"] }
@@ -20,5 +21,4 @@ zbus = "5"
 
 [dev-dependencies]
 melodie-core = { path = "../melodie-core", features = ["fake"] }
-libmpv2-sys = "4"
 tempfile = "3"
