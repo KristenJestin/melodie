@@ -140,9 +140,13 @@ fn candidates(conn: &Connection, q: &str, kind: Kind, limit: Option<usize>) -> R
         ),
         Kind::Artist => hits(
             conn,
-            "SELECT a.id, a.name, a.albumCount, a.coverArt, a.starred IS NOT NULL
-             FROM fts_artists f JOIN artists a ON a.id = f.id
-             WHERE fts_artists MATCH ?1 ORDER BY f.rank LIMIT ?2",
+            &format!(
+                "SELECT a.id, a.name, a.albumCount, a.coverArt, a.starred IS NOT NULL
+                 FROM fts_artists f JOIN artists a ON a.id = f.id
+                 WHERE fts_artists MATCH ?1 AND {}
+                 ORDER BY f.rank LIMIT ?2",
+                crate::library::HAS_SOMETHING_TO_PLAY
+            ),
             q,
             limit,
             |r| {
@@ -586,7 +590,7 @@ mod tests {
         db::insert_track(&tx, &json!({"id":"t1","title":"One More Time","artist":"Daft Punk","album":"Discovery","albumId":"al1","coverArt":"mf-t1","genres":[{"name":"Electro"}],"playCount":3})).unwrap();
         db::insert_track(
             &tx,
-            &json!({"id":"t2","title":"Halo","artist":"Beyoncé","album":"I Am... Sasha Fierce"}),
+            &json!({"id":"t2","title":"Halo","artist":"Beyoncé","artistId":"ar2","album":"I Am... Sasha Fierce"}),
         )
         .unwrap();
         db::replace_playlists(
@@ -658,6 +662,12 @@ mod tests {
             )
             .unwrap();
         }
+        // credited on a track, so that it has something to play
+        tx.execute(
+            "INSERT INTO track_artists(track, artist) VALUES ('t1', 'ar1')",
+            [],
+        )
+        .unwrap();
         tx.commit().unwrap();
         let names: Vec<_> = search(&conn, "Rêve")
             .unwrap()
@@ -834,6 +844,11 @@ mod tests {
             .unwrap();
         }
         db::insert_track(&tx, &json!({"id":"tn","title":"Night","artist":"Night","artistId":"ar1","album":"Night","albumId":"al2"})).unwrap();
+        tx.execute(
+            "INSERT INTO track_artists(track, artist) VALUES ('t1', 'ar2')",
+            [],
+        )
+        .unwrap();
         db::replace_playlists(
             &tx,
             &[json!({"id":"p1","name":"Late night drive","songCount":3})],
@@ -841,6 +856,59 @@ mod tests {
         .unwrap();
         tx.commit().unwrap();
         (d, conn)
+    }
+
+    /// "Mara" names three artists: one with an album of their own, one only credited on a
+    /// track, one with nothing at all (a producer, say).
+    fn mara_library() -> (tempfile::TempDir, Connection) {
+        let d = tempfile::tempdir().unwrap();
+        let mut conn = db::create(&d.path().join("l.db")).unwrap();
+        let tx = conn.transaction().unwrap();
+        for (id, name) in [
+            ("ar1", "Mara Ode"),
+            ("ar2", "Mara Quill"),
+            ("ar3", "Mara Voss"),
+        ] {
+            db::insert_artist(&tx, &json!({"id":id,"name":name})).unwrap();
+        }
+        db::insert_album(
+            &tx,
+            &json!({"id":"al1","name":"Lanterns","artist":"Mara Ode","artistId":"ar1"}),
+        )
+        .unwrap();
+        db::insert_track(
+            &tx,
+            &json!({"id":"t1","title":"Harbour","artist":"Mara Ode","artistId":"ar1",
+                    "album":"Lanterns","albumId":"al1",
+                    "artists":[{"id":"ar1","name":"Mara Ode"},{"id":"ar2","name":"Mara Quill"}]}),
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        (d, conn)
+    }
+
+    #[test]
+    fn search_leaves_out_artists_with_nothing_to_play() {
+        let (_d, conn) = mara_library();
+        let names = |hits: Vec<Hit>| -> Vec<String> {
+            hits.into_iter()
+                .filter(|h| h.kind == Kind::Artist)
+                .map(|h| h.id)
+                .collect()
+        };
+        let mut found = names(search(&conn, "mara").unwrap());
+        found.sort();
+        assert_eq!(found, ["ar1", "ar2"]);
+        let groups = grouped(&conn, "mara", 5).unwrap();
+        let artists = groups.iter().find(|g| g.kind == Kind::Artist).unwrap();
+        assert_eq!(artists.hits.len(), 2);
+        assert!(!artists.more);
+        assert_eq!(of_kind(&conn, "mara", Kind::Artist).unwrap().len(), 2);
+        // nothing is deleted: the artist is still there, only left out
+        let kept: i64 = conn
+            .query_row("SELECT count(*) FROM fts_artists", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(kept, 3);
     }
 
     #[test]
