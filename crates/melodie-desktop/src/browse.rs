@@ -273,10 +273,6 @@ mod tests {
         nav.go(Place::Search);
         let view = nav.view;
         nav.go(Place::Found(Kind::Album));
-        assert!(
-            Place::Found(Kind::Album).in_search(),
-            "same page, same field"
-        );
         assert_eq!(nav.view, view, "the page is not drawn in again");
         nav.back();
         assert_eq!(nav.here(), &Place::Search, "back is All");

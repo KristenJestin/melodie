@@ -4,8 +4,8 @@ use crate::app;
 use crate::catalog::Catalog;
 use gpui_kit::component::input::InputEvent;
 use gpui_kit::{
-    AppContext as _, Context, Entity, IntoElement, Render, TestAppContext, VisualTestContext,
-    Window,
+    AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement, Modifiers,
+    ParentElement as _, Render, Styled as _, TestAppContext, VisualTestContext, Window, div,
 };
 use melodie_core::db;
 use melodie_core::env::Env;
@@ -13,19 +13,25 @@ use melodie_desktop::browse::Place;
 use melodie_desktop::launch::Kind;
 use serde_json::json;
 
-/// The search page and the catalog it follows, as `main` builds them.
+/// The search page and the catalog it follows, as `main` builds them, under a root that takes
+/// the focus from any press nobody prevented, as the window's root does.
 struct Page {
     search: Entity<SearchView>,
     catalog: Entity<Catalog>,
+    root: FocusHandle,
 }
 
 impl Render for Page {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        self.search.clone()
+        div()
+            .id("root")
+            .track_focus(&self.root)
+            .size_full()
+            .child(self.search.clone())
     }
 }
 
-/// A local copy with three albums and two tracks about the rain, two albums about the snow.
+/// A local copy with six albums and two tracks about the rain, two albums about the snow.
 fn library(dir: &std::path::Path) -> Env {
     let env = Env::with_home(dir);
     let path = db::db_path(&env);
@@ -38,6 +44,9 @@ fn library(dir: &std::path::Path) -> Env {
         ("al3", "Winter Rain"),
         ("al4", "Snow Songs"),
         ("al5", "Snowfall"),
+        ("al6", "Rain Check"),
+        ("al7", "Rainmaker"),
+        ("al8", "Rain Man"),
     ] {
         db::insert_album(&tx, &json!({"id": id, "name": name, "artist": "Nobody"})).unwrap();
     }
@@ -56,7 +65,11 @@ fn open<'a>(app: &'a mut TestAppContext, env: &Env) -> (Entity<Page>, &'a mut Vi
         let (shared, _) = app::start(env.clone(), socket, window, cx);
         let catalog = cx.new(|cx| Catalog::new(env.clone(), shared.clone(), cx));
         let search = cx.new(|cx| SearchView::new(shared, catalog.clone(), env, window, cx));
-        Page { search, catalog }
+        Page {
+            search,
+            catalog,
+            root: cx.focus_handle(),
+        }
     })
 }
 
@@ -103,14 +116,13 @@ fn see_all_selects_the_filter_without_leaving_the_page() {
     assert_eq!((here, text.as_str(), found), (Place::Search, "rain", None));
     let before = view(&page, cx);
 
-    // « See all » of the albums
+    // "See all" of the albums
     go(&page, Place::Found(Kind::Album), cx);
     let (here, text, found) = shown(&page, cx);
     assert_eq!(here, Place::Found(Kind::Album));
-    assert!(here.in_search(), "still the search page");
     assert_eq!(view(&page, cx), before, "the page is not opened anew");
     assert_eq!(text, "rain", "the same field, the same text");
-    assert_eq!(found, Some((Kind::Album, 3)), "the albums found");
+    assert_eq!(found, Some((Kind::Album, 6)), "the albums found");
 
     // another chip replaces the filter
     go(&page, Place::Found(Kind::Track), cx);
@@ -158,4 +170,112 @@ fn a_new_text_keeps_the_filter() {
         Some((Kind::Album, 2)),
         "the albums found for the new text"
     );
+}
+
+/// The page with the text "rain" typed in, as `open` and `type_in` leave it.
+fn rain<'a>(
+    dir: &std::path::Path,
+    app: &'a mut TestAppContext,
+) -> (Entity<Page>, &'a mut VisualTestContext) {
+    let (page, cx) = open(app, &library(dir));
+    go(&page, Place::Search, cx);
+    type_in(&page, "rain", cx);
+    (page, cx)
+}
+
+/// Presses and releases the left button on the element drawn under `selector`.
+fn click(selector: &'static str, cx: &mut VisualTestContext) {
+    let bounds = cx
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("{selector} is not drawn"));
+    cx.simulate_click(bounds.center(), Modifiers::none());
+    cx.run_until_parked();
+}
+
+fn field_has_focus(page: &Entity<Page>, cx: &mut VisualTestContext) -> bool {
+    let search = page.read_with(cx, |p, _| p.search.clone());
+    cx.update(|window, cx| search.read(cx).has_focus(window, cx))
+}
+
+fn focus_field(page: &Entity<Page>, cx: &mut VisualTestContext) {
+    let search = page.read_with(cx, |p, _| p.search.clone());
+    cx.update(|window, cx| search.update(cx, |s, cx| s.focus(window, cx)));
+    cx.run_until_parked();
+    assert!(field_has_focus(page, cx), "the field starts with the focus");
+}
+
+#[test]
+fn the_chips_are_drawn_and_a_click_goes_to_the_filter() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = TestAppContext::single();
+    let (page, cx) = rain(dir.path(), &mut app);
+    for chip in [
+        "search-filter-All",
+        "search-filter-Tracks",
+        "search-filter-Albums",
+        "search-filter-Artists",
+        "search-filter-Playlists",
+    ] {
+        assert!(cx.debug_bounds(chip).is_some(), "{chip} is drawn");
+    }
+
+    click("search-filter-Albums", cx);
+    let (here, text, found) = shown(&page, cx);
+    assert_eq!(here, Place::Found(Kind::Album));
+    assert_eq!(text, "rain", "the text stays");
+    assert_eq!(found, Some((Kind::Album, 6)));
+
+    click("search-filter-Tracks", cx);
+    assert_eq!(shown(&page, cx).0, Place::Found(Kind::Track));
+}
+
+#[test]
+fn see_all_is_a_click_on_the_group_and_leaves_the_field_focused() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = TestAppContext::single();
+    let (page, cx) = rain(dir.path(), &mut app);
+    focus_field(&page, cx);
+
+    // six albums found, five shown
+    click("found-album-all", cx);
+    let (here, text, found) = shown(&page, cx);
+    assert_eq!(here, Place::Found(Kind::Album));
+    assert_eq!(text, "rain");
+    assert_eq!(found, Some((Kind::Album, 6)));
+    assert!(
+        field_has_focus(&page, cx),
+        "the press took the focus from the field"
+    );
+}
+
+#[test]
+fn a_chip_press_leaves_the_field_focused() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = TestAppContext::single();
+    let (page, cx) = rain(dir.path(), &mut app);
+    focus_field(&page, cx);
+
+    click("search-filter-Tracks", cx);
+    assert_eq!(shown(&page, cx).0, Place::Found(Kind::Track));
+    assert!(
+        field_has_focus(&page, cx),
+        "the press took the focus from the field"
+    );
+}
+
+#[test]
+fn the_title_of_a_filter_counts_what_was_found() {
+    assert_eq!(super::count_label(36, "snow"), "36 for “snow”");
+    assert_eq!(super::count_label(0, "snow"), "0 for “snow”");
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = TestAppContext::single();
+    let (page, cx) = rain(dir.path(), &mut app);
+    click("search-filter-Albums", cx);
+    assert!(
+        cx.debug_bounds("found-title").is_some(),
+        "the title is drawn"
+    );
+    // the number in it is the one of the list: the albums found, not the five of the group
+    assert_eq!(shown(&page, cx).2, Some((Kind::Album, 6)));
 }

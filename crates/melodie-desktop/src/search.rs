@@ -398,12 +398,18 @@ fn result_row(
 fn found_title(kind: Kind, n: usize, text: &str, pal: Palette, window: &Window) -> Div {
     title_with_aside(
         kind_title(kind.into()),
-        Some(format!("{} for “{}”", n, text).into()),
+        Some(count_label(n, text).into()),
         pal,
         window,
     )
+    .debug_selector(|| "found-title".into())
     .px(px(PAD))
     .pb_2()
+}
+
+/// How many of the kind were found, as the title of a filter says it.
+fn count_label(n: usize, text: &str) -> String {
+    format!("{} for “{}”", n, text)
 }
 
 /// The tracks of an answer as their tables show them, by place. Blocking: run it away from the
@@ -437,6 +443,7 @@ fn filter_chips(here: &Place, pal: Palette, catalog: &Entity<Catalog>) -> Div {
             let catalog = catalog.clone();
             h_flex()
                 .id(ElementId::Name(format!("search-filter-{label}").into()))
+                .debug_selector(|| format!("search-filter-{label}"))
                 .h(px(30.))
                 .px_3()
                 .items_center()
@@ -459,6 +466,7 @@ fn filter_chips(here: &Place, pal: Palette, catalog: &Entity<Catalog>) -> Div {
 fn hint(id: &'static str, text: String, pal: Palette) -> AnyElement {
     div()
         .id(id)
+        .debug_selector(|| id.into())
         .size_full()
         .flex()
         .items_center()
@@ -492,9 +500,11 @@ impl Render for SearchView {
                 .when(can_back, |d| {
                     let catalog = catalog.clone();
                     d.child(
-                        IconButton::new("search-back", IconName::ChevronLeft, pal)
-                            .tip("Back")
-                            .on_click(move |_, _, cx| catalog.update(cx, |c, cx| c.back(cx))),
+                        div().debug_selector(|| "search-back".into()).child(
+                            IconButton::new("search-back", IconName::ChevronLeft, pal)
+                                .tip("Back")
+                                .on_click(move |_, _, cx| catalog.update(cx, |c, cx| c.back(cx))),
+                        ),
                     )
                 })
                 .child(div().flex_1().min_w_0().child(self.field.clone())),
@@ -614,6 +624,7 @@ impl Render for SearchView {
                                     d.child(
                                         div()
                                             .id(ElementId::Name(format!("{list}-all").into()))
+                                            .debug_selector(|| format!("{list}-all"))
                                             .px_3()
                                             .py_1()
                                             .rounded_full()
