@@ -3,7 +3,7 @@
 //! is the one animation inside a row, and it runs only when the pointer itself moves to another
 //! row; rows scrolled under a still pointer change at once (`docs/gui-toolkit.md`, "Lists").
 
-use crate::albums::{PAD, content_width, cover_box, empty_state};
+use crate::albums::{PAD, artist_play, content_width, cover_box, empty_state};
 use crate::app::Shared;
 use crate::catalog::Catalog;
 use crate::context_menu::{self, Menued as _};
@@ -615,11 +615,16 @@ fn artist_row(
     covers: &Covers,
     pal: Palette,
     catalog: &Entity<Catalog>,
+    window: &mut Window,
+    cx: &mut App,
 ) -> Stateful<Div> {
     let (catalog, id) = (catalog.clone(), a.id.clone());
-    h_flex()
-        .id(ElementId::Name(format!("artist-row-{ix}").into()))
-        .menu(Item::artist(a), Spot::Library)
+    let item = Item::artist(a);
+    let hover = row_hover("artist-row", ix, window, cx);
+    let look = hover.look;
+    hover
+        .track(h_flex().id(ElementId::Name(format!("artist-row-{ix}").into())))
+        .menu(item.clone(), Spot::Library)
         .h(px(ARTIST_ROW))
         .w_full()
         .px(px(PAD))
@@ -633,12 +638,31 @@ fn artist_row(
                 .text_sm()
                 .cursor_pointer()
                 .hover(|s| s.bg(Hsla { a: 0.07, ..pal.fg }))
-                .child(cover_box(
-                    a.cover.as_ref().and_then(|c| covers.get(c, 40.)),
-                    40.,
-                    20.,
-                    pal,
-                ))
+                .child(
+                    div()
+                        .relative()
+                        .flex_none()
+                        .child(
+                            cover_box(
+                                a.cover.as_ref().and_then(|c| covers.get(c, 40.)),
+                                40.,
+                                20.,
+                                pal,
+                            )
+                            .opacity(look.under()),
+                        )
+                        .children(
+                            artist_play(
+                                &format!("artist-row-play-{ix}"),
+                                &item,
+                                28.,
+                                look,
+                                pal,
+                                &catalog,
+                            )
+                            .map(|b| div().absolute().top(px(6.)).left(px(6.)).child(b)),
+                        ),
+                )
                 .child(
                     cell(None, 4.)
                         .truncate()
@@ -682,9 +706,9 @@ impl Render for ArtistList {
             Some(list) => {
                 let list = list.clone();
                 let catalog = self.catalog.clone();
-                uniform_list("artist-rows", list.len(), move |range, _, _| {
+                uniform_list("artist-rows", list.len(), move |range, window, cx| {
                     range
-                        .map(|ix| artist_row(ix, &list[ix], &covers, pal, &catalog))
+                        .map(|ix| artist_row(ix, &list[ix], &covers, pal, &catalog, window, cx))
                         .collect()
                 })
                 .track_scroll(&self.scroll)
