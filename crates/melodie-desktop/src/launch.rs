@@ -49,6 +49,17 @@ pub enum Job {
         id: String,
         next: bool,
     },
+    /// Replaces the queue with these tracks, in this order, and plays from the one at `from`
+    /// (from 0): the ones before it stay, for Previous.
+    PlayTracks {
+        ids: Vec<String>,
+        from: usize,
+    },
+    /// Adds these tracks, in this order, after the current track (`next`) or at the end.
+    QueueTracks {
+        ids: Vec<String>,
+        next: bool,
+    },
     /// An instant mix around it.
     Mix {
         kind: Kind,
@@ -138,6 +149,8 @@ impl Job {
             | Self::Star { .. }
             | Self::Play { .. }
             | Self::Queue { .. }
+            | Self::PlayTracks { .. }
+            | Self::QueueTracks { .. }
             | Self::Mix { .. }
             | Self::CreatePlaylist { .. }
             | Self::MixGenre { .. }
@@ -165,6 +178,18 @@ impl Job {
                     a.push("--next".into());
                 }
                 a.extend(["--".into(), id.clone()]);
+                a
+            }
+            // the ids on stdin (`-`): a whole library does not fit on a command line
+            Self::PlayTracks { from, .. } => {
+                words(&["play", "track", "--from", &(from + 1).to_string(), "-"])
+            }
+            Self::QueueTracks { next, .. } => {
+                let mut a = words(&["queue", "track"]);
+                if *next {
+                    a.push("--next".into());
+                }
+                a.push("-".into());
                 a
             }
             Self::Mix { kind, id } => {
@@ -252,6 +277,18 @@ impl Job {
                 "--".into(),
                 id.clone(),
             ],
+        }
+    }
+}
+
+impl Job {
+    /// What `melodie` reads on its standard input: the ids of several tracks, one per line.
+    pub fn stdin(&self) -> Option<String> {
+        match self {
+            Self::PlayTracks { ids, .. } | Self::QueueTracks { ids, .. } => {
+                Some(ids.iter().map(|id| format!("{id}\n")).collect())
+            }
+            _ => None,
         }
     }
 }
@@ -506,6 +543,29 @@ mod tests {
             add.args(),
             ["playlist", "add", "--json", "--", "-p1", "album", "-al1"]
         );
+    }
+
+    #[test]
+    fn several_tracks_go_in_one_call_their_ids_on_stdin() {
+        let ids = || vec!["-t1".to_string(), "t2".into(), "t3".into()];
+        let play = Job::PlayTracks {
+            ids: ids(),
+            from: 2,
+        };
+        assert_eq!(play.args(), ["play", "track", "--from", "3", "-"]);
+        assert_eq!(play.stdin().as_deref(), Some("-t1\nt2\nt3\n"));
+        let next = Job::QueueTracks {
+            ids: ids(),
+            next: true,
+        };
+        assert_eq!(next.args(), ["queue", "track", "--next", "-"]);
+        assert_eq!(next.stdin(), play.stdin());
+        let last = Job::QueueTracks {
+            ids: ids(),
+            next: false,
+        };
+        assert_eq!(last.args(), ["queue", "track", "-"]);
+        assert_eq!(Job::Rediscover.stdin(), None, "the others read nothing");
     }
 
     #[test]

@@ -295,6 +295,12 @@ impl ContextMenu {
         self.open.is_some()
     }
 
+    /// What the open menu is about.
+    #[cfg(test)]
+    pub fn target(&self) -> Option<&Target> {
+        self.open.as_ref().map(|o| &o.target)
+    }
+
     /// Escape, a click or another page while the menu is being looked up: it opens nothing.
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
         if self.asks.pending() {
@@ -381,7 +387,6 @@ impl ContextMenu {
         let (shared, catalog) = (&self.shared, &self.catalog);
         match effect {
             Effect::Run(job) => shared.update(cx, |s, cx| s.run(job, cx)),
-            Effect::RunAll(jobs) => shared.update(cx, |s, cx| s.run_all(jobs, cx)),
             Effect::Remove {
                 id,
                 name,

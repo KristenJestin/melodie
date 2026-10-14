@@ -18,7 +18,9 @@ use melodie_desktop::thumbs::{self, Thumbs};
 use melodie_desktop::tint;
 use melodie_desktop::wave;
 use std::collections::VecDeque;
+use std::io::Write as _;
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
@@ -106,6 +108,8 @@ pub struct Shared {
     failures: u64,
     socket: PathBuf,
     env: Env,
+    /// The `melodie` the jobs run.
+    program: PathBuf,
     _watch: Option<notify::RecommendedWatcher>,
     /// The playlist jobs running, and those waiting behind them.
     playlist_jobs: Lanes<(Job, Done)>,
@@ -181,72 +185,68 @@ impl Shared {
 
     /// Runs `melodie` for what needs the server; its first error line is said in the window.
     pub fn run(&self, job: Job, cx: &mut Context<Self>) {
-        self.run_all(vec![job], cx)
-    }
-
-    /// Runs `melodie` for each job, one after the other in this order (tracks played or queued
-    /// one by one); the first that fails stops the others, and is said.
-    pub fn run_all(&self, jobs: Vec<Job>, cx: &mut Context<Self>) {
-        for job in &jobs {
-            if let Some(seen) = Seen::of_job(job) {
-                cx.emit(Started(seen));
-            }
+        if let Some(seen) = Seen::of_job(&job) {
+            cx.emit(Started(seen));
         }
-        let program = launch::program(std::env::current_exe().ok().as_deref());
+        let program = self.program.clone();
+        let what = match &job {
+            Job::PlayMix => "Could not start your mix",
+            Job::Rediscover => "Could not start the rediscoveries",
+            Job::Star { .. } => "Could not change the favourite",
+            Job::Play { .. } | Job::PlayTracks { .. } => "Could not play it",
+            Job::Queue { .. } | Job::QueueTracks { .. } => "Could not add it to the queue",
+            Job::Mix { .. } => "Could not make the mix",
+            Job::AddToPlaylist { .. } => "Could not add to the playlist",
+            Job::MixGenre { .. } => "Could not make the mix",
+            Job::QueueMix(_) => "Could not add the mix to the queue",
+            // run by `run_then`, which says what they did
+            Job::CheckAdd { .. }
+            | Job::CreatePlaylist { .. }
+            | Job::RenamePlaylist { .. }
+            | Job::DeletePlaylist { .. }
+            | Job::RemoveFromPlaylist { .. }
+            | Job::MoveInPlaylist { .. }
+            | Job::Duplicates { .. } => "Could not change the playlist",
+        };
+        let adds = matches!(job, Job::AddToPlaylist { .. });
         let task = cx.background_spawn(async move {
-            let mut said = None;
-            for job in jobs {
-                let what = match &job {
-                    Job::PlayMix => "Could not start your mix",
-                    Job::Rediscover => "Could not start the rediscoveries",
-                    Job::Star { .. } => "Could not change the favourite",
-                    Job::Play { .. } => "Could not play it",
-                    Job::Queue { .. } => "Could not add it to the queue",
-                    Job::Mix { .. } => "Could not make the mix",
-                    Job::AddToPlaylist { .. } => "Could not add to the playlist",
-                    Job::MixGenre { .. } => "Could not make the mix",
-                    Job::QueueMix(_) => "Could not add the mix to the queue",
-                    // run by `run_then`, which says what they did
-                    Job::CheckAdd { .. }
-                    | Job::CreatePlaylist { .. }
-                    | Job::RenamePlaylist { .. }
-                    | Job::DeletePlaylist { .. }
-                    | Job::RemoveFromPlaylist { .. }
-                    | Job::MoveInPlaylist { .. }
-                    | Job::Duplicates { .. } => "Could not change the playlist",
-                };
-                let adds = matches!(job, Job::AddToPlaylist { .. });
-                let out = std::process::Command::new(&program)
-                    .args(job.args())
-                    .stdin(std::process::Stdio::null())
-                    .output();
-                match out {
-                    // `--json` says how it went on its output, even when it failed
-                    Ok(o) if o.status.success() && adds => {
-                        let s = launch::added_message(&String::from_utf8_lossy(&o.stdout));
-                        said = Some(s.unwrap_or_else(|why| why));
+            let input = job.stdin();
+            let out = std::process::Command::new(&program)
+                .args(job.args())
+                .stdin(match input {
+                    Some(_) => Stdio::piped(),
+                    None => Stdio::null(),
+                })
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .and_then(|mut child| {
+                    if let (Some(text), Some(mut pipe)) = (input, child.stdin.take()) {
+                        // a `melodie` that fails before reading says why on its stderr
+                        let _ = pipe.write_all(text.as_bytes());
                     }
-                    Ok(o) if o.status.success() => {}
-                    Ok(o) => {
-                        let why = String::from_utf8_lossy(&o.stderr)
-                            .lines()
-                            .next()
-                            .map(str::to_string);
-                        return Err((what, why));
-                    }
-                    Err(e) => {
-                        return Err((what, Some(format!("{}: {}", program.display(), e.kind()))));
-                    }
+                    child.wait_with_output()
+                });
+            match out {
+                // `--json` says how it went on its output, even when it failed
+                Ok(o) if o.status.success() && adds => {
+                    let said = launch::added_message(&String::from_utf8_lossy(&o.stdout));
+                    Ok(Some(said.unwrap_or_else(|why| why)))
                 }
+                Ok(o) if o.status.success() => Ok(None),
+                Ok(o) => Err(String::from_utf8_lossy(&o.stderr)
+                    .lines()
+                    .next()
+                    .map(str::to_string)),
+                Err(e) => Err(Some(format!("{}: {}", program.display(), e.kind()))),
             }
-            Ok(said)
         });
         cx.spawn(async move |this, cx| {
             let msg = match task.await {
                 Ok(None) => return,
                 Ok(Some(said)) => said,
-                Err((what, Some(why))) if !why.is_empty() => format!("{what}: {why}"),
-                Err((what, _)) => what.to_string(),
+                Err(Some(why)) if !why.is_empty() => format!("{what}: {why}"),
+                Err(_) => what.to_string(),
             };
             let _ = this.update(cx, |s, cx| s.fail(msg, cx));
         })
@@ -274,7 +274,7 @@ impl Shared {
 
     /// Runs `job`; when it is done, the next job waiting on `playlist`, if any.
     fn spawn_job(&self, job: Job, playlist: Option<String>, done: Done, cx: &mut Context<Self>) {
-        let program = launch::program(std::env::current_exe().ok().as_deref());
+        let program = self.program.clone();
         let task = cx.background_spawn(async move {
             let out = std::process::Command::new(&program)
                 .args(job.args())
@@ -504,6 +504,56 @@ pub fn apply_component_theme(p: Palette, cx: &mut App) {
     });
 }
 
+/// The window's state without a daemon, a theme to follow or a window: the jobs run `program`,
+/// never the `melodie` of the machine.
+#[cfg(test)]
+pub fn bare(env: Env, program: PathBuf, cx: &mut App) -> Entity<Shared> {
+    let covers = cx.new(|_| CoverCache::new(env.clone(), 1.));
+    let waves = cx.new(|_| WaveCache::new(env.clone()));
+    cx.new(|_| Shared {
+        player: Player::default(),
+        art: Art::default(),
+        thumbs: Arc::default(),
+        thumbs_of: None,
+        thumbs_gen: 0,
+        covers,
+        waves,
+        theme: ThemeState {
+            omarchy: Omarchy::system(&env),
+            stored: None,
+            detected: false,
+            palette: None,
+        },
+        dark: true,
+        queue_open: false,
+        settings_open: false,
+        failure: None,
+        failures: 0,
+        socket: env.state_dir().join("no-daemon.sock"),
+        env,
+        program,
+        _watch: None,
+        playlist_jobs: Lanes::default(),
+    })
+}
+
+/// A `melodie` in `dir` that writes down what it is asked (its arguments, then what it reads),
+/// for `bare`.
+#[cfg(test)]
+pub fn fake_melodie(dir: &std::path::Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt as _;
+    let program = dir.join("melodie");
+    std::fs::write(&program, "#!/bin/sh\n{ echo \"$*\"; cat; } >> \"$0.ran\"\n").unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    program
+}
+
+/// What the `fake_melodie` at `program` was asked so far.
+#[cfg(test)]
+pub fn ran(program: &std::path::Path) -> String {
+    std::fs::read_to_string(program.with_extension("ran")).unwrap_or_default()
+}
+
 pub fn is_dark(a: WindowAppearance) -> bool {
     matches!(a, WindowAppearance::Dark | WindowAppearance::VibrantDark)
 }
@@ -550,6 +600,7 @@ pub fn start(
         failures: 0,
         socket: socket.clone(),
         env,
+        program: launch::program(std::env::current_exe().ok().as_deref()),
         _watch: None,
         playlist_jobs: Lanes::default(),
     });

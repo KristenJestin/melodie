@@ -183,6 +183,7 @@ impl Seen {
                     Kind::Playlist => Self::Playlist(id),
                 })
             }
+            Job::PlayTracks { ids, from } => ids.get(*from).cloned().map(Self::Track),
             Job::MixGenre { name } => Some(Self::Genre(name.clone())),
             _ => None,
         }

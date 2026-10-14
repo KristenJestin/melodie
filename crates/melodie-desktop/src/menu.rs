@@ -369,8 +369,6 @@ pub enum Effect {
         name: String,
         tracks: usize,
     },
-    /// Jobs of `melodie` run one after the other, in this order.
-    RunAll(Vec<Job>),
     /// Asks before removing the rows at these ranks from a playlist.
     Remove {
         id: String,
@@ -490,35 +488,18 @@ pub fn effect(action: Action, t: &Target) -> Option<Effect> {
     }
 }
 
-/// What `action` does on the tracks picked: `melodie` takes one track at a time, so it runs once
-/// for each, in order.
+/// What `action` does on the tracks picked: one call of `melodie` for them all, in this order.
 fn several(
     action: Action,
     picks: &[(usize, String)],
     titles: &[String],
     spot: &Spot,
 ) -> Option<Effect> {
-    let ids = picks.iter().map(|(_, id)| id.clone());
-    let queue = |id, next| Job::Queue {
-        kind: Kind::Track,
-        id,
-        next,
-    };
-    let jobs: Vec<Job> = match action {
-        Action::Play => {
-            let mut ids = ids;
-            let first = Job::Play {
-                kind: Kind::Track,
-                id: ids.next()?,
-                shuffle: false,
-            };
-            std::iter::once(first)
-                .chain(ids.map(|id| queue(id, false)))
-                .collect()
-        }
-        // each one goes right after the current track: the last one first
-        Action::Next => ids.rev().map(|id| queue(id, true)).collect(),
-        Action::Last => ids.map(|id| queue(id, false)).collect(),
+    let ids = picks.iter().map(|(_, id)| id.clone()).collect();
+    let job = match action {
+        Action::Play => Job::PlayTracks { ids, from: 0 },
+        Action::Next => Job::QueueTracks { ids, next: true },
+        Action::Last => Job::QueueTracks { ids, next: false },
         Action::RemoveFromPlaylist => {
             let Spot::Playlist { id, name, .. } = spot else {
                 return None;
@@ -535,7 +516,7 @@ fn several(
         }
         _ => return None,
     };
-    Some(Effect::RunAll(jobs))
+    Some(Effect::Run(job))
 }
 
 /// What choosing a playlist (`None`: "New playlist…") in the list beside "Add to playlist" does.
@@ -1514,39 +1495,28 @@ mod tests {
             [Play, Next, Last, AddToPlaylist, RemoveFromPlaylist],
             "what applies to every track"
         );
-        let queue = |id: &str, next| Job::Queue {
-            kind: Kind::Track,
-            id: id.into(),
-            next,
-        };
+        let ids = || vec!["-t1".to_string(), "-t1".into(), "-t2".into()];
+        // one call each, the tracks in the order shown: "play next" too keeps their order
         assert_eq!(
             effect(Play, &t),
-            Some(Effect::RunAll(vec![
-                Job::Play {
-                    kind: Kind::Track,
-                    id: "-t1".into(),
-                    shuffle: false,
-                },
-                queue("-t1", false),
-                queue("-t2", false),
-            ]))
+            Some(Effect::Run(Job::PlayTracks {
+                ids: ids(),
+                from: 0
+            }))
         );
         assert_eq!(
             effect(Last, &t),
-            Some(Effect::RunAll(vec![
-                queue("-t1", false),
-                queue("-t1", false),
-                queue("-t2", false),
-            ]))
+            Some(Effect::Run(Job::QueueTracks {
+                ids: ids(),
+                next: false
+            }))
         );
-        // each one right after the current track: the last one first, for them to play in order
         assert_eq!(
             effect(Next, &t),
-            Some(Effect::RunAll(vec![
-                queue("-t2", true),
-                queue("-t1", true),
-                queue("-t1", true),
-            ]))
+            Some(Effect::Run(Job::QueueTracks {
+                ids: ids(),
+                next: true
+            }))
         );
         assert_eq!(
             add_to(&t, None),
