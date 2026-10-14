@@ -261,6 +261,16 @@ pub fn track(conn: &Connection, id: &str) -> Result<Option<Track>> {
 const ARTIST: &str = "SELECT a.id, a.name, a.albumCount, COALESCE(n.c, 0), a.coverArt FROM artists a
     LEFT JOIN (SELECT artistId, count(*) AS c FROM tracks GROUP BY artistId) n ON n.artistId = a.id";
 
+/// A condition on an `artists a` row: the artist has something to play, an album of their own, a
+/// track, or an appearance on one. Navidrome also lists the artists of the other credits
+/// (composer, producer…), most of which have none of these; they stay in the copy, but the lists
+/// and the search leave them out. The albums are looked up once for the whole query (they have no
+/// index on the artist), the tracks and the appearances by their indexes.
+pub const HAS_SOMETHING_TO_PLAY: &str =
+    "(a.id IN (SELECT artistId FROM albums WHERE artistId IS NOT NULL)
+    OR EXISTS (SELECT 1 FROM tracks WHERE artistId = a.id)
+    OR EXISTS (SELECT 1 FROM track_artists WHERE artist = a.id))";
+
 fn artist_row(r: &Row) -> rusqlite::Result<Artist> {
     Ok(Artist {
         id: r.get(0)?,
@@ -271,6 +281,7 @@ fn artist_row(r: &Row) -> rusqlite::Result<Artist> {
     })
 }
 
+/// The artists that have something to play (see `HAS_SOMETHING_TO_PLAY`).
 pub fn artists(conn: &Connection, sort: Sort<ArtistBy>) -> Result<Vec<Artist>> {
     let d = dir(sort.descending);
     let order = match sort.by {
@@ -280,7 +291,7 @@ pub fn artists(conn: &Connection, sort: Sort<ArtistBy>) -> Result<Vec<Artist>> {
     };
     all(
         conn,
-        &format!("{ARTIST} ORDER BY {order}, a.id"),
+        &format!("{ARTIST} WHERE {HAS_SOMETHING_TO_PLAY} ORDER BY {order}, a.id"),
         [],
         artist_row,
     )
@@ -613,6 +624,47 @@ mod tests {
         let ada = artist(&conn, "ar1").unwrap().unwrap();
         assert_eq!((ada.albums, ada.tracks), (2, 4));
         assert_eq!(artist(&conn, "nobody").unwrap(), None);
+    }
+
+    /// The invented library, plus: Bram Oduya is only credited on a track of Ada's (an
+    /// appearance), Cleo Hart only on a track whose own artist is hers, Dov Reyes has nothing
+    /// (a composer or a producer, say).
+    fn library_with_credits_only() -> (tempfile::TempDir, Connection) {
+        let (d, conn) = library();
+        conn.execute_batch(
+            "INSERT INTO artists(id, name) VALUES ('ar4', 'Bram Oduya'), ('ar5', 'Cleo Hart'),
+               ('ar6', 'Dov Reyes');
+             INSERT INTO tracks(id, title, artist, artistId, album, albumId)
+               VALUES ('t6', 'Single Cut', 'Cleo Hart', 'ar5', 'Loose', NULL);
+             INSERT INTO track_artists(track, artist) VALUES ('t1', 'ar4');",
+        )
+        .unwrap();
+        (d, conn)
+    }
+
+    #[test]
+    fn the_artists_page_leaves_out_artists_with_nothing_to_play() {
+        let (_d, conn) = library_with_credits_only();
+        let by = |s| ids(&artists(&conn, s).unwrap(), |a| &a.id);
+        // an album of their own, a track of their own, an appearance: kept; nothing: left out
+        assert_eq!(
+            by(Sort::asc(ArtistBy::Name)),
+            ["ar1", "ar4", "ar5", "ar3", "ar2"]
+        );
+        assert!(!by(Sort::desc(ArtistBy::Tracks)).contains(&"ar6".to_string()));
+    }
+
+    #[test]
+    fn an_artist_with_nothing_to_play_stays_in_the_copy_and_opens() {
+        let (_d, conn) = library_with_credits_only();
+        let dov = artist(&conn, "ar6").unwrap().unwrap();
+        assert_eq!((dov.albums, dov.tracks), (0, 0));
+        assert!(artist_albums(&conn, "ar6").unwrap().is_empty());
+        assert!(artist_appearances(&conn, "ar6").unwrap().is_empty());
+        let kept: i64 = conn
+            .query_row("SELECT count(*) FROM artists", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(kept, 6);
     }
 
     #[test]

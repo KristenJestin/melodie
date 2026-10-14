@@ -46,7 +46,9 @@ configuration (see `AGENTS.md`). The daemon integration test starts its own priv
   synchronisation is running.
 - `melodie sync [--full]`: updates the local copy by hand. Not needed in normal use (see
   "Automatic synchronisation").
-- `melodie search <text…> [--json]`: searches the local copy.
+- `melodie search <text…> [--json]`: searches the local copy. Artists with nothing to play (no album
+  of their own, no track, no appearance on one: composers, producers…) are left out here and in
+  the window's lists; they stay in the copy, and their page says there is nothing to play.
 - `melodie playlists [--json]`: lists the playlists.
 - `melodie play <kind> <id> [--shuffle]`: `kind` is `playlist`, `album`, `artist` or `track`.
   Replaces the queue and starts playing. An artist gives all their albums (year, then name), tracks
