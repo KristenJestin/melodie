@@ -293,6 +293,8 @@ pub struct Follower {
     /// than start another.
     pub started_here: bool,
     seen: Option<CopyState>,
+    /// The copy grew since the library was last read again.
+    unshown: bool,
     still: u32,
     moved: Instant,
     shown: Option<Instant>,
@@ -322,6 +324,7 @@ impl Follower {
             own,
             started_here: own,
             seen: None,
+            unshown: false,
             still: 0,
             moved: now,
             shown: None,
@@ -359,12 +362,25 @@ impl Follower {
                 .shown
                 .is_some_and(|at| now.duration_since(at) < RELOAD_EVERY)
             {
+                self.unshown = true;
                 return Step::Moved(c);
             }
             self.shown = Some(now);
+            self.unshown = false;
             return Step::Grew(c);
         }
         self.still += 1;
+        // the last pages came too soon after a read: shown once it is old enough, not at the end
+        if let CopyState::Partial(c) = copy
+            && self.unshown
+            && self
+                .shown
+                .is_some_and(|at| now.duration_since(at) >= RELOAD_EVERY)
+        {
+            self.shown = Some(now);
+            self.unshown = false;
+            return Step::Grew(c);
+        }
         if self.own {
             return Step::Wait;
         }
@@ -809,6 +825,19 @@ mod tests {
         assert!(matches!(copy_state(&env), Some(CopyState::Partial(_))));
         conn.execute("DROP TABLE playlists", []).unwrap();
         assert_eq!(copy_state(&env), None);
+    }
+
+    #[test]
+    fn the_last_pages_are_shown_once_the_last_read_is_old_enough_not_at_the_end() {
+        let t0 = Instant::now();
+        let at = |s: f32| t0 + Duration::from_secs_f32(s);
+        let mut f = Follower::new(1_760_000_000, true, t0);
+        assert!(matches!(f.step(grown(500), at(1.), None), Step::Grew(_)));
+        assert!(matches!(f.step(grown(1000), at(2.), None), Step::Moved(_)));
+        assert_eq!(f.step(grown(1000), at(3.), None), Step::Wait);
+        assert!(matches!(f.step(grown(1000), at(5.), None), Step::Grew(c) if c.tracks == 1000));
+        // shown: nothing more until it grows
+        assert_eq!(f.step(grown(1000), at(10.), None), Step::Wait);
     }
 
     fn grown(tracks: i64) -> CopyState {
