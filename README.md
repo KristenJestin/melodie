@@ -6,6 +6,42 @@ and mixes computed locally, and a window (`melodie-desktop`), one more client of
 
 Agents read `AGENTS.md`. Work in progress: see the issues.
 
+## Install
+
+No build needed: a release is an archive of the Releases page of this repository,
+`melodie-<version>-linux-x86_64.tar.gz` with its `.sha256`, holding `melodie`, `melodie-desktop`
+and `install.sh`. It is built on Ubuntu 24.04 for Linux x86_64 and needs glibc 2.39 or newer.
+
+- **A release** (`vX.Y.Z`) is made when `dev` is merged into `main`.
+- **The beta** (`vX.Y.Z-beta.N`, marked pre-release) is made at every push to `dev`, and only the
+  newest one exists. It is the patch after the last release, so it is newer than it.
+
+The system must provide **libmpv** (`libmpv2` on Ubuntu, `mpv` on Arch) and a Secret Service
+(GNOME Keyring, KeePassXC…) for the login. The window links libxkbcommon (with its X11 part) and loads Wayland or X11 and a Vulkan driver when it
+starts: a desktop has them.
+
+In an empty folder, with `<tag>` the release (`v0.1.0`) or the beta (`v0.1.1-beta.21`) shown on the
+Releases page:
+
+```
+gh release download <tag> -R KristenJestin/melodie --pattern 'melodie-*'
+sha256sum --check melodie-*.sha256
+tar -xzf melodie-*.tar.gz
+cd melodie-*-linux-x86_64
+./install.sh
+```
+
+Without `gh`, download the two files from the Releases page in a browser and run the same commands
+from `sha256sum` on. `install.sh` copies the two programs into `~/.local/bin` (or `$PREFIX/bin`),
+after `melodie quit` if a player was running, so that the next `melodie play` starts the new one.
+It never asks for root and never touches your configuration, your local copy of the library or your
+keyring entry. `~/.local/bin` must be in your `PATH`. `melodie --version` and
+`melodie-desktop --version` tell which version is installed.
+
+To update, do the same with the newer archive. To remove Mélodie: `melodie quit`, then delete the
+two programs from `~/.local/bin`; `~/.config/melodie`, `~/.cache/melodie`, `~/.local/state/melodie`
+and the keyring entry (`service=melodie`) are yours to delete or keep.
+
 ## Build and layout
 
 ```
