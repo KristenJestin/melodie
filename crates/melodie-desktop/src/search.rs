@@ -564,6 +564,7 @@ impl Render for SearchView {
         let answer = self.answer.clone().filter(|_| !text.trim().is_empty());
         let cols = Table::Search.cols(content_width(window, &self.shared, cx));
         let tracks = self.tables.get(&Place::Search);
+        let playing = self.shared.read(cx).playing.clone();
         let body: AnyElement = match (&here, answer) {
             _ if text.trim().is_empty() => hint(
                 "search-hint",
@@ -577,6 +578,7 @@ impl Render for SearchView {
                 Some(shown) if shown.is_empty() => empty_filter(Kind::Track, &a.text, pal, window),
                 Some(shown) => {
                     let (c, at) = (catalog.clone(), here.clone());
+                    let marks = self.shared.read(cx).playing.marks(&at, &shown.tracks);
                     let header = self.header(here.clone(), &cols, pal, cx);
                     let rows = cols.clone();
                     v_flex()
@@ -590,7 +592,8 @@ impl Render for SearchView {
                                     .filter_map(|ix| {
                                         let (_, t) = shown.row(ix)?;
                                         let hover = row_hover("search-all", ix, window, cx);
-                                        let row = RowCtx::of(&selection, &at, &shown, ix, hover);
+                                        let row =
+                                            RowCtx::of(&selection, &at, &shown, ix, hover, &marks);
                                         Some(track_row("search-all", ix, t, &rows, pal, &c, row))
                                     })
                                     .collect()
@@ -696,14 +699,17 @@ impl Render for SearchView {
                         )
                         .map(|d| match tracks.filter(|_| g.kind == search::Kind::Track) {
                             // the tracks are a track table, as everywhere
-                            Some(shown) => d
-                                .child(self.header(Place::Search, &cols, pal, cx))
-                                .children((0..shown.len()).filter_map(|ix| {
-                                    let (_, t) = shown.row(ix)?;
-                                    let hover = row_hover(list, ix, window, cx);
-                                    let row = RowCtx::of(&selection, &here, shown, ix, hover);
-                                    Some(track_row(list, ix, t, &cols, pal, catalog, row))
-                                })),
+                            Some(shown) => {
+                                let marks = playing.marks(&here, &shown.tracks);
+                                d.child(self.header(Place::Search, &cols, pal, cx))
+                                    .children((0..shown.len()).filter_map(|ix| {
+                                        let (_, t) = shown.row(ix)?;
+                                        let hover = row_hover(list, ix, window, cx);
+                                        let row =
+                                            RowCtx::of(&selection, &here, shown, ix, hover, &marks);
+                                        Some(track_row(list, ix, t, &cols, pal, catalog, row))
+                                    }))
+                            }
                             None => d.children(g.hits.iter().enumerate().map(|(ix, h)| {
                                 let hover = row_hover(list, ix, window, cx);
                                 result_row(list, ix, h, &covers, pal, catalog, hover)

@@ -7,6 +7,7 @@ mod catalog;
 mod context_menu;
 mod cover_cache;
 mod dialogs;
+mod equaliser;
 mod home_page;
 mod motion;
 mod pages;

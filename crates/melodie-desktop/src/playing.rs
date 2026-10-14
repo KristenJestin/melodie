@@ -9,6 +9,7 @@ use crate::model::{PlayState, Player};
 use melodie_core::db;
 use melodie_core::env::Env;
 use melodie_core::library::{self, Track};
+use std::sync::Arc;
 
 /// How a row shows that its music is the current one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,6 +36,19 @@ impl Origin {
     }
 }
 
+/// The bars of the equaliser.
+pub const BARS: usize = 3;
+
+/// How high bar `bar` of the equaliser stands at `t`, a turn of its animation (0 to 1, the end
+/// meeting the start so that it repeats without a jump): from a fifth of its room to all of it.
+/// Each bar goes at its own pace and from its own place, so that they do not rise together.
+pub fn level(bar: usize, t: f32) -> f32 {
+    const TURNS: [f32; BARS] = [2.0, 3.0, 1.0];
+    const FROM: [f32; BARS] = [0.0, 0.35, 0.7];
+    let wave = (std::f32::consts::TAU * (TURNS[bar] * t + FROM[bar])).sin();
+    0.2 + 0.8 * (0.5 + 0.5 * wave)
+}
+
 /// The album and the artist of the track `id` in the local copy. Does file I/O: never call it
 /// while drawing. `None` without a copy, or when the copy lacks the track.
 pub fn read_origin(env: &Env, id: &str) -> Option<Origin> {
@@ -54,7 +68,7 @@ struct Source {
     /// higher ones.
     after: u64,
     /// The entries that queue was made of, in the order it was made. Empty until it is seen.
-    entries: Vec<u64>,
+    entries: Arc<[u64]>,
 }
 
 /// What is playing, as the lists need it.
@@ -118,7 +132,7 @@ impl Playing {
         self.source = Some(Source {
             playlist: id.to_string(),
             after: self.seen,
-            entries: Vec::new(),
+            entries: Arc::default(),
         });
     }
 
@@ -207,7 +221,7 @@ impl Playing {
 
 #[cfg(test)]
 mod tests {
-    use super::{Mark, Origin, Playing, read_origin};
+    use super::{BARS, Mark, Origin, Playing, level, read_origin};
     use crate::browse::Place;
     use crate::model::{PlayState, Player};
     use melodie_core::db;
@@ -509,6 +523,22 @@ mod tests {
         p.follow(&player(q, Some(1), PlayState::Playing));
         assert_eq!(p.album("al1"), PLAYING);
         assert_eq!(p.wants_origin(), None);
+    }
+
+    #[test]
+    fn the_bars_of_the_equaliser_stay_in_their_room_and_loop_without_a_jump() {
+        for bar in 0..BARS {
+            for step in 0..=100 {
+                let h = level(bar, step as f32 / 100.0);
+                assert!((0.2..=1.0).contains(&h), "bar {bar}: {h}");
+            }
+            let (start, end) = (level(bar, 0.0), level(bar, 1.0));
+            assert!((start - end).abs() < 1e-4, "bar {bar}: {start} then {end}");
+        }
+        // they do not move together
+        let at = |t: f32| (0..BARS).map(|b| level(b, t)).collect::<Vec<_>>();
+        assert!((at(0.1)[0] - at(0.1)[1]).abs() > 0.05);
+        assert!((at(0.1)[1] - at(0.1)[2]).abs() > 0.05);
     }
 
     #[test]
