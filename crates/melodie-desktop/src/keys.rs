@@ -89,6 +89,10 @@ pub struct Situation<'a> {
     pub dialog_open: bool,
     /// Rows of the current list are picked.
     pub selection: bool,
+    /// Two rows or more are picked: the selection bar shows, and Escape clears them first.
+    pub several: bool,
+    /// The key repeats, held down.
+    pub held: bool,
     pub field_empty: bool,
     /// The sign-in screen covers the window.
     pub sign_in: bool,
@@ -124,7 +128,7 @@ pub enum Act {
     ToggleQueue,
     /// The menu of the row picked.
     OpenMenu,
-    /// Plays the first track picked, as a double click on it does.
+    /// Plays the list from the first track picked, as a double click on it does.
     PlayPicked,
     /// Not ours: the key goes on (typed in the field).
     Pass,
@@ -200,15 +204,17 @@ pub fn act(key: Key, s: Situation) -> Act {
         Key::Find => Act::OpenSearch,
         Key::Slash if !typing => Act::OpenSearch,
         Key::Escape if s.overlay_open => Act::CloseOverlays,
-        Key::Escape if s.selection => Act::ClearSelection,
+        // one row picked is what a plain click leaves: it must not cost a second Escape
+        Key::Escape if s.several => Act::ClearSelection,
         // the field empties first, then the search is left
         Key::Escape if *s.here == Place::Search && !s.field_empty => Act::ClearField,
         Key::Escape => Act::Back,
         Key::Space if !typing => Act::PlayPause,
         Key::Queue if !typing => Act::ToggleQueue,
         Key::Menu if s.selection => Act::OpenMenu,
-        // the field's own Enter while it has the focus: the list needs no focus of its own
-        Key::Enter if s.selection && !typing => Act::PlayPicked,
+        // the field's own Enter while it has the focus: the list needs no focus of its own; held
+        // down, it would start the music again on every repeat
+        Key::Enter if s.selection && !typing && !s.overlay_open && !s.held => Act::PlayPicked,
         _ => Act::Pass,
     }
 }
@@ -241,6 +247,8 @@ mod tests {
             overlay_open: false,
             dialog_open: false,
             selection: false,
+            several: false,
+            held: false,
             field_empty: true,
             sign_in: false,
             sign_in_field_focused: false,
@@ -385,6 +393,7 @@ mod tests {
             overlay_open: true,
             dialog_open: true,
             selection: true,
+            several: true,
             field_empty: false,
             ..at(&Place::Search, true)
         };
@@ -421,10 +430,22 @@ mod tests {
         let page = Place::Playlist("p1".into());
         let picked = Situation {
             selection: true,
+            several: true,
             ..at(&page, false)
         };
         assert_eq!(act(Key::Escape, picked), Act::ClearSelection);
         assert_eq!(act(Key::Escape, at(&page, false)), Act::Back);
+    }
+
+    #[test]
+    fn escape_goes_back_at_once_with_one_row_picked() {
+        // a plain click picks a row: it must not cost a second Escape
+        let page = Place::Album("al1".into());
+        let one = Situation {
+            selection: true,
+            ..at(&page, false)
+        };
+        assert_eq!(act(Key::Escape, one), Act::Back);
     }
 
     #[test]
@@ -669,5 +690,17 @@ mod tests {
             ..picked
         };
         assert_eq!(act(Key::Enter, dialog), Act::Confirm);
+        // the settings card, or the queue over a narrow window, is in front of the list
+        let overlay = Situation {
+            overlay_open: true,
+            ..picked
+        };
+        assert_eq!(act(Key::Enter, overlay), Act::Pass);
+        // held down, it plays once
+        let held = Situation {
+            held: true,
+            ..picked
+        };
+        assert_eq!(act(Key::Enter, held), Act::Pass);
     }
 }

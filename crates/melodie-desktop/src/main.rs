@@ -42,7 +42,6 @@ use melodie_desktop::account::{self, Screen};
 use melodie_desktop::bar;
 use melodie_desktop::browse::Place;
 use melodie_desktop::keys::{self, Act, Key, Situation, Thumb};
-use melodie_desktop::launch::{Job, Kind};
 use melodie_desktop::layout::{self, QUEUE_WIDTH};
 use melodie_desktop::theme::{self, Active, Choice, Palette};
 use pages::{PageView, SelectionBar};
@@ -212,7 +211,13 @@ impl Root {
     }
 
     /// What the window knows now, for `keys` to judge by.
-    fn situation<R>(&self, window: &Window, cx: &App, judge: impl FnOnce(Situation) -> R) -> R {
+    fn situation<R>(
+        &self,
+        held: bool,
+        window: &Window,
+        cx: &App,
+        judge: impl FnOnce(Situation) -> R,
+    ) -> R {
         let (s, c, v) = (
             self.shared.read(cx),
             self.catalog.read(cx),
@@ -226,6 +231,8 @@ impl Root {
             overlay_open: self.queue_place(window, cx).covers() || s.settings_open,
             dialog_open: self.views.dialogs.read(cx).is_open(),
             selection: c.selection.count(c.here()) > 0,
+            several: c.selection.several(c.here()),
+            held,
             field_empty: v.is_empty(),
             sign_in: self.account.read(cx).screen(cx) == Screen::SignIn,
             sign_in_field_focused: self.views.sign_in.read(cx).has_focus(window, cx),
@@ -241,18 +248,18 @@ impl Root {
         } else {
             Key::read(m.control, m.shift, &k.key, k.key_char.as_deref())
         };
-        let act = self.situation(window, cx, |s| keys::act(key, s));
+        let act = self.situation(ev.is_held, window, cx, |s| keys::act(key, s));
         self.run(act, window, cx);
     }
 
     /// The arrows, which the palette's field takes as actions before any key listener.
     fn on_arrow(&mut self, key: Key, window: &mut Window, cx: &mut Context<Self>) {
-        let act = self.situation(window, cx, |s| keys::act(key, s));
+        let act = self.situation(false, window, cx, |s| keys::act(key, s));
         self.run(act, window, cx);
     }
 
     fn on_thumb(&mut self, button: Thumb, window: &mut Window, cx: &mut Context<Self>) {
-        let act = self.situation(window, cx, |s| keys::pointer_act(button, s));
+        let act = self.situation(false, window, cx, |s| keys::pointer_act(button, s));
         self.run(act, window, cx);
     }
 
@@ -279,12 +286,7 @@ impl Root {
             Act::OpenMenu => context_menu::open_on_picked(&self.catalog, window, cx),
             Act::PlayPicked => {
                 let c = self.catalog.read(cx);
-                let job = c.selection.first(c.here()).map(|t| Job::Play {
-                    kind: Kind::Track,
-                    id: t.id.clone(),
-                    shuffle: false,
-                });
-                if let Some(job) = job {
+                if let Some(job) = c.selection.play_picked(c.here()) {
                     self.shared.update(cx, |s, cx| s.run(job, cx));
                 }
             }

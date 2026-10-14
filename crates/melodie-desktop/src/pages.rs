@@ -558,8 +558,10 @@ impl Render for SelectionBar {
             };
             (c.selection.count(&here), playlist)
         };
-        let t = motion::flag("selection-bar", count > 0, motion::ENTER, window, cx);
-        if count > 0 {
+        // one row picked is what a plain click leaves: no bar for it
+        let shows = count > 1;
+        let t = motion::flag("selection-bar", shows, motion::ENTER, window, cx);
+        if shows {
             self.count = count;
         }
         if t == 0.0 {
@@ -572,7 +574,8 @@ impl Render for SelectionBar {
             let catalog = self.catalog.clone();
             move |cx: &App| {
                 let c = catalog.read(cx);
-                let Some(shown) = c.shown() else {
+                // the list the rows were picked in: the search keeps its tables apart
+                let Some(shown) = c.selection.shown(c.here()) else {
                     return (vec![], vec![]);
                 };
                 let picks = shown.picks(&c.selection, c.here());
