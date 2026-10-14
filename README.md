@@ -295,12 +295,14 @@ Screenshots and a recording of the animations, made with invented data, are in
   window, with `melodie login`, or a keyring brought from another machine), the window starts
   the first copy itself (`melodie sync`), once, as soon as `melodie status` says the login holds.
   The views fill while it runs (read again every few seconds, the scroll position kept, a
-  selection cleared), and the bottom of the window says how far it is ("Copying the library: 120
+  selection cleared when the rows of its list changed), and the bottom of the window says how far it is ("Copying the library: 120
   albums, 1500 tracks so far"). A copy that fails says why (`no-login` and `auth-refused` bring
   the sign-in screen, `unreachable` says "Navidrome is unreachable"; the settings say the copy is
   not finished); one cut off is taken up again by the next. A copy the window did not start (the
-  one `melodie login` starts) is taken up by the window once it stands still and no `melodie sync`
-  runs.
+  one `melodie login` starts, or one already running when the window asked) is taken up by the
+  window once it stands still and no `melodie sync` runs; one that stands still a quarter of an
+  hour while a run holds it is said ("The copy of the library is not moving"). A local copy made
+  for another server or user is made again in full by the next `melodie sync`.
 - **Colours**: the button at the top right chooses the theme. "Mélodie", the base theme, takes its
   colours from the cover and follows the desktop's dark or light setting. "Omarchy" is offered
   only on Omarchy (`ID=omarchy` in `/etc/os-release` and a readable
