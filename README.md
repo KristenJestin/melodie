@@ -614,7 +614,9 @@ once "Copie de la bibliothèque en cours…" (see "Automatic synchronisation").
   favourites, play counters (`getAlbumList2` `recent` and `frequent`, 500; the tracks of an album
   whose counters moved are read again with `getAlbum`); changed: full sync. A copy made by an older
   version gets the new columns and tables there; the date an album was added comes with the next
-  full sync (until then, those albums come last in "recently added").
+  full sync (until then, those albums come last in "recently added"). The artists credited on each
+  track (OpenSubsonic `artists`, featured ones included) are kept in `track_artists`; a copy made
+  before them is made again in full by the next sync, whatever starts it.
 - `melodie playlist add`, `remove`, `duplicates --remove` and `create` change the tracks of the
   playlist in the copy too, as the server did.
 - Search: FTS5 prefixes ("daf pun" finds "Daft Punk"), case and accent insensitive. Order:

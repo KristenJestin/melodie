@@ -225,6 +225,7 @@ fn full_into(client: &Client, path: &std::path::Path) -> Result<Report, Failure>
         db::set_meta(&tx, "full_synced_at", &now_secs().to_string())?;
         db::set_meta(&tx, COPY_SERVER, client.url())?;
         db::set_meta(&tx, COPY_USER, client.user())?;
+        db::set_meta(&tx, db::PARTICIPANTS, "1")?;
         tx.commit()?;
     }
     let counts = db::counts(&conn)?;
@@ -257,6 +258,7 @@ fn start_first(client: &Client, target: &Path) -> Result<Connection, Failure> {
         db::set_meta(&conn, COPY_SCAN, &scan)?;
         db::set_meta(&conn, COPY_SERVER, client.url())?;
         db::set_meta(&conn, COPY_USER, client.user())?;
+        db::set_meta(&conn, db::PARTICIPANTS, "1")?;
     }
     std::fs::rename(&tmp, target)
         .map_err(|e| anyhow::anyhow!("putting {} in place: {e}", target.display()))?;
@@ -377,7 +379,8 @@ pub fn run(env: &Env, client: &Client, force_full: bool) -> Result<Report, Failu
         Err(e) => return Err(e.into()),
     };
     conn.busy_timeout(BUSY)?;
-    if !made_for(&conn, client) {
+    // a copy older than the credited artists reads every track again, to know them
+    if !made_for(&conn, client) || db::get_meta(&conn, db::PARTICIPANTS).is_none() {
         drop(conn);
         return full(env, client);
     }
@@ -396,6 +399,7 @@ mod tests {
     use crate::api::{ApiError, Creds, token};
     use crate::fake::{self, Fake};
     use crate::search;
+    use serde_json::json;
     use std::sync::atomic::Ordering;
 
     fn setup(n: usize) -> (tempfile::TempDir, Env, Fake, Client) {
@@ -570,6 +574,68 @@ mod tests {
         assert_eq!(run(&env, &client, false).unwrap().kind, Kind::Light);
         assert_eq!(playlist_tracks(&env), ["s0", "s1", "s2"]);
         assert_eq!(fake.calls_of("getPlaylist"), 2, "once per sync");
+    }
+
+    fn credited_on(env: &Env, artist: &str) -> Vec<String> {
+        let conn = db::open_existing(env).unwrap().unwrap();
+        conn.prepare("SELECT track FROM track_artists WHERE artist = ?1 ORDER BY track")
+            .unwrap()
+            .query_map([artist], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    /// An artist only featured on `s1` and `s2`, as Navidrome credits them.
+    fn feature_on_two_tracks(fake: &Fake) {
+        let mut songs = fake.state.songs.lock().unwrap();
+        for s in songs.iter_mut().skip(1).take(2) {
+            s["artists"] = json!([{"id": s["artistId"], "name": s["artist"]},
+                                  {"id": "ar9", "name": "Lior Castell"}]);
+        }
+    }
+
+    #[test]
+    fn a_copy_keeps_the_artists_credited_on_each_track() {
+        for force in [false, true] {
+            let (_d, env, fake, client) = setup(4);
+            feature_on_two_tracks(&fake);
+            run(&env, &client, force).unwrap();
+            assert_eq!(credited_on(&env, "ar9"), ["s1", "s2"], "full: {force}");
+        }
+    }
+
+    #[test]
+    fn a_copy_made_before_the_credited_artists_is_made_again_by_the_next_sync() {
+        let (_d, env, fake, client) = setup(4);
+        run(&env, &client, false).unwrap();
+        assert_eq!(run(&env, &client, false).unwrap().kind, Kind::Light);
+        // what an older version left: no table, no key
+        let conn = db::open_existing(&env).unwrap().unwrap();
+        conn.execute_batch("DROP TABLE track_artists").unwrap();
+        conn.execute("DELETE FROM meta WHERE key = ?1", [db::PARTICIPANTS])
+            .unwrap();
+        drop(conn);
+        feature_on_two_tracks(&fake);
+        assert_eq!(run(&env, &client, false).unwrap().kind, Kind::Full);
+        assert_eq!(credited_on(&env, "ar9"), ["s1", "s2"]);
+        assert_eq!(run(&env, &client, false).unwrap().kind, Kind::Light);
+    }
+
+    #[test]
+    fn a_first_copy_begun_before_the_credited_artists_is_made_again_once_complete() {
+        let (_d, env, fake, client) = setup(1203);
+        *fake.state.fail_from_song.lock().unwrap() = Some(500);
+        assert!(run(&env, &client, false).is_err());
+        let conn = db::open_existing(&env).unwrap().unwrap();
+        conn.execute("DELETE FROM meta WHERE key = ?1", [db::PARTICIPANTS])
+            .unwrap();
+        drop(conn);
+        *fake.state.fail_from_song.lock().unwrap() = None;
+        run(&env, &client, false).unwrap();
+        // its first 500 tracks were read without their credits
+        assert_eq!(run(&env, &client, false).unwrap().kind, Kind::Full);
+        assert_eq!(run(&env, &client, false).unwrap().kind, Kind::Light);
     }
 
     #[test]
