@@ -1,8 +1,10 @@
 //! The small equaliser that marks the music playing: three bars that move while it plays and
 //! stand still when it is paused. Playing, it is a view of its own that ticks a dozen times a
-//! second, so that a frame redraws these bars and not the page; an animation asked at every frame
-//! would draw the window at the screen's rate for as long as the mark is on it
-//! (`docs/gui-toolkit.md`, "Frame times").
+//! second. Each tick also draws again the view that drew the mark (a table, a page: the window
+//! observes the keyed state and dirties its ancestors), about 1.3 ms a tick on the library's
+//! 7 200 tracks, 22 ms of drawing a second; an animation asked at every frame would draw the
+//! window at the screen's rate for as long as the mark is on it, about 340 ms a second
+//! (`docs/gui-toolkit.md`, "Frame times"). Every mark ticks on one clock, in the same frame.
 
 use gpui_kit::base::h_flex;
 use gpui_kit::*;
