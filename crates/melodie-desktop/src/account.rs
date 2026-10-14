@@ -236,22 +236,20 @@ pub enum CopyState {
     Complete(u64),
 }
 
-/// Where the local copy stands. Blocking: run it away from the window.
-pub fn copy_state(env: &Env) -> CopyState {
-    let Ok(Some(conn)) = db::open_existing(env) else {
-        return CopyState::Missing;
+/// Where the local copy stands; `None` when it could not be read this time (a copy busy being
+/// written): no news, not a change. Blocking: run it away from the window.
+pub fn copy_state(env: &Env) -> Option<CopyState> {
+    let Some(conn) = db::open_existing(env).ok()? else {
+        return Some(CopyState::Missing);
     };
     if db::is_partial(&conn) {
-        // read while the copy commits a page: said next time
-        return db::counts(&conn).map_or(CopyState::Partial(db::Counts::default()), |c| {
-            CopyState::Partial(c)
-        });
+        return db::counts(&conn).ok().map(CopyState::Partial);
     }
-    CopyState::Complete(
+    Some(CopyState::Complete(
         db::get_meta(&conn, "synced_at")
             .and_then(|s| s.parse().ok())
             .unwrap_or(0),
-    )
+    ))
 }
 
 /// Whether the window starts the first copy itself: the server said the login holds, there is no
@@ -776,7 +774,7 @@ mod tests {
         use melodie_core::{fake::Fake, sync};
         let d = tempfile::tempdir().unwrap();
         let env = Env::with_home(d.path());
-        assert_eq!(copy_state(&env), CopyState::Missing);
+        assert_eq!(copy_state(&env), Some(CopyState::Missing));
         let creds = Creds {
             u: "alice".into(),
             t: token("sesame", "c19b2d"),
@@ -792,14 +790,25 @@ mod tests {
             artists: 2,
             playlists: 0,
         };
-        assert_eq!(copy_state(&env), CopyState::Partial(so_far));
+        assert_eq!(copy_state(&env), Some(CopyState::Partial(so_far)));
         assert_eq!(
             copy_notice(so_far),
             "Copying the library: 1 album, 500 tracks so far"
         );
         *fake.state.fail_from_song.lock().unwrap() = None;
         sync::run(&env, &client, false).unwrap();
-        assert!(matches!(copy_state(&env), CopyState::Complete(at) if at > 0));
+        assert!(matches!(copy_state(&env), Some(CopyState::Complete(at)) if at > 0));
+    }
+
+    #[test]
+    fn a_count_that_cannot_be_read_is_no_news_of_the_copy() {
+        let d = tempfile::tempdir().unwrap();
+        let env = Env::with_home(d.path());
+        let conn = db::create(&db::db_path(&env)).unwrap();
+        db::set_meta(&conn, db::COPYING, "song:0").unwrap();
+        assert!(matches!(copy_state(&env), Some(CopyState::Partial(_))));
+        conn.execute("DROP TABLE playlists", []).unwrap();
+        assert_eq!(copy_state(&env), None);
     }
 
     fn grown(tracks: i64) -> CopyState {

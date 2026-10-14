@@ -126,7 +126,7 @@ impl Account {
         let env = self.env.clone();
         let task = cx.background_spawn(async move { account::copy_state(&env) });
         cx.spawn(async move |this, cx| {
-            let copy = task.await;
+            let Some(copy) = task.await else { return };
             let _ = this.update(cx, |a, cx| {
                 let (at, incomplete) = match copy {
                     CopyState::Complete(at) => ((at > 0).then_some(at), false),
@@ -212,7 +212,8 @@ impl Account {
         let env = self.env.clone();
         let task = cx.background_spawn(async move { account::copy_state(&env) });
         cx.spawn(async move |this, cx| {
-            let copy = task.await;
+            // unread: `melodie sync` reads it again
+            let copy = task.await.unwrap_or(CopyState::Missing);
             let _ = this.update(cx, |a, cx| {
                 if account::starts_first_copy(a.standing, copy, a.first_started) {
                     a.first_started = true;
@@ -249,9 +250,12 @@ impl Account {
                         (account::copy_state(&env), probe.then(running))
                     })
                     .await;
-                let go_on = this.update(cx, |a, cx| a.look(me, copy, running, cx));
-                if !matches!(go_on, Ok(true)) {
-                    return;
+                // unread: looked at again next time
+                if let Some(copy) = copy {
+                    let go_on = this.update(cx, |a, cx| a.look(me, copy, running, cx));
+                    if !matches!(go_on, Ok(true)) {
+                        return;
+                    }
                 }
                 cx.background_executor().timer(COPY_EVERY).await;
             }
