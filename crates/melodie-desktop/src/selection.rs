@@ -200,14 +200,26 @@ impl Selection {
     }
 }
 
-/// The whole list in the order shown, from the row `ix` on: Previous goes back to the rows
-/// above it.
+/// The most tracks a double click sends, and how many of them come before its row.
+const PLAYED: usize = 1000;
+const BEFORE: usize = 100;
+
+/// The list in the order shown around the row `ix`: up to `BEFORE` rows above it, for Previous,
+/// and the rest of `PLAYED` from it on. A whole library would make a queue nobody scrolls and a
+/// long wait for the first sound.
 fn play_from(shown: &Shown, ix: usize) -> Option<Job> {
-    let ids: Vec<String> = (0..shown.len())
-        .filter_map(|i| shown.row(i))
-        .map(|(_, t)| t.id.clone())
-        .collect();
-    (ix < ids.len()).then_some(Job::PlayTracks { ids, from: ix })
+    if ix >= shown.len() {
+        return None;
+    }
+    let first = ix.saturating_sub(BEFORE);
+    let end = shown.len().min(first + PLAYED);
+    let ids = (first..end)
+        .map(|i| shown.row(i).map(|(_, t)| t.id.clone()))
+        .collect::<Option<Vec<_>>>()?;
+    Some(Job::PlayTracks {
+        ids,
+        from: ix - first,
+    })
 }
 
 #[cfg(test)]
@@ -456,5 +468,26 @@ mod tests {
         s.click(&here(), &shown, 1, How::Toggle);
         assert_eq!(s.play_picked(&here()), play_from(&["c", "b", "a"], 1));
         assert_eq!(s.play_picked(&Place::Tracks), None);
+    }
+
+    #[test]
+    fn a_double_click_in_a_long_list_sends_a_thousand_tracks_around_its_row() {
+        let shown = Shown::new(
+            (0..40_000).map(|i| track(&format!("t{i}"), "")).collect(),
+            None,
+        );
+        let sent = |ix| match super::play_from(&shown, ix) {
+            Some(Job::PlayTracks { ids, from }) => {
+                (ids.len(), from, ids[0].clone(), ids[from].clone())
+            }
+            other => panic!("{other:?}"),
+        };
+        // a hundred before it, the rest after it
+        assert_eq!(sent(20_000), (1000, 100, "t19900".into(), "t20000".into()));
+        // near the end: what is left after it
+        assert_eq!(sent(39_990), (110, 100, "t39890".into(), "t39990".into()));
+        // near the start: fewer before it, more after it
+        assert_eq!(sent(5), (1000, 5, "t0".into(), "t5".into()));
+        assert!(super::play_from(&shown, 40_000).is_none());
     }
 }
