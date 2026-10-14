@@ -159,8 +159,10 @@ git config core.hooksPath .githooks     # once per clone: the commit-msg and pre
 
 Nobody edits a version: `Cargo.toml` stays at `0.0.0` and the version comes from what was merged.
 
-- **A release** is made by merging `dev` into `main`, by a merge commit (never a squash, which
-  would hide the subjects semantic-release reads). The pull request is titled
+- **A release** is made by merging `dev` into `main`, with the **"Create a merge commit"**
+  button (never a squash, which would hide the subjects semantic-release reads). That needs the
+  repository setting `allow_merge_commit`, which the maintainer turns on together with two
+  rulesets: squash only into `dev`, merge commit only into `main`. The pull request is titled
   `chore(repo): release` (a `chore` needs no `Closes #n`). `release.yml` runs on `main`:
   semantic-release reads the Angular subjects the merge brings and tags `vX.Y.Z` with its notes
   (`feat` moves the minor, `fix` the patch, a breaking change also the minor: Mélodie is in `0.x`
