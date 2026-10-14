@@ -338,8 +338,6 @@ pub fn act(
     }
 }
 
-/// One result: its picture, its name, what it is; a click plays a track and opens the rest; on
-/// hover, its other actions fade in.
 /// The mark of a result that is not a track: its album, artist or playlist plays.
 fn mark_of(playing: &Playing, hit: &Hit) -> Option<Mark> {
     match hit.kind {
@@ -350,6 +348,8 @@ fn mark_of(playing: &Playing, hit: &Hit) -> Option<Mark> {
     }
 }
 
+/// One result: its picture, its name, what it is; a click plays a track and opens the rest; on
+/// hover, its other actions fade in.
 #[allow(clippy::too_many_arguments)]
 fn result_row(
     list: &'static str,
