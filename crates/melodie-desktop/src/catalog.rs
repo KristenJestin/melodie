@@ -147,6 +147,17 @@ impl Catalog {
         }
     }
 
+    /// Picks a filter of the search. All, from a filter that was opened from All, is a step back:
+    /// the way forward and the sort of All's tracks stay as they were.
+    pub fn filter(&mut self, to: Place, cx: &mut Context<Self>) {
+        if to == Place::Search && matches!(self.nav.places(), [.., Place::Search, Place::Found(_)])
+        {
+            self.back(cx)
+        } else {
+            self.go(to, cx)
+        }
+    }
+
     /// Opens the page of the album or the artist of a track. A queue entry holds only their
     /// names, so the local copy says which they are.
     pub fn open_of_track(&mut self, track: String, facet: Facet, cx: &mut Context<Self>) {

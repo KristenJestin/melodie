@@ -128,14 +128,14 @@ pub enum Act {
     Pass,
 }
 
-/// The field is shown on the search and on its "see all" pages only; elsewhere it cannot be
-/// typed in, whatever the focus still says.
+/// The field is shown on the search page only (All or a filter); elsewhere it cannot be typed
+/// in, whatever the focus still says.
 pub fn typing(here: &Place, field_focused: bool) -> bool {
     field_focused && in_search(here)
 }
 
 pub fn in_search(here: &Place) -> bool {
-    matches!(here, Place::Search | Place::Found(_))
+    here.in_search()
 }
 
 /// What a right click does on the open palette: nothing inside it, whatever the row; outside it
@@ -367,7 +367,7 @@ mod tests {
         };
         assert_eq!(act(Key::Escape, full), Act::ClearField);
         assert_eq!(act(Key::Escape, at(&Place::Search, true)), Act::Back);
-        // on a "see all" page, back goes to the search with its text
+        // on a filter, back goes to All with its text
         let found = Situation {
             field_empty: false,
             ..at(&Place::Found(Kind::Track), true)
