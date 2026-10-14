@@ -376,3 +376,33 @@ fn opening_the_search_on_a_filter_keeps_it() {
     assert_eq!(shown(&page, cx).0, Place::Search);
     assert!(field_has_focus(&page, cx));
 }
+
+#[test]
+fn a_filter_with_no_result_says_nothing_was_found_under_its_title() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = TestAppContext::single();
+    let (page, cx) = open(&mut app, &library(dir.path()));
+    go(&page, Place::Search, cx);
+    type_in(&page, "snow", cx);
+    assert!(cx.debug_bounds("search-none").is_none(), "All has results");
+
+    // the library holds no artist, track or playlist about the snow
+    for chip in [
+        "search-filter-Artists",
+        "search-filter-Tracks",
+        "search-filter-Playlists",
+    ] {
+        click(chip, cx);
+        assert!(cx.debug_bounds("found-title").is_some(), "{chip}: no title");
+        assert!(
+            cx.debug_bounds("search-none").is_some(),
+            "{chip}: an empty area, not the empty state"
+        );
+    }
+
+    // and the same as All with no result
+    click("search-filter-All", cx);
+    type_in(&page, "zzz", cx);
+    assert!(cx.debug_bounds("search-none").is_some());
+    assert!(cx.debug_bounds("found-title").is_none());
+}

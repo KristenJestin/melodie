@@ -421,6 +421,15 @@ fn found_title(kind: Kind, n: usize, text: &str, pal: Palette, window: &Window) 
     .pb_2()
 }
 
+/// A filter that found nothing: its title with the empty state of the page under it.
+fn empty_filter(kind: Kind, text: &str, pal: Palette, window: &Window) -> AnyElement {
+    v_flex()
+        .size_full()
+        .child(found_title(kind, 0, text, pal, window))
+        .child(div().flex_1().min_h_0().child(nothing_found(text, pal)))
+        .into_any_element()
+}
+
 /// How many of the kind were found, as the title of a filter says it.
 fn count_label(n: usize, text: &str) -> String {
     format!("{} for “{}”", n, text)
@@ -491,6 +500,11 @@ fn hint(id: &'static str, text: String, pal: Palette) -> AnyElement {
         .into_any_element()
 }
 
+/// The empty state of the page, for All and for a filter alike.
+fn nothing_found(text: &str, pal: Palette) -> AnyElement {
+    hint("search-none", format!("Nothing found for “{text}”"), pal)
+}
+
 impl Render for SearchView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let pal = palette(&self.shared, window, cx);
@@ -544,6 +558,8 @@ impl Render for SearchView {
             (_, None) => empty_state(self.empty, "", pal).into_any_element(),
             (Place::Found(Kind::Track), Some(a)) => match self.tables.get(&here).cloned() {
                 None => div().into_any_element(),
+                // the title stays: it says how many, and zero is an answer
+                Some(shown) if shown.len() == 0 => empty_filter(Kind::Track, &a.text, pal, window),
                 Some(shown) => {
                     let c = catalog.clone();
                     let sorted = shown.sort.is_some();
@@ -574,6 +590,7 @@ impl Render for SearchView {
             },
             (Place::Found(kind), Some(a)) => match a.all.as_ref().filter(|(k, _)| k == kind) {
                 None => div().into_any_element(),
+                Some((kind, hits)) if hits.is_empty() => empty_filter(*kind, &a.text, pal, window),
                 Some((kind, hits)) => {
                     let hits = Arc::clone(hits);
                     let c = catalog.clone();
@@ -607,11 +624,7 @@ impl Render for SearchView {
                         .into_any_element()
                 }
             },
-            (_, Some(a)) if a.groups.is_empty() => hint(
-                "search-none",
-                format!("Nothing found for “{}”", a.text),
-                pal,
-            ),
+            (_, Some(a)) if a.groups.is_empty() => nothing_found(&a.text, pal),
             (_, Some(a)) => v_flex()
                 .id("search-groups")
                 .size_full()
