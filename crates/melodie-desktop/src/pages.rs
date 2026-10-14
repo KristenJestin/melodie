@@ -36,6 +36,30 @@ fn section_title(text: &'static str, pal: Palette) -> Div {
         .child(text)
 }
 
+/// How many of the tracks an artist appears on are drawn: the page stays light for one credited
+/// on hundreds (Play, Shuffle and the mix still use them all).
+const APPEARANCES_SHOWN: usize = 100;
+
+/// The line under the appearances drawn, saying how many are left out.
+fn and_more(total: usize) -> Option<String> {
+    (total > APPEARANCES_SHOWN).then(|| format!("and {} more", total - APPEARANCES_SHOWN))
+}
+
+/// What the buttons that play say while there is nothing for them to play.
+fn unplayable_tip(playable: bool) -> Option<&'static str> {
+    (!playable).then_some("Nothing to play")
+}
+
+/// A quiet line under a page's header, for what it lacks.
+fn quiet_line(text: impl Into<SharedString>, pal: Palette) -> Div {
+    div()
+        .px(px(PAD))
+        .pt_6()
+        .text_sm()
+        .text_color(pal.secondary)
+        .child(text.into())
+}
+
 /// Albums in rows of covers, at most `rows` rows.
 fn album_rows(
     albums: &[Album],
@@ -146,8 +170,15 @@ enum Extra {
     },
 }
 
-/// Play, shuffle, play next, add at the end, an instant mix; then what `extra` says.
-fn actions(kind: Kind, id: &str, extra: Extra, pal: Palette, catalog: &Entity<Catalog>) -> Div {
+/// Play, shuffle, play next, add at the end, an instant mix; then what `extra` says. Without
+/// anything to play (`playable` false), the buttons that play stay but cannot be pressed.
+fn actions(
+    kind: Kind,
+    id: &str,
+    (extra, playable): (Extra, bool),
+    pal: Palette,
+    catalog: &Entity<Catalog>,
+) -> Div {
     let job = |make: fn(Kind, String) -> Job| {
         let (catalog, id) = (catalog.clone(), id.to_string());
         move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
@@ -166,6 +197,8 @@ fn actions(kind: Kind, id: &str, extra: Extra, pal: Palette, catalog: &Entity<Ca
                 .label("Play")
                 .primary()
                 .diameter(38.)
+                .disabled(!playable)
+                .when_some(unplayable_tip(playable), |b, tip| b.tip(tip))
                 .on_click(job(|kind, id| Job::Play {
                     kind,
                     id,
@@ -176,6 +209,8 @@ fn actions(kind: Kind, id: &str, extra: Extra, pal: Palette, catalog: &Entity<Ca
             IconButton::new("page-shuffle", IconName::Shuffle, pal)
                 .label("Shuffle")
                 .diameter(38.)
+                .disabled(!playable)
+                .when_some(unplayable_tip(playable), |b, tip| b.tip(tip))
                 .on_click(job(|kind, id| Job::Play {
                     kind,
                     id,
@@ -210,6 +245,8 @@ fn actions(kind: Kind, id: &str, extra: Extra, pal: Palette, catalog: &Entity<Ca
                 IconButton::new("page-mix", IconName::Sparkles, pal)
                     .label("Instant mix")
                     .diameter(38.)
+                    .disabled(!playable)
+                    .when_some(unplayable_tip(playable), |b, tip| b.tip(tip))
                     .on_click(job(|kind, id| Job::Mix { kind, id })),
             )
         })
@@ -407,9 +444,12 @@ impl Render for PageView {
                         actions(
                             Kind::Album,
                             &album.id,
-                            Extra::Album {
-                                name: album.name.clone(),
-                            },
+                            (
+                                Extra::Album {
+                                    name: album.name.clone(),
+                                },
+                                true,
+                            ),
                             pal,
                             catalog,
                         ),
@@ -447,14 +487,17 @@ impl Render for PageView {
                         actions(
                             Kind::Playlist,
                             &playlist.id,
-                            if own {
-                                Extra::Playlist {
-                                    name: playlist.name.clone(),
-                                    tracks: tracks.len(),
-                                }
-                            } else {
-                                Extra::None
-                            },
+                            (
+                                if own {
+                                    Extra::Playlist {
+                                        name: playlist.name.clone(),
+                                        tracks: tracks.len(),
+                                    }
+                                } else {
+                                    Extra::None
+                                },
+                                true,
+                            ),
                             pal,
                             catalog,
                         ),
@@ -472,11 +515,14 @@ impl Render for PageView {
                     ))
                     .into_any_element()
             }
-            Some(Page::Artist {
-                artist,
-                albums,
-                top,
-            }) => v_flex()
+            Some(
+                artist_page @ Page::Artist {
+                    artist,
+                    albums,
+                    top,
+                    appears,
+                },
+            ) => v_flex()
                 .id("artist-page")
                 .size_full()
                 .overflow_y_scroll()
@@ -486,15 +532,31 @@ impl Render for PageView {
                     cover(&artist.cover, 90.),
                     "ARTIST",
                     artist.name.clone(),
-                    format!(
-                        "{} · {}",
-                        plural(artist.albums, "album"),
-                        plural(artist.tracks, "track")
-                    )
+                    [
+                        Some(plural(artist.albums, "album")),
+                        Some(plural(artist.tracks, "track")),
+                        (!appears.is_empty()).then(|| plural(appears.len() as i64, "appearance")),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(" · ")
                     .into_any_element(),
-                    actions(Kind::Artist, &artist.id, Extra::None, pal, catalog),
+                    actions(
+                        Kind::Artist,
+                        &artist.id,
+                        (Extra::None, artist_page.playable()),
+                        pal,
+                        catalog,
+                    ),
                     pal,
                 ))
+                .when(!artist_page.playable() && top.is_empty(), |d| {
+                    d.child(
+                        quiet_line("Nothing to play for this artist", pal)
+                            .debug_selector(|| "artist-nothing".into()),
+                    )
+                })
                 .when(!top.is_empty(), |d| {
                     let (shown, cols) = (shown(), cols(Table::TopTracks));
                     let marks = playing.marks(&here, &shown.tracks);
@@ -523,6 +585,29 @@ impl Render for PageView {
                         catalog,
                         &playing,
                     ))
+                })
+                // their own list, picked apart from the top tracks; in the album order, unsorted
+                .when(!appears.is_empty(), |d| {
+                    let list = Place::Appearances(artist.id.clone());
+                    let (shown, cols) = (Shown::new(appears.clone(), None), cols(Table::Tracks));
+                    let marks = playing.marks(&list, &shown.tracks);
+                    d.child(section_title("Appears on", pal))
+                        .children((0..shown.len().min(APPEARANCES_SHOWN)).filter_map(|ix| {
+                            let (_, t) = shown.row(ix)?;
+                            let hover = row_hover("appears-track", ix, window, cx);
+                            let row = RowCtx::of(&selection, &list, &shown, ix, hover, &marks);
+                            Some(
+                                track_row("appears-track", ix, t, &cols, pal, catalog, row)
+                                    .debug_selector(|| format!("appears-track-{ix}")),
+                            )
+                        }))
+                        .when_some(and_more(shown.len()), |d, more| {
+                            d.child(
+                                quiet_line(more, pal)
+                                    .pt_3()
+                                    .debug_selector(|| "appears-more".into()),
+                            )
+                        })
                 })
                 .into_any_element(),
         };
@@ -555,7 +640,7 @@ impl Render for SelectionBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (count, several, playlist) = {
             let c = self.catalog.read(cx);
-            let here = c.here().clone();
+            let here = c.picking();
             let playlist = match c.pages.get(&here).map(Arc::as_ref) {
                 Some(Page::Playlist { playlist, .. }) if c.is_own(playlist) => {
                     Some((playlist.id.clone(), playlist.name.clone()))
@@ -585,10 +670,10 @@ impl Render for SelectionBar {
             move |cx: &App| {
                 let c = catalog.read(cx);
                 // the list the rows were picked in: the search keeps its tables apart
-                let Some(shown) = c.selection.shown(c.here()) else {
+                let Some(shown) = c.selection.shown(&c.picking()) else {
                     return (vec![], vec![]);
                 };
-                let picks = shown.picks(&c.selection, c.here());
+                let picks = shown.picks(&c.selection, &c.picking());
                 let titles = picks
                     .iter()
                     .map(|(rank, _)| shown.tracks[*rank].title.clone())
@@ -662,3 +747,6 @@ impl Render for SelectionBar {
             .into_any_element()
     }
 }
+
+#[cfg(test)]
+mod tests;

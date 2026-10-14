@@ -248,11 +248,11 @@ fn spawn_events(mpv: &Arc<Mpv>, tx: Sender<Msg>) -> Result<Receiver<()>> {
 /// server for the tracks, then gives the engine the request. The wait for the server is here,
 /// never in the engine nor on the D-Bus thread. What fails is logged (it is never a stream
 /// address); a refused token is told to the engine like a stream that could not open.
-fn spawn_opener(client: Arc<Client>, tx: Sender<Msg>) -> Sender<Address> {
+fn spawn_opener(env: Env, client: Arc<Client>, tx: Sender<Msg>) -> Sender<Address> {
     let (open, rx) = channel::<Address>();
     std::thread::spawn(move || {
         for addr in rx {
-            match resolve::resolve(&client, addr.kind, &addr.id) {
+            match resolve::resolve(&client, &env, addr.kind, &addr.id) {
                 Ok(tracks) => {
                     let (reply, _) = channel();
                     let req = rules::open_request(&addr, tracks);
@@ -1324,7 +1324,7 @@ pub fn run(env: &Env) -> Result<()> {
         volume: f64::from(volume) / 100.0,
         ..Snapshot::stopped()
     }));
-    let open = spawn_opener(client.clone(), tx.clone());
+    let open = spawn_opener(env.clone(), client.clone(), tx.clone());
     let conn = match mpris::start(tx.clone(), shared.clone(), mpv.clone(), open) {
         Ok(c) => {
             dlog!("MPRIS publié ({})", mpris::bus_name());

@@ -14,6 +14,9 @@ pub struct Fake {
 
 pub struct State {
     pub songs: Mutex<Vec<Value>>,
+    /// Artists listed after the two fixed ones, without any album of their own: `getArtist`
+    /// answers them with none, as Navidrome does for an artist only featured on tracks.
+    pub featured: Mutex<Vec<Value>>,
     /// Content of the playlists a test chose to seed, by playlist id. A playlist that is not
     /// here keeps the fixed answer (all the songs) and ignores `updatePlaylist`.
     pub playlists: Mutex<HashMap<String, Vec<Value>>>,
@@ -156,6 +159,7 @@ impl Fake {
     pub fn start(n_songs: usize, token: &str) -> Fake {
         let state = Arc::new(State {
             songs: Mutex::new((0..n_songs).map(song).collect()),
+            featured: Mutex::new(Vec::new()),
             playlists: Mutex::new(HashMap::new()),
             last_scan: Mutex::new("2026-10-01T10:00:00Z".into()),
             playlist_changed: Mutex::new("2026-10-01T10:00:00Z".into()),
@@ -319,10 +323,11 @@ impl State {
                 {
                     return (500, "boom".into());
                 }
-                let artists = vec![
+                let mut artists = vec![
                     json!({"id":"ar1","name":"Daft Punk","albumCount":1,"coverArt":"ar-ar1"}),
                     json!({"id":"ar2","name":"Beyoncé","albumCount":1}),
                 ];
+                artists.extend(self.featured.lock().unwrap().iter().cloned());
                 let albums = vec![json!({"id":"al1","name":"Discovery","artist":"Daft Punk",
                     "artistId":"ar1","year":2001,"songCount":songs.len(),"coverArt":"al-al1","playCount":1})];
                 ok(json!({"searchResult3": {
@@ -362,6 +367,9 @@ impl State {
                     Some(s) => ok(json!({"song": s})),
                     None => no_such("getSong"),
                 }
+            }
+            "getArtist" if self.featured_one(query).is_some() => {
+                ok(json!({"artist": self.featured_one(query)}))
             }
             "getArtist" => ok(
                 json!({"artist": {"id": "ar1", "name": "Daft Punk", "album": [
@@ -439,6 +447,13 @@ impl State {
             }
             _ => no_such(method),
         }
+    }
+
+    /// The featured artist the request names.
+    fn featured_one(&self, query: &str) -> Option<Value> {
+        let id = param(query, "id")?;
+        let featured = self.featured.lock().unwrap();
+        featured.iter().find(|a| a["id"] == id.as_str()).cloned()
     }
 
     /// Réponses non JSON : flux audio (WAV de silence) et pochette (PNG).

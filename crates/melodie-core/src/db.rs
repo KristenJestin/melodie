@@ -42,6 +42,8 @@ CREATE TABLE skips (id TEXT NOT NULL, at INTEGER NOT NULL);
 CREATE INDEX skips_at ON skips(at);
 CREATE INDEX tracks_album ON tracks(albumId);
 CREATE INDEX tracks_artist ON tracks(artistId);
+CREATE TABLE track_artists (track TEXT NOT NULL, artist TEXT NOT NULL);
+CREATE INDEX track_artists_artist ON track_artists(artist);
 CREATE TABLE playlists (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, songCount INTEGER NOT NULL DEFAULT 0,
   duration INTEGER NOT NULL DEFAULT 0, changed TEXT, coverArt TEXT, owner TEXT
@@ -68,12 +70,12 @@ pub fn create(path: &std::path::Path) -> Result<Connection> {
 }
 
 /// A copy as the versions before the library browsing made it: no `albums.created`, no
-/// `playlist_tracks`. For tests of the upgrade, which must start from a schema that truly lacks
-/// them.
+/// `playlist_tracks`, no `track_artists`. For tests of the upgrade, which must start from a schema
+/// that truly lacks them.
 #[cfg(any(test, feature = "fake"))]
 pub fn create_before_browsing(path: &std::path::Path) -> Result<Connection> {
     let conn = create(path)?;
-    conn.execute_batch("DROP TABLE playlist_tracks; DROP TABLE playlist_synced; ALTER TABLE albums DROP COLUMN created;")?;
+    conn.execute_batch("DROP TABLE playlist_tracks; DROP TABLE playlist_synced; DROP TABLE track_artists; ALTER TABLE albums DROP COLUMN created;")?;
     Ok(conn)
 }
 
@@ -120,9 +122,9 @@ pub fn carry_skips(old: &std::path::Path, new: &std::path::Path) -> Result<()> {
 }
 
 /// What `upgrade` has to add: `(the created column, the playlist_tracks table, the
-/// playlist_synced table)`. A copy without an `albums` table is no older copy: there is nothing
-/// to add a column to.
-fn upgrade_pending(conn: &Connection) -> Result<(bool, bool, bool)> {
+/// playlist_synced table, the track_artists table)`. A copy without an `albums` table is no older
+/// copy: there is nothing to add a column to.
+fn upgrade_pending(conn: &Connection) -> Result<(bool, bool, bool, bool)> {
     let (columns, has_created): (i64, i64) = conn.query_row(
         "SELECT count(*), coalesce(sum(name = 'created'), 0) FROM pragma_table_info('albums')",
         [],
@@ -137,22 +139,24 @@ fn upgrade_pending(conn: &Connection) -> Result<(bool, bool, bool)> {
         columns > 0 && has_created == 0,
         !has_table("playlist_tracks")?,
         !has_table("playlist_synced")?,
+        !has_table("track_artists")?,
     ))
 }
 
 /// Brings a copy made by an older version up to the schema: what was added since is created
 /// empty, and filled by the next synchronisation (the date an album was added, by the next full
-/// one).
+/// one; the artists credited on each track, by the next full one, which the next sync makes, see
+/// `PARTICIPANTS`).
 ///
 /// Every process that opens the copy runs it (the daemon, the command line, the window), so it
 /// is idempotent and safe in parallel: the work is checked again under the write lock, and a
 /// process that waited for the lock finds it done.
 pub fn upgrade(conn: &Connection) -> Result<()> {
-    if upgrade_pending(conn)? == (false, false, false) {
+    if upgrade_pending(conn)? == (false, false, false, false) {
         return Ok(());
     }
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    let (created, playlist_tracks, playlist_synced) = upgrade_pending(&tx)?;
+    let (created, playlist_tracks, playlist_synced, track_artists) = upgrade_pending(&tx)?;
     if created {
         tx.execute_batch("ALTER TABLE albums ADD COLUMN created TEXT")?;
     }
@@ -165,6 +169,12 @@ pub fn upgrade(conn: &Connection) -> Result<()> {
     if playlist_synced {
         tx.execute_batch(
             "CREATE TABLE playlist_synced (playlist TEXT PRIMARY KEY, changed TEXT);",
+        )?;
+    }
+    if track_artists {
+        tx.execute_batch(
+            "CREATE TABLE track_artists (track TEXT NOT NULL, artist TEXT NOT NULL);
+             CREATE INDEX track_artists_artist ON track_artists(artist);",
         )?;
     }
     tx.commit()?;
@@ -200,6 +210,11 @@ pub const COPYING: &str = "copying";
 pub fn is_partial(conn: &Connection) -> bool {
     get_meta(conn, COPYING).is_some()
 }
+
+/// The `meta` key of a copy whose tracks were all read with the artists credited on them
+/// (`track_artists`). A copy without it was made by an older version: the next sync makes it
+/// again in full.
+pub const PARTICIPANTS: &str = "participants";
 
 pub fn get_meta(conn: &Connection, key: &str) -> Option<String> {
     conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
@@ -346,6 +361,14 @@ pub fn insert_track(tx: &Transaction, v: &Value) -> Result<bool> {
             "INSERT INTO fts_tracks(id, title, artist, album) VALUES (?1, ?2, ?3, ?4)",
             params![id, title, artist, album],
         )?;
+        // OpenSubsonic: every artist credited, the featured ones too, where `artistId` keeps one
+        let credited = v.get("artists").and_then(Value::as_array);
+        for a in credited.into_iter().flatten().filter_map(self::id) {
+            tx.execute(
+                "INSERT INTO track_artists(track, artist) VALUES (?1, ?2)",
+                params![id, a],
+            )?;
+        }
     }
     Ok(n == 1)
 }
@@ -734,6 +757,48 @@ mod tests {
         assert_eq!(created.as_deref(), Some("2026-09-01T10:00:00Z"));
     }
 
+    fn credited(conn: &Connection) -> Vec<(String, String)> {
+        conn.prepare("SELECT track, artist FROM track_artists ORDER BY track, artist")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_track_keeps_every_artist_credited_on_it() {
+        let d = tempfile::tempdir().unwrap();
+        let mut conn = create(&d.path().join("l.db")).unwrap();
+        let tx = conn.transaction().unwrap();
+        let featuring = serde_json::json!({"id":"t1","title":"A","artist":"Ada Marlow feat. Lior Castell",
+            "artistId":"ar1","artists":[{"id":"ar1","name":"Ada Marlow"},{"id":"ar9","name":"Lior Castell"}]});
+        insert_track(&tx, &featuring).unwrap();
+        // the same track again (a page read twice): credited once
+        insert_track(&tx, &featuring).unwrap();
+        // a plain Subsonic server sends no `artists`
+        insert_track(
+            &tx,
+            &serde_json::json!({"id":"t2","title":"B","artistId":"ar1"}),
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        let want = [("t1", "ar1"), ("t1", "ar9")].map(|(t, a)| (t.to_string(), a.to_string()));
+        assert_eq!(credited(&conn), want);
+    }
+
+    #[test]
+    fn an_older_copy_gets_the_table_of_the_artists_credited_on_each_track() {
+        let d = tempfile::tempdir().unwrap();
+        let env = Env::with_home(d.path());
+        let old = create(&db_path(&env)).unwrap();
+        old.execute_batch("DROP TABLE track_artists").unwrap();
+        drop(old);
+        let conn = open_existing(&env).unwrap().unwrap();
+        assert!(credited(&conn).is_empty());
+        upgrade(&conn).unwrap(); // twice is harmless
+    }
+
     #[test]
     fn an_older_copy_gets_the_added_date_and_the_playlist_tracks() {
         let d = tempfile::tempdir().unwrap();
@@ -781,7 +846,18 @@ mod tests {
     fn an_older_copy_opened_by_several_processes_at_once_is_upgraded_once() {
         let d = tempfile::tempdir().unwrap();
         let env = Env::with_home(d.path());
-        create_before_browsing(&db_path(&env)).unwrap();
+        let old = create_before_browsing(&db_path(&env)).unwrap();
+        let has = |conn: &Connection| -> bool {
+            conn.query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name = 'track_artists'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+                > 0
+        };
+        assert!(!has(&old), "the copy to upgrade must lack the table");
+        drop(old);
         let start = std::sync::Barrier::new(4);
         std::thread::scope(|s| {
             let runs: Vec<_> = (0..4)
@@ -796,6 +872,7 @@ mod tests {
                 assert!(r.join().unwrap().unwrap(), "a lost race must not fail");
             }
         });
+        assert!(has(&open_existing(&env).unwrap().unwrap()));
     }
 
     #[test]

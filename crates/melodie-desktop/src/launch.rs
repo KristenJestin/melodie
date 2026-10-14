@@ -417,6 +417,14 @@ impl<T> Lanes<T> {
     }
 }
 
+/// `melodie` run for an action of the window: the window tells its failure in its own toast, so
+/// the command sends no desktop notification on top.
+pub fn command(program: &Path) -> std::process::Command {
+    let mut c = std::process::Command::new(program);
+    c.env(melodie_core::env::NO_NOTIFY_VAR, "1");
+    c
+}
+
 /// The `melodie` beside this program when there is one (a build or an install puts both in the
 /// same folder), else the one on the `PATH`.
 pub fn program(this_exe: Option<&Path>) -> PathBuf {
@@ -430,6 +438,15 @@ pub fn program(this_exe: Option<&Path>) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failing_play_started_by_the_window_sends_no_desktop_notification() {
+        let c = command(Path::new("/bin/melodie"));
+        assert_eq!(c.get_program(), "/bin/melodie");
+        let env: Vec<_> = c.get_envs().collect();
+        let var = std::ffi::OsStr::new(melodie_core::env::NO_NOTIFY_VAR);
+        assert_eq!(env, [(var, Some(std::ffi::OsStr::new("1")))]);
+    }
 
     #[test]
     fn a_second_edit_waits_for_the_first() {

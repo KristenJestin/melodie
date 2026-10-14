@@ -186,7 +186,7 @@ impl Root {
             cx.observe(&shared, move |this, shared, cx| {
                 let open = shared.read(cx).queue_open;
                 if open && !was_open {
-                    this.views.queue.read(cx).reveal_current(cx);
+                    this.views.queue.read(cx).opened(cx);
                 }
                 was_open = open;
             }),
@@ -231,8 +231,8 @@ impl Root {
             field_focused: v.has_focus(window, cx),
             overlay_open: self.queue_place(window, cx).covers() || s.settings_open,
             dialog_open: self.views.dialogs.read(cx).is_open(),
-            selection: c.selection.count(c.here()) > 0,
-            several: c.selection.several(c.here()),
+            selection: c.selection.count(&c.picking()) > 0,
+            several: c.selection.several(&c.picking()),
             held,
             can_back: c.nav.can_go_back(),
             field_empty: v.is_empty(),
@@ -287,8 +287,8 @@ impl Root {
             Act::OpenMenu => context_menu::open_on_picked(&self.catalog, window, cx),
             Act::PlayPicked => {
                 let c = self.catalog.read(cx);
-                if let Some(played) = c.selection.play_picked(c.here()) {
-                    let here = c.here().clone();
+                let here = c.picking();
+                if let Some(played) = c.selection.play_picked(&here) {
                     self.shared
                         .update(cx, |s, cx| s.play_from(&here, played, cx));
                 }
@@ -489,7 +489,9 @@ impl Render for Root {
             Place::Albums => v.albums.clone().into(),
             Place::Artists => v.artists.clone().into(),
             Place::Tracks => v.tracks.clone().into(),
-            Place::Album(_) | Place::Artist(_) | Place::Playlist(_) => v.page.clone().into(),
+            Place::Album(_) | Place::Artist(_) | Place::Playlist(_) | Place::Appearances(_) => {
+                v.page.clone().into()
+            }
             Place::Search | Place::Found(_) => v.search.clone().into(),
         };
         let (scrim, card_scrim) = (self.shared.clone(), self.shared.clone());

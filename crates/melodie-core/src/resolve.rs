@@ -2,9 +2,11 @@
 //! des disques et des pistes vient du serveur, les métadonnées sont à jour.
 
 use crate::api::{ApiError, Client};
+use crate::env::Env;
 use crate::search::Kind;
 use crate::state::{self, Failure};
 use crate::track::TrackInfo;
+use crate::{db, library, mix};
 use serde_json::Value;
 
 /// `what` is told to the user when the server does not know the id ("album al9").
@@ -40,17 +42,35 @@ pub fn album_order(albums: &[Value]) -> Vec<String> {
     v.into_iter().map(|(_, _, id)| id).collect()
 }
 
-/// Morceaux d'une playlist, d'un album, d'un artiste (tous ses albums dans
-/// l'ordre) ou d'un morceau seul. Une liste vide est une erreur.
-pub fn resolve(client: &Client, kind: Kind, id: &str) -> Result<Vec<TrackInfo>, Failure> {
+/// The tracks of a playlist, an album, an artist (all their albums in order) or a single track.
+/// An artist without albums of their own (only featured on the tracks of others) gives the tracks
+/// the local copy credits them on: the server lists no such tracks. An empty list is an error,
+/// which names what was asked by its name.
+pub fn resolve(
+    client: &Client,
+    env: &Env,
+    kind: Kind,
+    id: &str,
+) -> Result<Vec<TrackInfo>, Failure> {
     let what = format!("{} {id}", kind.word());
-    let tracks = match kind {
+    let name = |v: &Value, key: &str| v[key].as_str().map(str::to_string);
+    let (named, tracks) = match kind {
         Kind::Track => {
             let r = call(client, "getSong", id, &what)?;
-            TrackInfo::from_api(&r["song"]).into_iter().collect()
+            let t: Vec<_> = TrackInfo::from_api(&r["song"]).into_iter().collect();
+            (name(&r["song"], "title"), t)
         }
-        Kind::Album => tracks_of(&call(client, "getAlbum", id, &what)?["album"]["song"]),
-        Kind::Playlist => tracks_of(&call(client, "getPlaylist", id, &what)?["playlist"]["entry"]),
+        Kind::Album => {
+            let r = call(client, "getAlbum", id, &what)?;
+            (name(&r["album"], "name"), tracks_of(&r["album"]["song"]))
+        }
+        Kind::Playlist => {
+            let r = call(client, "getPlaylist", id, &what)?;
+            (
+                name(&r["playlist"], "name"),
+                tracks_of(&r["playlist"]["entry"]),
+            )
+        }
         Kind::Artist => {
             let r = call(client, "getArtist", id, &what)?;
             let albums = r["artist"]["album"].as_array().cloned().unwrap_or_default();
@@ -60,16 +80,36 @@ pub fn resolve(client: &Client, kind: Kind, id: &str) -> Result<Vec<TrackInfo>, 
                     &call(client, "getAlbum", &album, &what)?["album"]["song"],
                 ));
             }
-            out
+            if albums.is_empty() {
+                out = appearances(env, id)?;
+            }
+            (name(&r["artist"], "name"), out)
         }
     };
     if tracks.is_empty() {
         return Err(Failure::Internal(anyhow::anyhow!(
-            "rien à lire dans {} {id}",
-            kind.word()
+            "Nothing to play for {}",
+            named.unwrap_or_else(|| format!("this {}", kind.word()))
         )));
     }
     Ok(tracks)
+}
+
+/// The tracks the local copy credits an artist on outside their albums; none without a copy.
+/// While the first copy is partial the credits are not all there: `Failure::Syncing`, as for the
+/// rest of the command line.
+fn appearances(env: &Env, id: &str) -> Result<Vec<TrackInfo>, Failure> {
+    let Some(conn) = db::open_existing(env)? else {
+        return Ok(Vec::new());
+    };
+    if db::is_partial(&conn) {
+        return Err(Failure::Syncing);
+    }
+    let ids: Vec<String> = library::artist_appearances(&conn, id)?
+        .into_iter()
+        .map(|t| t.id)
+        .collect();
+    Ok(mix::infos(&conn, &ids)?.into_iter().flatten().collect())
 }
 
 #[cfg(test)]
@@ -111,8 +151,10 @@ mod tests {
             s: "sel".into(),
         };
         let client = Client::new(&fake.url, creds);
+        let d = tempfile::tempdir().unwrap();
+        let env = Env::with_home(d.path());
         let ids = |kind, id| {
-            resolve(&client, kind, id)
+            resolve(&client, &env, kind, id)
                 .unwrap()
                 .into_iter()
                 .map(|t| t.id)
@@ -123,6 +165,88 @@ mod tests {
         assert_eq!(ids(Kind::Playlist, "p1"), ["s0", "s1", "h0"]);
         // Homework (1997) avant Discovery (2001).
         assert_eq!(ids(Kind::Artist, "ar1"), ["h0", "s0", "s1"]);
+    }
+
+    fn client_of(fake: &Fake) -> Client {
+        let creds = Creds {
+            u: "alice".into(),
+            t: "tok".into(),
+            s: "sel".into(),
+        };
+        Client::new(&fake.url, creds)
+    }
+
+    /// `ar9` featured on `s1` and `s2`, `ar8` credited on nothing: neither has an album.
+    fn featuring(fake: &Fake) {
+        *fake.state.featured.lock().unwrap() = vec![
+            json!({"id":"ar9","name":"Lior Castell","albumCount":0}),
+            json!({"id":"ar8","name":"Nova Reyes","albumCount":0}),
+        ];
+        let mut songs = fake.state.songs.lock().unwrap();
+        for s in songs.iter_mut().skip(1).take(2) {
+            s["artists"] = json!([{"id": s["artistId"], "name": s["artist"]},
+                                  {"id": "ar9", "name": "Lior Castell"}]);
+        }
+    }
+
+    fn message(r: Result<Vec<TrackInfo>, Failure>) -> String {
+        match r {
+            Err(f) => f.to_string(),
+            Ok(t) => panic!("{} tracks", t.len()),
+        }
+    }
+
+    #[test]
+    fn an_artist_without_albums_plays_the_tracks_they_appear_on() {
+        let fake = Fake::start(4, "tok");
+        featuring(&fake);
+        let client = client_of(&fake);
+        let d = tempfile::tempdir().unwrap();
+        let env = Env::with_home(d.path());
+        crate::sync::run(&env, &client, false).unwrap();
+        let ids: Vec<String> = resolve(&client, &env, Kind::Artist, "ar9")
+            .unwrap()
+            .into_iter()
+            .map(|t| t.id)
+            .collect();
+        assert_eq!(ids, ["s1", "s2"]);
+        let said = message(resolve(&client, &env, Kind::Artist, "ar8"));
+        assert_eq!(said, "Nothing to play for Nova Reyes");
+    }
+
+    #[test]
+    fn an_artist_without_albums_while_the_first_copy_is_partial_says_it_is_syncing() {
+        let fake = Fake::start(4, "tok");
+        featuring(&fake);
+        let client = client_of(&fake);
+        let d = tempfile::tempdir().unwrap();
+        let env = Env::with_home(d.path());
+        crate::sync::run(&env, &client, false).unwrap();
+        let conn = db::open_existing(&env).unwrap().unwrap();
+        db::set_meta(&conn, db::COPYING, "song:1000").unwrap();
+        // the credits may not be all there yet: neither "nothing" nor a part of the tracks
+        for id in ["ar9", "ar8"] {
+            let r = resolve(&client, &env, Kind::Artist, id);
+            assert!(matches!(r, Err(Failure::Syncing)), "{id}");
+        }
+    }
+
+    #[test]
+    fn a_server_that_credits_no_one_leaves_an_artist_without_albums_nothing_to_play() {
+        let fake = Fake::start(4, "tok");
+        featuring(&fake);
+        for s in fake.state.songs.lock().unwrap().iter_mut() {
+            s.as_object_mut().unwrap().remove("artists");
+        }
+        let client = client_of(&fake);
+        let d = tempfile::tempdir().unwrap();
+        let env = Env::with_home(d.path());
+        // with a copy, and without one
+        let said = message(resolve(&client, &env, Kind::Artist, "ar9"));
+        assert_eq!(said, "Nothing to play for Lior Castell");
+        crate::sync::run(&env, &client, false).unwrap();
+        let said = message(resolve(&client, &env, Kind::Artist, "ar9"));
+        assert_eq!(said, "Nothing to play for Lior Castell");
     }
 
     #[test]
@@ -138,7 +262,7 @@ mod tests {
             (Kind::Album, "inconnu", "album inconnu"),
             (Kind::Track, "zzz", "track zzz"),
         ] {
-            match resolve(&client, kind, id) {
+            match resolve(&client, &Env::with_home("/nonexistent"), kind, id) {
                 Err(Failure::NotFound(w)) => assert_eq!(w, what),
                 other => panic!("{kind:?} {id}: {other:?}"),
             }

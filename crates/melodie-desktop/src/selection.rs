@@ -111,6 +111,11 @@ impl Selection {
         }
     }
 
+    /// The list the picked rows belong to.
+    pub fn list(&self) -> Option<&Place> {
+        self.of.as_ref()
+    }
+
     fn of(&self, list: &Place) -> Option<&BTreeSet<usize>> {
         (self.of.as_ref() == Some(list)).then_some(&self.picked)
     }

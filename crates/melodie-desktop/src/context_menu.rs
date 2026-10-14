@@ -90,7 +90,7 @@ pub fn list_is(place: &Place, scroll: &UniformListScrollHandle, row: f32, cx: &m
 pub fn open_on_picked(catalog: &Entity<Catalog>, window: &mut Window, cx: &mut App) {
     let found = {
         let c = catalog.read(cx);
-        let here = c.here().clone();
+        let here = c.picking();
         c.selection.focused(&here).and_then(|ix| {
             let playlist = match c.pages.get(&here).map(Arc::as_ref) {
                 Some(Page::Playlist { playlist, .. }) if c.is_own(playlist) => {

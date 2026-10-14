@@ -11,12 +11,18 @@ use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::Icon;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use melodie_core::proto::Request;
+use melodie_core::proto::{QueueEntry, Request};
+use melodie_desktop::covers::Use;
 use melodie_desktop::figures::{Figures as _, clock_text, count_text};
 use melodie_desktop::menu::{Item, Spot};
 use melodie_desktop::model::Row;
 use melodie_desktop::theme::Palette;
+use melodie_desktop::thumbs;
+use std::cell::RefCell;
+use std::ops::Range;
 use std::path::PathBuf;
+use std::rc::Rc;
+use std::sync::{Arc, Weak};
 
 const ROW: f32 = 56.0;
 
@@ -30,12 +36,22 @@ impl QueuePanel {
         let list = cx.new(|_| QueueList {
             shared: shared.clone(),
             scroll: UniformListScrollHandle::new(),
+            asked: Rc::default(),
         });
         Self { shared, list }
     }
 
-    /// Brings the current track into view, as the panel opens.
-    pub fn reveal_current(&self, cx: &App) {
+    /// The panel opens: its rows ask for their covers again (those given up may be due), and the
+    /// current track comes into view.
+    pub fn opened(&self, cx: &App) {
+        if let Some(asked) = self.list.read(cx).asked.borrow_mut().as_mut() {
+            asked.round = None;
+        }
+        self.reveal_current(cx);
+    }
+
+    /// Brings the current track into view.
+    fn reveal_current(&self, cx: &App) {
         if let Some(i) = self.shared.read(cx).player.current {
             self.list
                 .read(cx)
@@ -109,6 +125,25 @@ impl Render for QueuePanel {
 pub struct QueueList {
     shared: Entity<Shared>,
     scroll: UniformListScrollHandle,
+    /// The queue and the rows whose covers were last asked, so that a frame showing the same
+    /// rows asks nothing.
+    asked: Rc<RefCell<Option<Asked>>>,
+}
+
+/// Rows of a queue whose covers were asked, and the retry round of the cover cache then (`None`
+/// once the panel opens again): a new one may ask again what was given up. The queue is held
+/// weakly: its address cannot be reused by another while this is kept, so a new queue is never
+/// taken for the old one.
+struct Asked {
+    queue: Weak<[QueueEntry]>,
+    rows: Range<usize>,
+    round: Option<u64>,
+}
+
+impl Asked {
+    fn of(&self, queue: &Arc<[QueueEntry]>) -> bool {
+        std::ptr::addr_eq(self.queue.as_ptr(), Arc::as_ptr(queue))
+    }
 }
 
 /// A row being dragged: what the drop needs and what the pointer carries.
@@ -161,7 +196,37 @@ impl Render for QueueList {
         let pal = palette(&self.shared, window, cx);
         let shared = self.shared.clone();
         let len = tracks.len();
+        let asked = self.asked.clone();
+        let covers = self.shared.read(cx).covers.clone();
+        let round = covers.read(cx).retry_round();
+        // the rows asked last ask again when covers given up may be due, or when the panel opens
+        // again: a list that keeps its rows drawn (gpui-fast) may not render them again
+        if let Some(a) = asked.borrow_mut().as_mut()
+            && a.of(&tracks)
+            && a.round != Some(round)
+        {
+            a.round = Some(round);
+            let ids = thumbs::shown(&tracks, a.rows.clone());
+            cx.defer(move |cx| covers.update(cx, |c, cx| c.want(ids, Use::SMALL, true, cx)));
+        }
         uniform_list("queue-rows", len, move |range, window, cx| {
+            // the rows shown ask their covers before anything that waits (#84). Asked later:
+            // nothing here reads a file.
+            let ids = thumbs::shown(&tracks, range.clone());
+            let same = asked
+                .borrow()
+                .as_ref()
+                .is_some_and(|a| a.of(&tracks) && a.rows == range);
+            // the row measured alone asks nothing and leaves the key as it is
+            if !ids.is_empty() && !same {
+                *asked.borrow_mut() = Some(Asked {
+                    queue: Arc::downgrade(&tracks),
+                    rows: range.clone(),
+                    round: Some(round),
+                });
+                let covers = shared.read(cx).covers.clone();
+                cx.defer(move |cx| covers.update(cx, |c, cx| c.want(ids, Use::SMALL, true, cx)));
+            }
             range
                 .map(|ix| {
                     let t = &tracks[ix];
