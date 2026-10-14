@@ -38,6 +38,12 @@ pub enum Item {
     },
     /// A mix card: the personal mix, the rediscoveries, a genre.
     Mix(Mix),
+    /// Tracks picked in a list, in the order shown: each with its rank in the list's own order
+    /// (what a removal names), and their titles.
+    Tracks {
+        picks: Vec<(usize, String)>,
+        titles: Vec<String>,
+    },
 }
 
 impl Item {
@@ -114,9 +120,31 @@ impl Item {
             Self::Track { id, .. } => Some((Kind::Track, id)),
             Self::Album { id, .. } => Some((Kind::Album, id)),
             Self::Artist { id, .. } => Some((Kind::Artist, id)),
-            Self::Playlist { .. } | Self::Mix(_) => None,
+            Self::Playlist { .. } | Self::Mix(_) | Self::Tracks { .. } => None,
         }
     }
+}
+
+/// The menu of the tracks picked, each with its rank in the list's own order, in the order
+/// shown: one track's own menu, or the menu of them all. `playlist`: the user's playlist they
+/// are in (its id and name).
+pub fn of_picked(
+    picked: &[(usize, &Track)],
+    playlist: Option<(String, String)>,
+) -> Option<(Item, Spot)> {
+    let &(rank, first) = picked.first()?;
+    let spot = match playlist {
+        Some((id, name)) => Spot::Playlist { id, name, rank },
+        None => Spot::Library,
+    };
+    let item = match picked {
+        [_] => Item::track(first),
+        _ => Item::Tracks {
+            picks: picked.iter().map(|(r, t)| (*r, t.id.clone())).collect(),
+            titles: picked.iter().map(|(_, t)| t.title.clone()).collect(),
+        },
+    };
+    Some((item, spot))
 }
 
 /// Where the item was right-clicked, as far as the menu cares.
@@ -260,6 +288,12 @@ pub fn actions(t: &Target) -> Vec<Action> {
         }
         // `melodie mix` plays or adds at the end: there is no "next" for a mix
         Item::Mix(_) => rows.extend([Play, Last]),
+        Item::Tracks { .. } => {
+            rows.extend([Play, Next, Last, AddToPlaylist]);
+            if matches!(t.spot, Spot::Playlist { .. }) {
+                rows.push(RemoveFromPlaylist);
+            }
+        }
     }
     rows
 }
@@ -335,6 +369,15 @@ pub enum Effect {
         name: String,
         tracks: usize,
     },
+    /// Jobs of `melodie` run one after the other, in this order.
+    RunAll(Vec<Job>),
+    /// Asks before removing the rows at these ranks from a playlist.
+    Remove {
+        id: String,
+        name: String,
+        picks: Vec<(usize, String)>,
+        titles: Vec<String>,
+    },
     /// Adds to the playlist `to` (its id and name), or to a new one when `None`.
     Add {
         to: Option<(String, String)>,
@@ -363,12 +406,15 @@ pub fn effect(action: Action, t: &Target) -> Option<Effect> {
             _ => None,
         };
     }
+    if let Item::Tracks { picks, titles } = &t.item {
+        return several(action, picks, titles, &t.spot);
+    }
     let (kind, id) = match &t.item {
         Item::Track { id, .. } => (Kind::Track, id),
         Item::Album { id, .. } => (Kind::Album, id),
         Item::Artist { id, .. } => (Kind::Artist, id),
         Item::Playlist { id, .. } => (Kind::Playlist, id),
-        Item::Mix(_) => return None,
+        Item::Mix(_) | Item::Tracks { .. } => return None,
     };
     let id = id.clone();
     let run = |job| Some(Effect::Run(job));
@@ -444,6 +490,54 @@ pub fn effect(action: Action, t: &Target) -> Option<Effect> {
     }
 }
 
+/// What `action` does on the tracks picked: `melodie` takes one track at a time, so it runs once
+/// for each, in order.
+fn several(
+    action: Action,
+    picks: &[(usize, String)],
+    titles: &[String],
+    spot: &Spot,
+) -> Option<Effect> {
+    let ids = picks.iter().map(|(_, id)| id.clone());
+    let queue = |id, next| Job::Queue {
+        kind: Kind::Track,
+        id,
+        next,
+    };
+    let jobs: Vec<Job> = match action {
+        Action::Play => {
+            let mut ids = ids;
+            let first = Job::Play {
+                kind: Kind::Track,
+                id: ids.next()?,
+                shuffle: false,
+            };
+            std::iter::once(first)
+                .chain(ids.map(|id| queue(id, false)))
+                .collect()
+        }
+        // each one goes right after the current track: the last one first
+        Action::Next => ids.rev().map(|id| queue(id, true)).collect(),
+        Action::Last => ids.map(|id| queue(id, false)).collect(),
+        Action::RemoveFromPlaylist => {
+            let Spot::Playlist { id, name, .. } = spot else {
+                return None;
+            };
+            let mut rows: Vec<_> = picks.iter().cloned().zip(titles.iter().cloned()).collect();
+            rows.sort();
+            let (picks, titles) = rows.into_iter().unzip();
+            return Some(Effect::Remove {
+                id: id.clone(),
+                name: name.clone(),
+                picks,
+                titles,
+            });
+        }
+        _ => return None,
+    };
+    Some(Effect::RunAll(jobs))
+}
+
 /// What choosing a playlist (`None`: "New playlist…") in the list beside "Add to playlist" does.
 pub fn add_to(t: &Target, to: Option<(String, String)>) -> Option<Effect> {
     let what = match &t.item {
@@ -451,6 +545,9 @@ pub fn add_to(t: &Target, to: Option<(String, String)>) -> Option<Effect> {
         Item::Album { id, .. } => Source::Ready(Adding::Album(id.clone())),
         Item::Artist { id, .. } => Source::Artist(id.clone()),
         Item::Playlist { id, .. } => Source::Playlist(id.clone()),
+        Item::Tracks { picks, .. } => Source::Ready(Adding::Tracks(
+            picks.iter().map(|(_, id)| id.clone()).collect(),
+        )),
         Item::Mix(_) => return None,
     };
     Some(Effect::Add { to, what })
@@ -1365,5 +1462,117 @@ mod tests {
         assert!(!asks.answer(c), "a newer menu was asked for");
         assert!(asks.pending(), "the newer one is still being looked up");
         assert!(asks.answer(d));
+    }
+
+    fn picked(tracks: &[Track], at: &[usize]) -> Vec<(usize, Track)> {
+        at.iter().map(|&r| (r, tracks[r].clone())).collect()
+    }
+
+    fn songs() -> Vec<Track> {
+        ["Rain", "Snow", "Rain"]
+            .iter()
+            .enumerate()
+            .map(|(i, title)| Track {
+                // the first and the last are the same track, twice in the playlist
+                id: if i == 1 { "-t2".into() } else { "-t1".into() },
+                title: title.to_string(),
+                ..Track::default()
+            })
+            .collect()
+    }
+
+    fn of(picked: &[(usize, Track)], playlist: bool) -> Option<(Item, Spot)> {
+        let picked: Vec<(usize, &Track)> = picked.iter().map(|(r, t)| (*r, t)).collect();
+        of_picked(&picked, playlist.then(|| ("p1".into(), "Road".into())))
+    }
+
+    #[test]
+    fn a_right_click_on_one_row_gives_the_menu_of_its_track() {
+        let songs = songs();
+        let (item, spot) = of(&picked(&songs, &[2]), true).unwrap();
+        assert_eq!(item, Item::track(&songs[2]));
+        assert_eq!(
+            spot,
+            Spot::Playlist {
+                id: "p1".into(),
+                name: "Road".into(),
+                rank: 2
+            }
+        );
+        assert_eq!(of(&picked(&songs, &[1]), false).unwrap().1, Spot::Library);
+        assert_eq!(of(&[], false), None, "nothing picked: no menu");
+    }
+
+    #[test]
+    fn a_right_click_inside_the_selection_gives_the_menu_of_its_tracks_in_order() {
+        let songs = songs();
+        // shown sorted: the rank 2 above the rank 0
+        let (item, spot) = of(&picked(&songs, &[2, 0, 1]), true).unwrap();
+        let t = target(item, spot);
+        assert_eq!(
+            actions(&t),
+            [Play, Next, Last, AddToPlaylist, RemoveFromPlaylist],
+            "what applies to every track"
+        );
+        let queue = |id: &str, next| Job::Queue {
+            kind: Kind::Track,
+            id: id.into(),
+            next,
+        };
+        assert_eq!(
+            effect(Play, &t),
+            Some(Effect::RunAll(vec![
+                Job::Play {
+                    kind: Kind::Track,
+                    id: "-t1".into(),
+                    shuffle: false,
+                },
+                queue("-t1", false),
+                queue("-t2", false),
+            ]))
+        );
+        assert_eq!(
+            effect(Last, &t),
+            Some(Effect::RunAll(vec![
+                queue("-t1", false),
+                queue("-t1", false),
+                queue("-t2", false),
+            ]))
+        );
+        // each one right after the current track: the last one first, for them to play in order
+        assert_eq!(
+            effect(Next, &t),
+            Some(Effect::RunAll(vec![
+                queue("-t2", true),
+                queue("-t1", true),
+                queue("-t1", true),
+            ]))
+        );
+        assert_eq!(
+            add_to(&t, None),
+            Some(Effect::Add {
+                to: None,
+                what: Source::Ready(Adding::Tracks(vec![
+                    "-t1".into(),
+                    "-t1".into(),
+                    "-t2".into()
+                ])),
+            })
+        );
+        // a removal names the ranks, the same track twice included, as the bar's does
+        assert_eq!(
+            effect(RemoveFromPlaylist, &t),
+            Some(Effect::Remove {
+                id: "p1".into(),
+                name: "Road".into(),
+                picks: vec![(0, "-t1".into()), (1, "-t2".into()), (2, "-t1".into())],
+                titles: vec!["Rain".into(), "Snow".into(), "Rain".into()],
+            })
+        );
+        // outside a playlist of the user's, nothing to remove
+        let (item, spot) = of(&picked(&songs, &[0, 1]), false).unwrap();
+        let t = target(item, spot);
+        assert_eq!(actions(&t), [Play, Next, Last, AddToPlaylist]);
+        assert_eq!(effect(RemoveFromPlaylist, &t), None);
     }
 }

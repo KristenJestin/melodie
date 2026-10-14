@@ -181,55 +181,72 @@ impl Shared {
 
     /// Runs `melodie` for what needs the server; its first error line is said in the window.
     pub fn run(&self, job: Job, cx: &mut Context<Self>) {
-        if let Some(seen) = Seen::of_job(&job) {
-            cx.emit(Started(seen));
+        self.run_all(vec![job], cx)
+    }
+
+    /// Runs `melodie` for each job, one after the other in this order (tracks played or queued
+    /// one by one); the first that fails stops the others, and is said.
+    pub fn run_all(&self, jobs: Vec<Job>, cx: &mut Context<Self>) {
+        for job in &jobs {
+            if let Some(seen) = Seen::of_job(job) {
+                cx.emit(Started(seen));
+            }
         }
         let program = launch::program(std::env::current_exe().ok().as_deref());
-        let what = match &job {
-            Job::PlayMix => "Could not start your mix",
-            Job::Rediscover => "Could not start the rediscoveries",
-            Job::Star { .. } => "Could not change the favourite",
-            Job::Play { .. } => "Could not play it",
-            Job::Queue { .. } => "Could not add it to the queue",
-            Job::Mix { .. } => "Could not make the mix",
-            Job::AddToPlaylist { .. } => "Could not add to the playlist",
-            Job::MixGenre { .. } => "Could not make the mix",
-            Job::QueueMix(_) => "Could not add the mix to the queue",
-            // run by `run_then`, which says what they did
-            Job::CheckAdd { .. }
-            | Job::CreatePlaylist { .. }
-            | Job::RenamePlaylist { .. }
-            | Job::DeletePlaylist { .. }
-            | Job::RemoveFromPlaylist { .. }
-            | Job::MoveInPlaylist { .. }
-            | Job::Duplicates { .. } => "Could not change the playlist",
-        };
-        let adds = matches!(job, Job::AddToPlaylist { .. });
         let task = cx.background_spawn(async move {
-            let out = std::process::Command::new(&program)
-                .args(job.args())
-                .stdin(std::process::Stdio::null())
-                .output();
-            match out {
-                // `--json` says how it went on its output, even when it failed
-                Ok(o) if o.status.success() && adds => {
-                    let said = launch::added_message(&String::from_utf8_lossy(&o.stdout));
-                    Ok(Some(said.unwrap_or_else(|why| why)))
+            let mut said = None;
+            for job in jobs {
+                let what = match &job {
+                    Job::PlayMix => "Could not start your mix",
+                    Job::Rediscover => "Could not start the rediscoveries",
+                    Job::Star { .. } => "Could not change the favourite",
+                    Job::Play { .. } => "Could not play it",
+                    Job::Queue { .. } => "Could not add it to the queue",
+                    Job::Mix { .. } => "Could not make the mix",
+                    Job::AddToPlaylist { .. } => "Could not add to the playlist",
+                    Job::MixGenre { .. } => "Could not make the mix",
+                    Job::QueueMix(_) => "Could not add the mix to the queue",
+                    // run by `run_then`, which says what they did
+                    Job::CheckAdd { .. }
+                    | Job::CreatePlaylist { .. }
+                    | Job::RenamePlaylist { .. }
+                    | Job::DeletePlaylist { .. }
+                    | Job::RemoveFromPlaylist { .. }
+                    | Job::MoveInPlaylist { .. }
+                    | Job::Duplicates { .. } => "Could not change the playlist",
+                };
+                let adds = matches!(job, Job::AddToPlaylist { .. });
+                let out = std::process::Command::new(&program)
+                    .args(job.args())
+                    .stdin(std::process::Stdio::null())
+                    .output();
+                match out {
+                    // `--json` says how it went on its output, even when it failed
+                    Ok(o) if o.status.success() && adds => {
+                        let s = launch::added_message(&String::from_utf8_lossy(&o.stdout));
+                        said = Some(s.unwrap_or_else(|why| why));
+                    }
+                    Ok(o) if o.status.success() => {}
+                    Ok(o) => {
+                        let why = String::from_utf8_lossy(&o.stderr)
+                            .lines()
+                            .next()
+                            .map(str::to_string);
+                        return Err((what, why));
+                    }
+                    Err(e) => {
+                        return Err((what, Some(format!("{}: {}", program.display(), e.kind()))));
+                    }
                 }
-                Ok(o) if o.status.success() => Ok(None),
-                Ok(o) => Err(String::from_utf8_lossy(&o.stderr)
-                    .lines()
-                    .next()
-                    .map(str::to_string)),
-                Err(e) => Err(Some(format!("{}: {}", program.display(), e.kind()))),
             }
+            Ok(said)
         });
         cx.spawn(async move |this, cx| {
             let msg = match task.await {
                 Ok(None) => return,
                 Ok(Some(said)) => said,
-                Err(Some(why)) if !why.is_empty() => format!("{what}: {why}"),
-                Err(_) => what.to_string(),
+                Err((what, Some(why))) if !why.is_empty() => format!("{what}: {why}"),
+                Err((what, _)) => what.to_string(),
             };
             let _ = this.update(cx, |s, cx| s.fail(msg, cx));
         })

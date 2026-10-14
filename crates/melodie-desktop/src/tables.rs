@@ -279,13 +279,19 @@ pub fn track_row(
     let (select, shown) = (catalog.clone(), row.shown.clone());
     let (accent, selected) = (pal.accent, row.selected);
     let look = row.hover.look;
-    let spot = match row.playlist.clone() {
-        Some((id, name)) => Spot::Playlist { id, name, rank },
-        None => Spot::Library,
-    };
+    let (menued, menu_shown, menu_playlist) =
+        (catalog.clone(), row.shown.clone(), row.playlist.clone());
     row.hover
         .track(h_flex().id(key("row")))
-        .menu(Item::track(t), spot)
+        .on_mouse_down(MouseButton::Right, move |ev, window, cx| {
+            cx.stop_propagation();
+            let menu = menued.update(cx, |c, cx| {
+                c.menu_on(&menu_shown, ix, menu_playlist.clone(), cx)
+            });
+            if let Some((item, spot)) = menu {
+                context_menu::open(item, spot, None, ev.position, window, cx)
+            }
+        })
         .h(px(TRACK_ROW))
         .flex_none()
         .w_full()

@@ -15,6 +15,7 @@ use melodie_desktop::browse::{Nav, Place};
 use melodie_desktop::covers::{Files, Use};
 use melodie_desktop::home::{self, Highlight, Home, Row};
 use melodie_desktop::launch::{self, Job};
+use melodie_desktop::menu::{self, Item, Spot};
 use melodie_desktop::playlists;
 use melodie_desktop::selection::{How, Selection};
 use melodie_desktop::table::{self, ColSort, Shown, Sorts};
@@ -262,6 +263,21 @@ impl Catalog {
         let here = self.here().clone();
         self.selection.click(&here, shown, ix, how);
         cx.notify();
+    }
+
+    /// A right click on row `ix` of `shown`: the menu of the selection when the row is in it,
+    /// else of this row, picked alone. `playlist`: the user's playlist the list is.
+    pub fn menu_on(
+        &mut self,
+        shown: &Shown,
+        ix: usize,
+        playlist: Option<(String, String)>,
+        cx: &mut Context<Self>,
+    ) -> Option<(Item, Spot)> {
+        let here = self.here().clone();
+        self.selection.right_click(&here, shown, ix);
+        cx.notify();
+        menu::of_picked(&self.selection.tracks(&here), playlist)
     }
 
     pub fn unselect(&mut self, cx: &mut Context<Self>) {

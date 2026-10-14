@@ -92,17 +92,15 @@ pub fn open_on_picked(catalog: &Entity<Catalog>, window: &mut Window, cx: &mut A
         let c = catalog.read(cx);
         let here = c.here().clone();
         c.selection.focused(&here).and_then(|ix| {
-            // the rank in the playlist's own order, whatever the sort shows
-            let (rank, t) = c.shown()?.row(ix)?;
-            let spot = match c.pages.get(&here).map(Arc::as_ref) {
-                Some(Page::Playlist { playlist, .. }) if c.is_own(playlist) => Spot::Playlist {
-                    id: playlist.id.clone(),
-                    name: playlist.name.clone(),
-                    rank,
-                },
-                _ => Spot::Library,
+            let playlist = match c.pages.get(&here).map(Arc::as_ref) {
+                Some(Page::Playlist { playlist, .. }) if c.is_own(playlist) => {
+                    Some((playlist.id.clone(), playlist.name.clone()))
+                }
+                _ => None,
             };
-            Some((Item::track(t), spot, ix))
+            // the menu of every row picked, as a right click inside the selection gives
+            let (item, spot) = menu::of_picked(&c.selection.tracks(&here), playlist)?;
+            Some((item, spot, ix))
         })
     };
     if let Some((item, spot, ix)) = found {
@@ -383,6 +381,22 @@ impl ContextMenu {
         let (shared, catalog) = (&self.shared, &self.catalog);
         match effect {
             Effect::Run(job) => shared.update(cx, |s, cx| s.run(job, cx)),
+            Effect::RunAll(jobs) => shared.update(cx, |s, cx| s.run_all(jobs, cx)),
+            Effect::Remove {
+                id,
+                name,
+                picks,
+                titles,
+            } => dialogs::open(
+                Dialog::Remove {
+                    id,
+                    name,
+                    picks,
+                    titles,
+                },
+                window,
+                cx,
+            ),
             Effect::Row { ix, entry, req } => {
                 shared.update(cx, |s, cx| s.send_for_row(ix, entry, req, cx))
             }
