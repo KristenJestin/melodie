@@ -200,15 +200,27 @@ pub struct Ready {
 }
 
 pub fn prepare(env: &Env) -> Result<(Client, Ready), Failure> {
-    let running = connect();
+    let client = client(env)?;
+    let ready = reach(env, &client)?;
+    Ok((client, ready))
+}
+
+/// The client of the server, from the keyring.
+fn client(env: &Env) -> Result<Client, Failure> {
     state::quick_check(env)?;
-    let client: Client = state::open_client(env)?;
+    state::open_client(env)
+}
+
+/// The daemon if it runs; else the server checked first, for the daemon to start only if it
+/// can play.
+fn reach(env: &Env, client: &Client) -> Result<Ready, Failure> {
+    let running = connect();
     if running.is_none() {
         let r = client.ping().map_err(|e| state::from_api(e, client.url()));
         state::record(env, &r);
         r?;
     }
-    Ok((client, Ready { running }))
+    Ok(Ready { running })
 }
 
 /// Envoie des morceaux au démon (démarré au besoin) : remplace la file ou l'allonge.
@@ -264,11 +276,18 @@ fn try_play_or_queue(
     deliver(env, ready, result?, shuffle, queue, next)
 }
 
-/// Plays tracks from the one at `from` (from 0), or queues them, in this order: one request,
-/// the tracks read from the local copy, as a mix's are; the server is asked only for those the
-/// copy does not hold yet.
-pub fn play_tracks(env: &Env, ids: Vec<String>, from: usize, queue: bool, next: bool) -> ExitCode {
-    match try_play_tracks(env, ids, from, queue, next) {
+/// Plays tracks from the one at `start` (from 0), shuffled or not, or queues them, in this
+/// order: one request, the tracks read from the local copy, as a mix's are; the server is asked
+/// only for those the copy does not hold yet, before the daemon is reached.
+pub fn play_tracks(
+    env: &Env,
+    ids: Vec<String>,
+    start: usize,
+    shuffle: bool,
+    queue: bool,
+    next: bool,
+) -> ExitCode {
+    match try_play_tracks(env, ids, start, shuffle, queue, next) {
         Ok(n) => {
             announce(n, queue);
             ExitCode::SUCCESS
@@ -280,22 +299,16 @@ pub fn play_tracks(env: &Env, ids: Vec<String>, from: usize, queue: bool, next: 
 fn try_play_tracks(
     env: &Env,
     ids: Vec<String>,
-    from: usize,
+    start: usize,
+    shuffle: bool,
     queue: bool,
     next: bool,
 ) -> Result<usize, Failure> {
-    if from >= ids.len() {
-        return Err(Failure::Internal(anyhow!(
-            "no track at position {} of {}",
-            from + 1,
-            ids.len()
-        )));
-    }
-    let (client, ready) = prepare(env)?;
     let known = match db::open_existing(env)? {
         Some(conn) => mix::infos(&conn, &ids)?,
         None => vec![None; ids.len()],
     };
+    let client = client(env)?;
     let mut tracks = Vec::with_capacity(ids.len());
     for (id, info) in ids.iter().zip(known) {
         match info {
@@ -307,14 +320,15 @@ fn try_play_tracks(
             }
         }
     }
+    let ready = reach(env, &client)?;
     let n = tracks.len();
     let req = if queue {
         Request::Queue { tracks, next }
     } else {
         Request::Play {
             tracks,
-            shuffle: false,
-            start: from,
+            shuffle,
+            start,
         }
     };
     send(env, ready, &req)?;

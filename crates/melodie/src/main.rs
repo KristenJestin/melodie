@@ -21,7 +21,7 @@ use melodie_core::state::{self, Failure};
 use melodie_core::time::rfc3339;
 use melodie_core::{api, db, likes, mix, playlists, proto, search, store, sync};
 use rusqlite::Connection;
-use std::io::{BufRead, Write};
+use std::io::{BufRead, IsTerminal, Write};
 use std::process::ExitCode;
 
 #[derive(Parser)]
@@ -391,12 +391,21 @@ fn run(cli: Cli) -> Result<ExitCode> {
             shuffle,
             from,
         } => {
-            let from = from.map_or(0, |p| p as usize - 1);
-            Ok(match (kind, read_ids(ids)?) {
-                (_, ids) if ids.len() == 1 && from == 0 => {
+            let ids = stdin_ids(ids)?;
+            Ok(match (kind, from) {
+                (KindArg::Track, from) => {
+                    let start = match from {
+                        Some(p) if p as usize > ids.len() => {
+                            bail!("play: no track at position {p} of {}", ids.len())
+                        }
+                        Some(p) => p as usize - 1,
+                        None => 0,
+                    };
+                    ctl::play_tracks(&env, ids, start, shuffle, false, false)
+                }
+                (_, None) if ids.len() == 1 => {
                     ctl::play_or_queue(&env, kind.into(), &ids[0], shuffle, false, false)
                 }
-                (KindArg::Track, ids) => ctl::play_tracks(&env, ids, from, false, false),
                 _ => bail!("play: several ids and --from are for tracks only"),
             })
         }
@@ -428,11 +437,13 @@ fn run(cli: Cli) -> Result<ExitCode> {
             } else if clear_after {
                 ctl::control(proto::Request::QueueClearAfter)
             } else {
-                match (kind, read_ids(ids)?) {
+                match (kind, stdin_ids(ids)?) {
+                    (Some(KindArg::Track), ids) => {
+                        ctl::play_tracks(&env, ids, 0, false, true, next)
+                    }
                     (Some(kind), ids) if ids.len() == 1 => {
                         ctl::play_or_queue(&env, kind.into(), &ids[0], false, true, next)
                     }
-                    (Some(KindArg::Track), ids) => ctl::play_tracks(&env, ids, 0, true, next),
                     (Some(_), _) => bail!("queue: several ids are for tracks only"),
                     _ => bail!("queue: what to add is missing"),
                 }
@@ -503,12 +514,26 @@ fn run(cli: Cli) -> Result<ExitCode> {
 
 /// The ids given, or read from stdin (one per line) when the only one is `-`: a list as long
 /// as a whole library does not fit on a command line.
-fn read_ids(ids: Vec<String>) -> Result<Vec<String>> {
-    if ids != ["-"] {
+fn stdin_ids(ids: Vec<String>) -> Result<Vec<String>> {
+    let stdin = std::io::stdin();
+    let terminal = stdin.is_terminal();
+    read_ids(ids, stdin.lock(), terminal)
+}
+
+/// `read_ids` with what stdin is: `terminal` when nothing is piped in.
+fn read_ids(ids: Vec<String>, input: impl BufRead, terminal: bool) -> Result<Vec<String>> {
+    if !ids.iter().any(|id| id == "-") {
         return Ok(ids);
     }
+    if ids.len() > 1 {
+        bail!("- reads every id from stdin: give no other id beside it");
+    }
+    if terminal {
+        // waiting for Ctrl-D would look like a hang
+        bail!("- reads the ids from stdin: pipe them in, one per line");
+    }
     let mut read = Vec::new();
-    for line in std::io::stdin().lock().lines() {
+    for line in input.lines() {
         let line = line?;
         let id = line.trim();
         if !id.is_empty() {
@@ -902,6 +927,28 @@ fn status(env: &Env) -> Result<ExitCode> {
 mod tests {
     use super::*;
     use clap::CommandFactory;
+
+    #[test]
+    fn ids_on_stdin_are_read_unless_it_is_a_terminal_or_mixed() {
+        let read = |ids: &[&str], input: &str, terminal| {
+            read_ids(
+                ids.iter().map(|s| s.to_string()).collect(),
+                input.as_bytes(),
+                terminal,
+            )
+        };
+        assert_eq!(read(&["t1", "t2"], "", true).unwrap(), ["t1", "t2"]);
+        assert_eq!(read(&["-"], "t1\n\n t2 \n", false).unwrap(), ["t1", "t2"]);
+        assert!(
+            read(&["-"], "t1\n", true).is_err(),
+            "a terminal: refused, not waited on"
+        );
+        assert!(
+            read(&["t1", "-"], "t2\n", false).is_err(),
+            "- among other ids"
+        );
+        assert!(read(&["-"], "", false).is_err(), "nothing on stdin");
+    }
 
     /// The window runs `melodie like track -- <id>`: the id must come out whole even when it
     /// starts with a dash.

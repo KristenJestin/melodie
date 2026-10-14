@@ -2712,3 +2712,68 @@ fn a_track_missing_from_the_local_copy_is_asked_of_the_server() {
     assert_eq!(queue_ids(&sb), ["t1", "t5"]);
     assert_eq!(sb.fake.calls_of("getSong"), 1);
 }
+
+#[test]
+fn several_tracks_played_shuffled_are_shuffled() {
+    let sb = Sandbox::new(true);
+    long_album_copied(&sb);
+    let natural = ids_of(&["t1", "t2", "t3", "t4", "t5"]);
+    // A shuffle can keep the natural order by chance (1 in 120): try again a few times.
+    let mut moved = false;
+    for _ in 0..8 {
+        sb.ok(&[
+            "play",
+            "track",
+            "--shuffle",
+            "--",
+            "t1",
+            "t2",
+            "t3",
+            "t4",
+            "t5",
+        ]);
+        let q = queue_ids(&sb);
+        assert_eq!(sorted(q.clone()), natural);
+        if q != natural {
+            moved = true;
+            break;
+        }
+    }
+    assert!(moved, "never shuffled");
+}
+
+#[test]
+fn a_single_track_comes_from_the_local_copy() {
+    let sb = Sandbox::new(true);
+    long_album_copied(&sb);
+    sb.ok(&["play", "track", "t2"]);
+    sb.ok(&["queue", "--next", "track", "t4"]);
+    assert_eq!(queue_ids(&sb), ["t2", "t4"]);
+    assert_eq!(sb.fake.calls_of("getSong"), 0);
+}
+
+#[test]
+fn a_track_known_nowhere_is_an_error_and_plays_nothing() {
+    let sb = Sandbox::new(true);
+    long_album_copied(&sb);
+    let o = sb.run(&["play", "track", "--from", "2", "--", "t1", "nope", "t3"]);
+    assert!(!o.status.success());
+    assert!(!sb.socket().exists(), "no shorter list, no shifted start");
+}
+
+#[test]
+fn the_wrong_uses_of_several_ids_are_usage_errors() {
+    let sb = Sandbox::new(true);
+    long_album_copied(&sb);
+    for args in [
+        &["play", "track", "--from", "3", "--", "t1", "t2"][..],
+        &["play", "album", "al1", "--from", "1"],
+        &["play", "track", "--", "t1", "-"],
+        &["queue", "track", "--", "-", "t1"],
+    ] {
+        let o = sb.run(args);
+        // a usage error: code 1, no failure state, no notification
+        assert_eq!(o.status.code(), Some(1), "{args:?}");
+        assert!(!sb.socket().exists(), "{args:?}: no daemon started");
+    }
+}
