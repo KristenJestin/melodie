@@ -349,3 +349,30 @@ fn the_all_chip_goes_back_and_keeps_what_all_had() {
         "the way forward was dropped"
     );
 }
+
+#[test]
+fn opening_the_search_on_a_filter_keeps_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = TestAppContext::single();
+    let (page, cx) = rain(dir.path(), &mut app);
+    go(&page, Place::Found(Kind::Album), cx);
+    let root = page.read_with(cx, |p, _| p.root.clone());
+    cx.update(|window, cx| window.focus(&root, cx));
+
+    // Ctrl+F or `/`
+    let search = page.read_with(cx, |p, _| p.search.clone());
+    cx.update(|window, cx| search.update(cx, |s, cx| s.open(window, cx)));
+    cx.run_until_parked();
+    let (here, text, found) = shown(&page, cx);
+    assert_eq!(here, Place::Found(Kind::Album), "the filter was reset");
+    assert_eq!(text, "rain");
+    assert_eq!(found, Some((Kind::Album, 6)));
+    assert!(field_has_focus(&page, cx));
+
+    // from elsewhere it opens the search at All
+    go(&page, Place::Albums, cx);
+    cx.update(|window, cx| search.update(cx, |s, cx| s.open(window, cx)));
+    cx.run_until_parked();
+    assert_eq!(shown(&page, cx).0, Place::Search);
+    assert!(field_has_focus(&page, cx));
+}

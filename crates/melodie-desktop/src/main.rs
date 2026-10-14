@@ -262,9 +262,7 @@ impl Root {
         let covers = self.queue_place(window, cx).covers();
         match act {
             Act::OpenSearch => {
-                self.catalog
-                    .update(cx, |c, cx| c.start_at(Place::Search, cx));
-                self.views.search.update(cx, |v, cx| v.focus(window, cx));
+                self.views.search.update(cx, |v, cx| v.open(window, cx));
             }
             // what is open closes first; then a page goes back
             Act::CloseOverlays => self.shared.update(cx, |s, cx| {

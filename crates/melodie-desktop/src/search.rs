@@ -130,6 +130,16 @@ impl SearchView {
         }
     }
 
+    /// Ctrl+F or `/`: the search opens, its field has the cursor. Already on the search, with a
+    /// filter or not, the filter stays.
+    pub fn open(&self, window: &mut Window, cx: &mut App) {
+        if !self.catalog.read(cx).here().in_search() {
+            self.catalog
+                .update(cx, |c, cx| c.start_at(Place::Search, cx));
+        }
+        self.focus(window, cx);
+    }
+
     /// Puts the cursor in the field, its text selected: typing replaces it.
     pub fn focus(&self, window: &mut Window, cx: &mut App) {
         self.input.update(cx, |i, cx| {
