@@ -64,12 +64,13 @@ jobs:
           tag=$(git tag --points-at HEAD --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
-  # The programs, built from the tag on Linux x86_64. No tag, nothing built. The compile only reads
-  # the repository; what it makes goes to the next job, which is the one that can write.
+  # The programs, built from the tag on Linux x86_64, on the Ubuntu 24.04 (glibc 2.39) that the
+  # README names. No tag, nothing built. The compile only reads the repository; what it makes goes
+  # to the next job, which is the one that can write.
   build:
     needs: tag
     if: needs.tag.outputs.tag != ''
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     env:
