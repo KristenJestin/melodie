@@ -175,7 +175,7 @@ pub fn log_line(env: &Env, msg: &str) {
 /// Corps de `sync --background` : une seule à la fois, erreurs au journal,
 /// refus d'authentification noté par le marqueur habituel.
 pub fn run_background(env: &Env, full: bool) -> Result<()> {
-    let Some(_lock) = try_lock(&lock_path()?)? else {
+    let Some(_lock) = lock_soon(&lock_path()?)? else {
         return Ok(());
     };
     let r = state::open_client(env).and_then(|c| sync::run(env, &c, full));
