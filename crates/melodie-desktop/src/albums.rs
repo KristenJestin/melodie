@@ -503,12 +503,22 @@ mod tests {
             });
             cx.run_until_parked();
         };
+        let line = |cx: &mut gpui_kit::VisualTestContext| {
+            cx.debug_bounds("album-equaliser-al1-line").map(|b| b.size)
+        };
         cx.run_until_parked();
         assert!(!shown(cx), "another album plays");
+        let plain = line(cx).expect("the name line");
         mark(cx, Some(Mark::Playing));
         assert!(shown(cx));
+        assert_eq!(
+            line(cx),
+            Some(plain),
+            "the equaliser moves nothing under it"
+        );
         mark(cx, Some(Mark::Paused));
         assert!(shown(cx), "still, but there");
+        assert_eq!(line(cx), Some(plain));
         mark(cx, None);
         assert!(!shown(cx));
     }

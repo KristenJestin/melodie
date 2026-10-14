@@ -103,6 +103,8 @@ pub fn name_line(
     mark: Option<Mark>,
     accent: Hsla,
 ) -> Div {
+    let id: ElementId = id.into();
+    let line = line.debug_selector(|| format!("{id}-line"));
     match mark {
         None => line.truncate().child(name.into()),
         Some(mark) => line
@@ -110,7 +112,9 @@ pub fn name_line(
             .flex()
             .items_center()
             .gap_2()
-            .child(Equaliser::new(id, mark, accent))
+            // squeezed like the plain line when the card is short, not pushing its neighbours
+            .overflow_hidden()
+            .child(Equaliser::new(id.clone(), mark, accent))
             .child(div().min_w_0().truncate().child(name.into())),
     }
 }
