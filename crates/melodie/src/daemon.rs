@@ -199,7 +199,9 @@ fn event_handle(mpv: &Arc<Mpv>) -> Arc<Mpv> {
 /// mpv's event thread. The receiver hears once that mpv's core started its playlist: as it
 /// starts, the core sends the playlist back to its first entry (`prepare_playlist`), so a play
 /// handled before would start at the first track instead of the one asked. mpv tells it with
-/// its `idle` event, deprecated but sent to every client unless refused.
+/// its `idle` event, deprecated but sent to every client unless refused. That first `idle`
+/// comes only while mpv has nothing loaded, so nothing may be loaded before the wait (a
+/// "restore the queue at start" would bring the race back, and a 2 s stall).
 fn spawn_events(mpv: &Arc<Mpv>, tx: Sender<Msg>) -> Result<Receiver<()>> {
     let ev = event_handle(mpv);
     for (id, name, fmt) in [
