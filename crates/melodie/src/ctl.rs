@@ -271,7 +271,7 @@ fn try_play_or_queue(
     next: bool,
 ) -> Result<usize, Failure> {
     let (client, ready) = prepare(env)?;
-    let result = resolve::resolve(&client, kind, id);
+    let result = resolve::resolve(&client, env, kind, id);
     state::record(env, &result);
     deliver(env, ready, result?, shuffle, queue, next)
 }
@@ -314,7 +314,7 @@ fn try_play_tracks(
         match info {
             Some(t) => tracks.push(t),
             None => {
-                let r = resolve::resolve(&client, Kind::Track, id);
+                let r = resolve::resolve(&client, env, Kind::Track, id);
                 state::record(env, &r);
                 tracks.extend(r?);
             }
@@ -375,7 +375,7 @@ pub fn open(env: &Env, uri: &str) -> ExitCode {
 
 fn try_open(env: &Env, addr: &Address) -> Result<usize, Failure> {
     let (client, ready) = prepare(env)?;
-    let result = resolve::resolve(&client, addr.kind, &addr.id);
+    let result = resolve::resolve(&client, env, addr.kind, &addr.id);
     state::record(env, &result);
     let tracks = result?;
     let n = tracks.len();

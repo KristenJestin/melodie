@@ -51,7 +51,9 @@ configuration (see `AGENTS.md`). The daemon integration test starts its own priv
 - `melodie play <kind> <id> [--shuffle]`: `kind` is `playlist`, `album`, `artist` or `track`.
   Replaces the queue and starts playing. An artist gives all their albums (year, then name), tracks
   in the server's order; a track plays alone. The list comes from the API (`getPlaylist`,
-  `getAlbum`, `getArtist`), not from the local copy; a track is read as `play track` reads it.
+  `getAlbum`, `getArtist`), not from the local copy; a track is read as `play track` reads it. An
+  artist without albums of their own (only featured on others' tracks) gives the tracks the local
+  copy credits them on; with none, "Nothing to play for <name>". `melodie mix artist` does the same.
 - `melodie play track [--from <pos> | --shuffle] <id>…`: plays several tracks, in this order (or
   shuffled), from the one at `pos` (from 1); the ones before it stay in the queue, for Previous.
   One id `-` reads the ids from stdin, one per line, for a list too long for a command line; it

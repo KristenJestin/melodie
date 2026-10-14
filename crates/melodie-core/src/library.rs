@@ -331,6 +331,23 @@ pub fn top_tracks(conn: &Connection, id: &str, n: usize) -> Result<Vec<Track>> {
     )
 }
 
+/// The tracks an artist appears on outside their own albums: credited on another artist's tracks
+/// (featured), or on an album that is not theirs. The latest album first, then in its order.
+pub fn artist_appearances(conn: &Connection, id: &str) -> Result<Vec<Track>> {
+    all(
+        conn,
+        &format!(
+            "{TRACK} LEFT JOIN albums a ON a.id = t.albumId
+             WHERE (t.artistId = ?1 OR t.id IN (SELECT track FROM track_artists WHERE artist = ?1))
+               AND a.artistId IS NOT ?1
+             ORDER BY t.year DESC, t.album COLLATE NOCASE, t.albumId, t.track,
+               t.title COLLATE NOCASE, t.id"
+        ),
+        [id],
+        track_row,
+    )
+}
+
 /// Every track.
 pub fn tracks(conn: &Connection, sort: Sort<TrackBy>) -> Result<Vec<Track>> {
     let d = dir(sort.descending);
@@ -672,6 +689,40 @@ mod tests {
             ["t5", "t3", "t1"]
         );
         assert_eq!(top_tracks(&conn, "ar1", 10).unwrap().len(), 4);
+    }
+
+    #[test]
+    fn an_artist_appears_on_the_tracks_credited_to_them_outside_their_albums() {
+        let (_d, mut conn) = library();
+        let tx = conn.transaction().unwrap();
+        let credited = |id: &str, artist: (&str, &str), album: (&str, &str), year: i64| {
+            json!({"id":id,"title":id,"artist":artist.1,"artistId":artist.0,"album":album.1,
+                   "albumId":album.0,"year":year,"track":1,
+                   "artists":[{"id":artist.0,"name":artist.1},{"id":"ar3","name":"Ilse Varga"}]})
+        };
+        for v in [
+            // featured on the tracks of others
+            credited("f1", ("ar1", "Ada Marlow"), ("al1", "Lanterns"), 2019),
+            credited(
+                "f2",
+                ("ar2", "the Quiet Engines"),
+                ("al2", "copper Season"),
+                2021,
+            ),
+            // their own track, on another artist's album
+            credited("f3", ("ar3", "Ilse Varga"), ("al2", "copper Season"), 2021),
+            // their own track, on their own album: not an appearance
+            credited("f4", ("ar3", "Ilse Varga"), ("al3", "Northbound"), 2008),
+        ] {
+            db::insert_track(&tx, &v).unwrap();
+        }
+        tx.commit().unwrap();
+        // the latest album first, then in the album's order
+        let appears = track_ids(&artist_appearances(&conn, "ar3").unwrap());
+        assert_eq!(appears, ["f2", "f3", "f1"]);
+        // an artist credited only on their own albums appears nowhere
+        assert!(artist_appearances(&conn, "ar2").unwrap().is_empty());
+        assert!(artist_appearances(&conn, "nobody").unwrap().is_empty());
     }
 
     #[test]

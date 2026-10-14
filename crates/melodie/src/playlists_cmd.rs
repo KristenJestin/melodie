@@ -24,6 +24,7 @@ use std::process::ExitCode;
 /// Morceaux visés. Le morceau en cours vient du démon, un morceau de la copie
 /// locale (durée), un album de l'API (ordre du serveur).
 fn tracks_of(
+    env: &Env,
     target: &Target,
     client: &Client,
     conn: Option<&Connection>,
@@ -42,7 +43,7 @@ fn tracks_of(
         }
         Target::Track(id) => Ok(vec![local_track(conn, id)]),
         Target::Tracks(ids) => Ok(ids.iter().map(|id| local_track(conn, id)).collect()),
-        Target::Album(id) => Ok(resolve::resolve(client, Kind::Album, id)?),
+        Target::Album(id) => Ok(resolve::resolve(client, env, Kind::Album, id)?),
     }
 }
 
@@ -130,7 +131,7 @@ pub struct Duplicates {
 pub fn add_cmd(env: &Env, pid: &str, target: &Target, dup: Duplicates, json: bool) -> ExitCode {
     let r = (|| -> Result<(), Oops> {
         let s = session(env)?;
-        let tracks = tracks_of(target, &s.client, s.conn.as_ref())?;
+        let tracks = tracks_of(env, target, &s.client, s.conn.as_ref())?;
         let r = if dup.dry_run {
             check_add(&s.client, pid, &tracks)
         } else {
@@ -326,7 +327,7 @@ pub fn create_cmd(env: &Env, name: &str, target: Option<&Target>) -> ExitCode {
         }
         let s = session(env)?;
         let tracks = match target {
-            Some(t) => tracks_of(t, &s.client, s.conn.as_ref())?,
+            Some(t) => tracks_of(env, t, &s.client, s.conn.as_ref())?,
             None => Vec::new(),
         };
         let owner = Settings::load(env)?.user.unwrap_or_default();

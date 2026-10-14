@@ -904,3 +904,33 @@ fn the_tracks_of_several_ids_come_from_the_copy_in_their_order() {
         "Artiste 0"
     );
 }
+
+#[test]
+fn an_artist_only_featured_is_mixed_from_the_tracks_they_appear_on() {
+    let d = tempfile::tempdir().unwrap();
+    let conn = db::create(&d.path().join("l.db")).unwrap();
+    insert_fake(&conn, 200);
+    conn.execute_batch(
+        "INSERT INTO artists(id, name, albumCount) VALUES ('ar90', 'Lior Castell', 0),
+           ('ar91', 'Nova Reyes', 0);
+         INSERT INTO track_artists(track, artist) VALUES ('t3', 'ar90'), ('t57', 'ar90');",
+    )
+    .unwrap();
+    let lib = Library::load(&conn, NOW).unwrap();
+    let src = |s: &str| find_source(&conn, &lib, SourceKind::Artist, s);
+    let Ok(Source::Artist(v)) = src("ar90") else {
+        panic!("{:?}", src("ar90"))
+    };
+    assert_eq!(v, [3, 57]);
+    let mix = instant(&lib, &Source::Artist(v), 25, &mut Rng::new(7));
+    assert!(
+        mix.contains(&3) || mix.contains(&57),
+        "opened by one of them"
+    );
+    // credited on nothing: said by name, never by id
+    assert_eq!(src("ar91"), Err("Nothing to play for Nova Reyes".into()));
+    assert_eq!(
+        src("Nova Reyes"),
+        Err("Nothing to play for Nova Reyes".into())
+    );
+}

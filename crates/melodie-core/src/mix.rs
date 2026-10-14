@@ -918,10 +918,19 @@ pub fn find_source(
                         key,
                     )
                 })
-                .ok_or_else(|| format!("artiste inconnu : {key}"))?;
-            let v = rowids("SELECT rowid FROM tracks WHERE artistId = ?1", &id);
+                .ok_or_else(|| format!("unknown artist: {key}"))?;
+            let mut v = rowids("SELECT rowid FROM tracks WHERE artistId = ?1", &id);
             if v.is_empty() {
-                Err(format!("artiste sans morceau dans la copie : {key}"))
+                // only featured on the tracks of others
+                v = rowids(
+                    "SELECT rowid FROM tracks
+                     WHERE id IN (SELECT track FROM track_artists WHERE artist = ?1) ORDER BY rowid",
+                    &id,
+                );
+            }
+            if v.is_empty() {
+                let name = one("SELECT name FROM artists WHERE id = ?1", &id).unwrap_or(id);
+                Err(format!("Nothing to play for {name}"))
             } else {
                 Ok(Source::Artist(v))
             }
