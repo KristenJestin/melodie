@@ -1382,6 +1382,33 @@ fn sans_copie_entree_en_cours_puis_copie_en_fond() {
 }
 
 #[test]
+fn a_first_copy_cut_off_answers_with_what_it_holds_and_says_it_is_not_finished() {
+    let sb = Sandbox::new(true);
+    // the songs come in one page; the next one, which would say there are no more, fails
+    *sb.fake.state.fail_from_song.lock().unwrap() = Some(1);
+    assert!(!sb.run(&["sync"]).status.success());
+    let st = sb.ok(&["status"]);
+    assert!(st.contains("première copie pas finie"), "{st}");
+    // `search` answers from what is there, instead of "Copie de la bibliothèque en cours…"
+    let out = sb.ok(&["search", "--json", "titre"]);
+    let v: Value = serde_json::from_str(&out).unwrap();
+    assert!(
+        v.as_array().unwrap().iter().any(|e| e["id"] == "track:t1"),
+        "{out}"
+    );
+    *sb.fake.state.fail_from_song.lock().unwrap() = None;
+    wait_until(10, "no other sync running", || {
+        !sb.ok(&["status"]).contains("Synchro     : en cours")
+    });
+    sb.ok(&["sync"]);
+    let st = sb.ok(&["status"]);
+    assert!(
+        !st.contains("pas finie") && st.contains("synchronisée le"),
+        "{st}"
+    );
+}
+
+#[test]
 fn copie_vieille_repond_tout_de_suite_et_se_met_a_jour() {
     let sb = Sandbox::new(true);
     sb.ok(&["sync", "--full"]);

@@ -823,6 +823,10 @@ fn status(env: &Env) -> Result<ExitCode> {
             .transpose()
     });
     match copy {
+        Ok(Some((conn, c))) if db::is_partial(&conn) => println!(
+            "Copie       : première copie pas finie : {} morceaux, {} albums, {} artistes jusqu'ici",
+            c.tracks, c.albums, c.artists
+        ),
         Ok(Some((conn, c))) => {
             let size = std::fs::metadata(db::db_path(env))
                 .map(|m| m.len())
