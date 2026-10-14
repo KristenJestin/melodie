@@ -223,6 +223,8 @@ fn full_into(client: &Client, path: &std::path::Path) -> Result<Report, Failure>
         db::set_meta(&tx, "lastScan", &scan)?;
         db::set_meta(&tx, "synced_at", &now_secs().to_string())?;
         db::set_meta(&tx, "full_synced_at", &now_secs().to_string())?;
+        db::set_meta(&tx, COPY_SERVER, client.url())?;
+        db::set_meta(&tx, COPY_USER, client.user())?;
         tx.commit()?;
     }
     let counts = db::counts(&conn)?;
@@ -236,7 +238,8 @@ fn full_into(client: &Client, path: &std::path::Path) -> Result<Report, Failure>
 /// The `lastScan` the server gave when the first copy began, stored at its end: a scan made while
 /// it ran, interruptions included, brings a full copy next.
 const COPY_SCAN: &str = "copy_scan";
-/// The server and the user a first copy is made from: it is taken up again only for them.
+/// The server and the user a copy is made from: a first copy is taken up again only for them, and
+/// a copy made for others is made again in full.
 const COPY_SERVER: &str = "copy_server";
 const COPY_USER: &str = "copy_user";
 
@@ -280,6 +283,13 @@ fn resume_point(conn: &Connection, client: &Client) -> Option<(usize, usize)> {
     Some((KINDS.iter().position(|k| k.0 == from)?, offset))
 }
 
+/// Whether the copy was made from this client's server, for its user. A copy made before it said
+/// so counts as theirs: the only one who had it.
+fn made_for(conn: &Connection, client: &Client) -> bool {
+    let is = |key, want: &str| db::get_meta(conn, key).is_none_or(|v| v == want);
+    is(COPY_SERVER, client.url()) && is(COPY_USER, client.user())
+}
+
 /// The first copy, made in place rather than aside: there is no previous copy to protect, and
 /// each page is committed as it comes, so that the window shows the library while it fills. Where
 /// it stands is committed with each page (`db::COPYING`): a copy cut off is taken up again there by
@@ -312,8 +322,8 @@ fn first(env: &Env, client: &Client, partial: Option<Connection>) -> Result<Repo
     db::set_meta(&tx, "synced_at", &now_secs().to_string())?;
     db::set_meta(&tx, "full_synced_at", &now_secs().to_string())?;
     tx.execute(
-        "DELETE FROM meta WHERE key IN (?1, ?2, ?3, ?4)",
-        [db::COPYING, COPY_SCAN, COPY_SERVER, COPY_USER],
+        "DELETE FROM meta WHERE key IN (?1, ?2)",
+        [db::COPYING, COPY_SCAN],
     )?;
     tx.commit()?;
     Ok(Report {
@@ -367,6 +377,10 @@ pub fn run(env: &Env, client: &Client, force_full: bool) -> Result<Report, Failu
         Err(e) => return Err(e.into()),
     };
     conn.busy_timeout(BUSY)?;
+    if !made_for(&conn, client) {
+        drop(conn);
+        return full(env, client);
+    }
     let stored = db::get_meta(&conn, "lastScan").unwrap_or_default();
     let current = last_scan(client)?;
     if current.is_empty() || current != stored {
@@ -722,6 +736,32 @@ mod tests {
         assert_eq!(r.counts.tracks, 1203);
         assert_eq!(other.calls_of("search3"), 2 + 2 + 4);
         assert!(!db::is_partial(&db::open_existing(&env).unwrap().unwrap()));
+    }
+
+    #[test]
+    fn a_copy_made_for_another_user_is_made_again_in_full() {
+        let (_d, env, fake, client) = setup(1203);
+        assert_eq!(run(&env, &client, false).unwrap().kind, Kind::Full);
+        assert_eq!(run(&env, &client, false).unwrap().kind, Kind::Light);
+        let bob = Client::new(
+            &fake.url,
+            Creds {
+                u: "bob".into(),
+                t: token("sesame", "c19b2d"),
+                s: "c19b2d".into(),
+            },
+        );
+        assert_eq!(run(&env, &bob, false).unwrap().kind, Kind::Full);
+        assert_eq!(run(&env, &bob, false).unwrap().kind, Kind::Light);
+        // a copy made before the copy said whom it is from is not made again for it
+        let conn = db::open_existing(&env).unwrap().unwrap();
+        conn.execute(
+            "DELETE FROM meta WHERE key IN (?1, ?2)",
+            [COPY_SERVER, COPY_USER],
+        )
+        .unwrap();
+        drop(conn);
+        assert_eq!(run(&env, &client, false).unwrap().kind, Kind::Light);
     }
 
     #[test]
