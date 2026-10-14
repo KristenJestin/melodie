@@ -5,6 +5,7 @@ use melodie_core::cover::{Disk, Tier};
 use melodie_core::env::Env;
 use melodie_core::proto::QueueEntry;
 use std::collections::HashMap;
+use std::ops::Range;
 use std::path::PathBuf;
 
 /// The picture of each entry that has one, by entry number.
@@ -37,6 +38,13 @@ pub fn wanted(tracks: &[QueueEntry]) -> Vec<String> {
         }
     }
     ids
+}
+
+/// The cover ids of the rows of the queue on screen, once each: asked before anything that
+/// waits, the way the grids ask theirs.
+pub fn shown(tracks: &[QueueEntry], rows: Range<usize>) -> Vec<String> {
+    let end = rows.end.min(tracks.len());
+    wanted(&tracks[rows.start.min(end)..end])
 }
 
 /// The file the player and the bottom bar show for a track: the daemon's cover, else the
@@ -176,6 +184,18 @@ mod tests {
         assert_eq!(thumbs.len(), 3, "every row has its picture, no restart");
         assert_eq!(thumbs[&1], cover::thumb_path(&env, "c1"));
         assert_eq!(thumbs[&2], cover::thumb_path(&env, "c2"));
+    }
+
+    /// Issue #84: the covers of a short queue played after a long one waited behind everything
+    /// asked before; the rows on screen now ask theirs first.
+    #[test]
+    fn the_rows_on_screen_ask_for_their_covers_first() {
+        let tracks: Vec<QueueEntry> = (0..100)
+            .map(|i| track(i, Some(&format!("c{}", i / 2)), None))
+            .collect();
+        assert_eq!(shown(&tracks, 40..45), ["c20", "c21", "c22"]);
+        assert_eq!(shown(&tracks, 98..120), ["c49"], "a range past the end");
+        assert!(shown(&tracks, 0..0).is_empty());
     }
 
     #[test]

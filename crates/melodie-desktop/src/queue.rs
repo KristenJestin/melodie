@@ -12,11 +12,15 @@ use gpui_kit::component::Icon;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use melodie_core::proto::Request;
+use melodie_desktop::covers::Use;
 use melodie_desktop::figures::{Figures as _, clock_text, count_text};
 use melodie_desktop::menu::{Item, Spot};
 use melodie_desktop::model::Row;
 use melodie_desktop::theme::Palette;
+use melodie_desktop::thumbs;
+use std::cell::Cell;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 const ROW: f32 = 56.0;
 
@@ -30,6 +34,7 @@ impl QueuePanel {
         let list = cx.new(|_| QueueList {
             shared: shared.clone(),
             scroll: UniformListScrollHandle::new(),
+            asked: Rc::default(),
         });
         Self { shared, list }
     }
@@ -109,6 +114,9 @@ impl Render for QueuePanel {
 pub struct QueueList {
     shared: Entity<Shared>,
     scroll: UniformListScrollHandle,
+    /// The queue and the rows whose covers were last asked, so that a frame showing the same
+    /// rows asks nothing.
+    asked: Rc<Cell<Option<(usize, usize, usize)>>>,
 }
 
 /// A row being dragged: what the drop needs and what the pointer carries.
@@ -161,7 +169,16 @@ impl Render for QueueList {
         let pal = palette(&self.shared, window, cx);
         let shared = self.shared.clone();
         let len = tracks.len();
+        let asked = self.asked.clone();
         uniform_list("queue-rows", len, move |range, window, cx| {
+            // the rows shown ask their covers before anything that waits (#84). Asked later:
+            // nothing here reads a file.
+            let key = (tracks.as_ptr() as usize, range.start, range.end);
+            if asked.replace(Some(key)) != Some(key) {
+                let ids = thumbs::shown(&tracks, range.clone());
+                let covers = shared.read(cx).covers.clone();
+                cx.defer(move |cx| covers.update(cx, |c, cx| c.want(ids, Use::SMALL, true, cx)));
+            }
             range
                 .map(|ix| {
                     let t = &tracks[ix];
