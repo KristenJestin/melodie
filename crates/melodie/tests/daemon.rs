@@ -1382,30 +1382,30 @@ fn sans_copie_entree_en_cours_puis_copie_en_fond() {
 }
 
 #[test]
-fn a_first_copy_cut_off_answers_with_what_it_holds_and_says_it_is_not_finished() {
+fn a_first_copy_cut_off_still_answers_that_the_copy_runs_and_says_it_is_not_finished() {
     let sb = Sandbox::new(true);
     // the songs come in one page; the next one, which would say there are no more, fails
     *sb.fake.state.fail_from_song.lock().unwrap() = Some(1);
     assert!(!sb.run(&["sync"]).status.success());
     let st = sb.ok(&["status"]);
     assert!(st.contains("première copie pas finie"), "{st}");
-    // `search` answers from what is there, instead of "Copie de la bibliothèque en cours…"
+    // the launcher and the voice assistant keep the answer they know until the copy is complete
     let out = sb.ok(&["search", "--json", "titre"]);
     let v: Value = serde_json::from_str(&out).unwrap();
-    assert!(
-        v.as_array().unwrap().iter().any(|e| e["id"] == "track:t1"),
-        "{out}"
-    );
+    assert_eq!(v.as_array().unwrap().len(), 1, "{out}");
+    assert_eq!(v[0]["name"], "Copie de la bibliothèque en cours…");
     *sb.fake.state.fail_from_song.lock().unwrap() = None;
-    wait_until(10, "no other sync running", || {
-        !sb.ok(&["status"]).contains("Synchro     : en cours")
+    // `search` took the copy up again in the background; a `sync` may find it still running
+    wait_until(10, "the first copy complete", || {
+        let st = sb.ok(&["status"]);
+        if st.contains("Synchro     : aucune en cours") && st.contains("pas finie") {
+            sb.ok(&["sync"]);
+        }
+        let st = sb.ok(&["status"]);
+        !st.contains("pas finie") && st.contains("synchronisée le")
     });
-    sb.ok(&["sync"]);
-    let st = sb.ok(&["status"]);
-    assert!(
-        !st.contains("pas finie") && st.contains("synchronisée le"),
-        "{st}"
-    );
+    let out = sb.ok(&["search", "--json", "titre"]);
+    assert!(out.contains("track:t1"), "{out}");
 }
 
 #[test]

@@ -552,8 +552,9 @@ once "Copie de la bibliothèque en cours…" (see "Automatic synchronisation").
 - First copy (no copy yet): there is nothing to keep, so it is made in place and each page of 500
   is committed as it comes; the copy is readable while it fills (the window shows it growing), and
   `meta` says it is not finished (`copying`, where it goes on from). Cut off, it is taken up again
-  where it stopped by the next synchronisation, whatever starts it. Until it is finished,
-  `search`, `home`, `playlists`, `mixes` and `mix` answer from what is already copied.
+  where it stopped by the next synchronisation, whatever starts it. Only the window reads it
+  before it is finished: until then, the command line answers "Copie de la bibliothèque en
+  cours…" as when there is no copy, and takes the copy up again in the background.
 - Incremental sync: `getScanStatus` (`lastScan`) compared with the stored value; unchanged:
   playlists (the tracks of a playlist are read again only when its `changed` date moved),
   favourites, play counters (`getAlbumList2` `recent` and `frequent`, 500; the tracks of an album
