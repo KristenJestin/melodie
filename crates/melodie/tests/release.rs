@@ -64,17 +64,42 @@ fn unpacked(work: &Path, version: &str, marker: &str) -> PathBuf {
     extracted.join(archive.trim_end_matches(".tar.gz"))
 }
 
-fn install(folder: &Path, work: &Path, prefix: &Path, quit_status: &str) -> Output {
+/// Runs `install.sh`, with `extra_path` (a folder of stand-in system commands) ahead of the real
+/// ones, and returns whatever it did, failure included.
+fn try_install(
+    folder: &Path,
+    work: &Path,
+    prefix: &Path,
+    quit_status: &str,
+    extra_path: Option<&Path>,
+) -> Output {
     let home = work.join("home");
     fs::create_dir_all(&home).unwrap();
-    run(Command::new("sh")
+    let mut path = std::env::var("PATH").unwrap();
+    if let Some(dir) = extra_path {
+        path = format!("{}:{path}", dir.display());
+    }
+    Command::new("sh")
         .arg(folder.join("install.sh"))
         .env_clear()
-        .env("PATH", std::env::var("PATH").unwrap())
+        .env("PATH", path)
         .env("HOME", &home)
         .env("PREFIX", prefix)
         .env("LOG", work.join("log"))
-        .env("QUIT_STATUS", quit_status))
+        .env("QUIT_STATUS", quit_status)
+        .output()
+        .unwrap()
+}
+
+fn install(folder: &Path, work: &Path, prefix: &Path, quit_status: &str) -> Output {
+    let output = try_install(folder, work, prefix, quit_status, None);
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output
 }
 
 fn log(work: &Path) -> String {
@@ -170,6 +195,64 @@ fn install_goes_on_when_no_player_runs() {
             .unwrap()
             .contains("new 1.2.3")
     );
+}
+
+// `melodie quit` exits 1 only when nothing ran. An older `melodie` that does not know `quit` (clap
+// exits 2) or one that cannot load a library (127) says nothing about the player still running.
+#[test]
+fn install_does_not_call_it_no_player_when_quit_failed_otherwise() {
+    for status in ["2", "127"] {
+        let work = tempfile::tempdir().unwrap();
+        let folder = unpacked(work.path(), "0.2.0", "new");
+        let prefix = work.path().join("prefix");
+        built(&prefix.join("bin"), "old");
+
+        let output = install(&folder, work.path(), &prefix, status);
+
+        let said = String::from_utf8(output.stdout).unwrap();
+        let warned = String::from_utf8(output.stderr).unwrap();
+        assert!(!said.contains("No player was running"), "{status}: {said}");
+        assert!(!said.contains("Stopped the running player"), "{status}");
+        assert!(
+            warned.contains("Could not stop the player"),
+            "{status}: {warned}"
+        );
+        // The new programs are in place all the same: the warning tells to stop the player.
+        assert!(
+            fs::read_to_string(prefix.join("bin/melodie"))
+                .unwrap()
+                .contains("new 1.2.3")
+        );
+    }
+}
+
+// Without libmpv the new `melodie` does not even answer `--version`: the hint about the library
+// has to come before, or it never shows.
+#[test]
+fn install_tells_about_libmpv_when_the_new_melodie_cannot_start() {
+    let work = tempfile::tempdir().unwrap();
+    let folder = unpacked(work.path(), "0.2.0", "new");
+    // What the loader does for a missing library: no answer, status 127.
+    fs::write(
+        folder.join("melodie"),
+        "#!/bin/sh\necho 'error while loading shared libraries: libmpv.so.2' >&2\nexit 127\n",
+    )
+    .unwrap();
+    let system = work.path().join("system");
+    fs::create_dir(&system).unwrap();
+    let ldd = system.join("ldd");
+    fs::write(&ldd, "#!/bin/sh\necho '\tlibmpv.so.2 => not found'\n").unwrap();
+    fs::set_permissions(&ldd, fs::Permissions::from_mode(0o755)).unwrap();
+    let prefix = work.path().join("prefix");
+
+    let output = try_install(&folder, work.path(), &prefix, "0", Some(&system));
+
+    let warned = String::from_utf8(output.stderr).unwrap();
+    assert!(warned.contains("install libmpv"), "{warned}");
+    assert!(warned.contains("melodie does not start"), "{warned}");
+    // The files are installed; the exit status says the install is not usable yet.
+    assert!(!output.status.success());
+    assert!(prefix.join("bin/melodie-desktop").is_file());
 }
 
 /// A repository holding `tags`, one commit each, for `tools/beta-version.sh` to read.
