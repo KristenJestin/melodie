@@ -212,7 +212,9 @@ Screenshots and a recording of the animations, made with invented data, are in
     there) or add them anyway.
   - Actions run `melodie` (`play`, `queue`, `mix`, `playlist add|create|rename|delete|remove|move|
     duplicates`): what needs the server still goes through it, and the window reads the local copy
-    again when it is done. The jobs of one playlist run one after the other, in the order asked. Covers come from `~/.cache/melodie/covers/`, at the size
+    again when it is done. The jobs of one playlist run one after the other, in the order asked. The jobs that change what plays
+    run one after the other too; one that replaces the queue (a play, a mix) drops those still
+    waiting, which it would wipe anyway, and the palette's recents note an item when its job runs. Covers come from `~/.cache/melodie/covers/`, at the size
     the window draws them: the window asks for the pixels a cover covers times the screen's scale
     factor and draws the smallest file that is not upscaled (128 px for list rows, 300 px for
     grids, rows and page headers, 512 px, the daemon's own file, above that, as on a screen at
