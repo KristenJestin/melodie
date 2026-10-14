@@ -405,18 +405,18 @@ fn sign_in_follow(
     let mut seen = (0, false);
     let catalog = catalog.clone();
     cx.observe_in(account, window, move |this, account, window, cx| {
-        let (step, user, signing, syncing) = {
+        let (step, user, signing, filling) = {
             let a = account.read(cx);
             let signing = a.screen(cx) == Screen::SignIn;
-            (a.copy_step, a.user.clone(), signing, a.syncing)
+            (a.copy_step, a.user.clone(), signing, a.filling())
         };
         catalog.update(cx, |c, cx| {
             if c.user != user {
                 c.user = user;
                 cx.notify();
             }
-            if step != seen.0 || c.copying != syncing {
-                c.copying = syncing;
+            if step != seen.0 || c.copying != filling {
+                c.copying = filling;
                 c.reload(cx);
             }
         });

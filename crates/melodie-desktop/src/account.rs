@@ -9,6 +9,7 @@ use melodie_core::{api, db, store};
 use std::io::Write as _;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 /// What the window knows of the login.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -273,6 +274,129 @@ pub fn copy_notice(c: db::Counts) -> String {
             n(t, "track")
         ),
     }
+}
+
+/// A copy the window follows waits this long without moving before the window asks the server why.
+pub const COPY_FOR: Duration = Duration::from_secs(15 * 60);
+/// Looks at the copy that did not move, after this many looks in a row, ask whether a run still
+/// holds the sync lock.
+const STILL_LOOKS: u32 = 5;
+/// The library is read again at most this often while a first copy fills: each read takes the
+/// whole current view, the playlists and Home.
+pub const RELOAD_EVERY: Duration = Duration::from_secs(4);
+
+/// What the window knows of a copy it follows, look after look.
+#[derive(Debug)]
+pub struct Follower {
+    since: u64,
+    /// The window's own `melodie sync` runs: its end says when the copy stops, not the clock.
+    pub own: bool,
+    /// The window started a run while following: when the copy is left behind, it says so rather
+    /// than start another.
+    pub started_here: bool,
+    seen: Option<CopyState>,
+    still: u32,
+    moved: Instant,
+    shown: Option<Instant>,
+}
+
+/// What a look at the copy gives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    Wait,
+    /// The first copy grew: said at the bottom of the window.
+    Moved(db::Counts),
+    /// It grew, and the last read of the library is old enough: read it again.
+    Grew(db::Counts),
+    /// A copy made since the following began is complete, at this date.
+    Done(u64),
+    /// A copy the window did not start has not moved for `COPY_FOR`.
+    Late,
+    /// It has not moved for a while, and no run holds the sync lock: no one is making it.
+    Gone,
+}
+
+impl Follower {
+    /// Follows from `now`: a copy complete since `since` (seconds since the epoch) ends it.
+    pub fn new(since: u64, own: bool, now: Instant) -> Self {
+        Self {
+            since,
+            own,
+            started_here: own,
+            seen: None,
+            still: 0,
+            moved: now,
+            shown: None,
+        }
+    }
+
+    /// The last copy seen.
+    pub fn seen(&self) -> Option<CopyState> {
+        self.seen
+    }
+
+    /// Whether the next look should ask if a run holds the sync lock: only for a run the window
+    /// cannot see end, once the copy has stood still for a few looks.
+    pub fn probe_due(&self) -> bool {
+        !self.own && (self.still + 1).is_multiple_of(STILL_LOOKS)
+    }
+
+    /// One look at the copy, at `now`; `running` says whether a run holds the sync lock, when it
+    /// was asked (`probe_due`).
+    pub fn step(&mut self, copy: CopyState, now: Instant, running: Option<bool>) -> Step {
+        if let CopyState::Complete(at) = copy
+            && is_new_copy(Some(at), self.since)
+        {
+            self.seen = Some(copy);
+            return Step::Done(at);
+        }
+        if self.seen != Some(copy) {
+            self.seen = Some(copy);
+            self.still = 0;
+            self.moved = now;
+            let CopyState::Partial(c) = copy else {
+                return Step::Wait;
+            };
+            if self
+                .shown
+                .is_some_and(|at| now.duration_since(at) < RELOAD_EVERY)
+            {
+                return Step::Moved(c);
+            }
+            self.shown = Some(now);
+            return Step::Grew(c);
+        }
+        self.still += 1;
+        if self.own {
+            return Step::Wait;
+        }
+        if running == Some(false) && self.still >= STILL_LOOKS {
+            return Step::Gone;
+        }
+        if now.duration_since(self.moved) > COPY_FOR {
+            return Step::Late;
+        }
+        Step::Wait
+    }
+}
+
+/// Whether a `melodie sync` holds the lock at `path` (`$XDG_RUNTIME_DIR/melodie/sync.lock`).
+pub fn sync_running_at(path: &Path) -> bool {
+    use std::os::fd::AsRawFd as _;
+    let Ok(f) = std::fs::File::open(path) else {
+        return false;
+    };
+    // shared and let go at once: a run starting in between would only find it taken a moment,
+    // as with `melodie status`
+    // SAFETY: a valid descriptor, owned by `f`.
+    unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) != 0 }
+}
+
+/// The lock a running `melodie sync` holds, whoever started it.
+pub fn sync_lock() -> Option<std::path::PathBuf> {
+    melodie_core::proto::runtime_dir()
+        .ok()
+        .map(|d| d.join("sync.lock"))
 }
 
 /// What a failed `melodie sync` said: its last line, the progress lines come before.
@@ -667,6 +791,99 @@ mod tests {
         *fake.state.fail_from_song.lock().unwrap() = None;
         sync::run(&env, &client, false).unwrap();
         assert!(matches!(copy_state(&env), CopyState::Complete(at) if at > 0));
+    }
+
+    fn grown(tracks: i64) -> CopyState {
+        CopyState::Partial(db::Counts {
+            tracks,
+            albums: 1,
+            artists: 2,
+            playlists: 0,
+        })
+    }
+
+    #[test]
+    fn the_follower_reads_the_library_again_as_it_grows_at_most_every_few_seconds() {
+        let t0 = Instant::now();
+        let at = |s: f32| t0 + Duration::from_secs_f32(s);
+        let mut f = Follower::new(1_760_000_000, true, t0);
+        assert_eq!(f.step(CopyState::Missing, at(0.), None), Step::Wait);
+        assert!(matches!(f.step(grown(500), at(1.), None), Step::Grew(c) if c.tracks == 500));
+        assert!(matches!(f.step(grown(1000), at(2.), None), Step::Moved(c) if c.tracks == 1000));
+        assert_eq!(f.step(grown(1000), at(3.), None), Step::Wait);
+        assert!(matches!(f.step(grown(1500), at(5.5), None), Step::Grew(c) if c.tracks == 1500));
+        // an older complete copy is not the one awaited
+        assert_eq!(
+            f.step(CopyState::Complete(1_700_000_000), at(6.), None),
+            Step::Wait
+        );
+        assert_eq!(
+            f.step(CopyState::Complete(1_760_000_001), at(7.), None),
+            Step::Done(1_760_000_001)
+        );
+    }
+
+    #[test]
+    fn the_follower_of_a_run_it_cannot_see_stops_when_no_run_holds_the_lock() {
+        let t0 = Instant::now();
+        let mut f = Follower::new(1_760_000_000, false, t0);
+        assert!(matches!(f.step(grown(500), t0, None), Step::Grew(_)));
+        let mut probes = Vec::new();
+        let mut last = Step::Wait;
+        for i in 1..=10 {
+            let due = f.probe_due();
+            probes.push(due);
+            // the run holds the lock at the first probe, not at the second
+            let running = due.then_some(probes.iter().filter(|p| **p).count() < 2);
+            last = f.step(grown(500), t0 + Duration::from_secs(i), running);
+            if last != Step::Wait {
+                break;
+            }
+        }
+        assert_eq!(last, Step::Gone);
+        assert_eq!(probes.iter().filter(|p| **p).count(), 2);
+        // its own run is followed until it ends: never asked
+        let mut f = Follower::new(1_760_000_000, true, t0);
+        f.step(grown(500), t0, None);
+        assert!((1..=20).all(|_| !f.probe_due() && f.step(grown(500), t0, None) == Step::Wait));
+    }
+
+    #[test]
+    fn the_follower_of_a_run_it_cannot_see_is_late_after_a_quarter_of_an_hour_still() {
+        let t0 = Instant::now();
+        let mut f = Follower::new(1_760_000_000, false, t0);
+        f.step(grown(500), t0, None);
+        // the limit counts from the last step, not from the start
+        let later = t0 + COPY_FOR - Duration::from_secs(1);
+        assert!(matches!(f.step(grown(1000), later, None), Step::Grew(_)));
+        assert_eq!(
+            f.step(grown(1000), later + Duration::from_secs(2), None),
+            Step::Wait
+        );
+        assert_eq!(
+            f.step(grown(1000), later + COPY_FOR + Duration::from_secs(1), None),
+            Step::Late
+        );
+        let mut own = Follower::new(1_760_000_000, true, t0);
+        own.step(grown(500), t0, None);
+        assert_eq!(own.step(grown(500), t0 + COPY_FOR * 2, None), Step::Wait);
+    }
+
+    #[test]
+    fn the_sync_lock_says_whether_a_run_holds_it() {
+        use std::os::fd::AsRawFd as _;
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("sync.lock");
+        assert!(!sync_running_at(&path));
+        let f = std::fs::File::create(&path).unwrap();
+        assert!(!sync_running_at(&path));
+        assert_eq!(
+            unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
+        assert!(sync_running_at(&path));
+        drop(f);
+        assert!(!sync_running_at(&path));
     }
 
     #[test]
