@@ -883,3 +883,24 @@ fn temps_sur_40000_morceaux() {
     assert!(worst.as_millis() < limit_ms, "trop lent : {worst:?}");
     assert!(instant_t.as_millis() < limit_ms && reco_t.as_millis() < limit_ms);
 }
+
+#[test]
+fn the_tracks_of_several_ids_come_from_the_copy_in_their_order() {
+    let d = tempfile::tempdir().unwrap();
+    let conn = db::create(&d.path().join("l.db")).unwrap();
+    insert_fake(&conn, 10);
+    let ids = ["t7", "zzz", "t3", "t7"].map(String::from);
+    let got = infos(&conn, &ids).unwrap();
+    let got: Vec<Option<&str>> = got
+        .iter()
+        .map(|t| t.as_ref().map(|t| t.id.as_str()))
+        .collect();
+    assert_eq!(got, [Some("t7"), None, Some("t3"), Some("t7")]);
+    assert_eq!(
+        infos(&conn, &ids[2..3]).unwrap()[0]
+            .as_ref()
+            .unwrap()
+            .album_artist,
+        "Artiste 0"
+    );
+}

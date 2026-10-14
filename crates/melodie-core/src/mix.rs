@@ -942,36 +942,48 @@ pub struct Detail {
     pub info: crate::track::TrackInfo,
 }
 
+/// The columns of a `TrackInfo`, read from `tracks t LEFT JOIN albums a`.
+const INFO: &str =
+    "SELECT t.id, t.title, t.artist, t.album, COALESCE(a.artist, t.artist), t.duration,
+        t.suffix, t.bitRate, t.bitDepth, t.samplingRate, t.coverArt,
+        t.starred IS NOT NULL
+ FROM tracks t LEFT JOIN albums a ON a.id = t.albumId";
+
+fn info(r: &rusqlite::Row) -> rusqlite::Result<crate::track::TrackInfo> {
+    Ok(crate::track::TrackInfo {
+        id: r.get(0)?,
+        title: r.get(1)?,
+        artist: r.get(2)?,
+        album: r.get(3)?,
+        album_artist: r.get(4)?,
+        duration: r.get::<_, i64>(5)?.max(0) as u64,
+        suffix: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
+        bit_rate: r.get::<_, i64>(7)?.max(0) as u64,
+        bit_depth: r.get::<_, i64>(8)?.max(0) as u64,
+        sampling_rate: r.get::<_, i64>(9)?.max(0) as u64,
+        cover: r.get(10)?,
+        starred: r.get(11)?,
+    })
+}
+
 pub fn details(conn: &Connection, lib: &Library, picked: &[usize]) -> Result<Vec<Detail>> {
-    let mut st = conn.prepare_cached(
-        "SELECT t.id, t.title, t.artist, t.album, COALESCE(a.artist, t.artist), t.duration,
-                t.suffix, t.bitRate, t.bitDepth, t.samplingRate, t.coverArt,
-                t.starred IS NOT NULL
-         FROM tracks t LEFT JOIN albums a ON a.id = t.albumId WHERE t.rowid = ?1",
-    )?;
+    let mut st = conn.prepare_cached(&format!("{INFO} WHERE t.rowid = ?1"))?;
     let mut out = Vec::with_capacity(picked.len());
     for &i in picked {
-        let d = st.query_row([lib.tracks[i].rowid], |r| {
-            Ok(Detail {
-                info: crate::track::TrackInfo {
-                    id: r.get(0)?,
-                    title: r.get(1)?,
-                    artist: r.get(2)?,
-                    album: r.get(3)?,
-                    album_artist: r.get(4)?,
-                    duration: r.get::<_, i64>(5)?.max(0) as u64,
-                    suffix: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
-                    bit_rate: r.get::<_, i64>(7)?.max(0) as u64,
-                    bit_depth: r.get::<_, i64>(8)?.max(0) as u64,
-                    sampling_rate: r.get::<_, i64>(9)?.max(0) as u64,
-                    cover: r.get(10)?,
-                    starred: r.get(11)?,
-                },
-            })
-        })?;
-        out.push(d);
+        let info = st.query_row([lib.tracks[i].rowid], info)?;
+        out.push(Detail { info });
     }
     Ok(out)
+}
+
+/// The tracks of these ids, in this order, as the local copy knows them: `None` for an id it
+/// does not hold.
+pub fn infos(conn: &Connection, ids: &[String]) -> Result<Vec<Option<crate::track::TrackInfo>>> {
+    use rusqlite::OptionalExtension as _;
+    let mut st = conn.prepare_cached(&format!("{INFO} WHERE t.id = ?1"))?;
+    ids.iter()
+        .map(|id| Ok(st.query_row([id], info).optional()?))
+        .collect()
 }
 
 #[cfg(test)]

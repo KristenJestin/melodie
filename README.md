@@ -52,8 +52,13 @@ configuration (see `AGENTS.md`). The daemon integration test starts its own priv
   Replaces the queue and starts playing. An artist gives all their albums (year, then name), tracks
   in the server's order; a track plays alone. The list comes from the API (`getPlaylist`,
   `getAlbum`, `getArtist`, `getSong`), not from the local copy.
+- `melodie play track [--from <pos>] <id>…`: plays several tracks, in this order, from the one
+  at `pos` (from 1); the ones before it stay in the queue, for Previous. One id `-` reads the ids
+  from stdin, one per line, for a list too long for a command line. The tracks come from the
+  local copy, as a mix's do; only those it does not hold yet are asked with `getSong`.
 - `melodie queue [--next] <kind> <id>`: adds to the queue, at the end or, with `--next`, right
-  after the current track (starts playing if nothing plays).
+  after the current track (starts playing if nothing plays). `queue [--next] track <id>…` adds
+  several tracks in this order, as `play track` reads them.
 - `melodie open <address>`: plays or queues what an address names (see "Addresses"). Same checks
   as `play`, same daemon start.
 - `melodie queue --list [--json] | --play <pos> | --move <from> <to> | --remove <pos> |

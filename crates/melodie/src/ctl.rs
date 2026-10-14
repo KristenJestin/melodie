@@ -9,10 +9,10 @@ use melodie_core::api::Client;
 use melodie_core::env::Env;
 use melodie_core::prefs::{self, Prefs};
 use melodie_core::proto::{self, Now, QueueView, Request, Response};
-use melodie_core::resolve;
 use melodie_core::search::Kind;
 use melodie_core::state::{self, Failure};
 use melodie_core::track::clock;
+use melodie_core::{db, mix, resolve};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
@@ -224,7 +224,11 @@ pub fn deliver(
     let req = if queue {
         Request::Queue { tracks, next }
     } else {
-        Request::Play { tracks, shuffle }
+        Request::Play {
+            tracks,
+            shuffle,
+            start: 0,
+        }
     };
     send(env, ready, &req)?;
     Ok(n)
@@ -258,6 +262,63 @@ fn try_play_or_queue(
     let result = resolve::resolve(&client, kind, id);
     state::record(env, &result);
     deliver(env, ready, result?, shuffle, queue, next)
+}
+
+/// Plays tracks from the one at `from` (from 0), or queues them, in this order: one request,
+/// the tracks read from the local copy, as a mix's are; the server is asked only for those the
+/// copy does not hold yet.
+pub fn play_tracks(env: &Env, ids: Vec<String>, from: usize, queue: bool, next: bool) -> ExitCode {
+    match try_play_tracks(env, ids, from, queue, next) {
+        Ok(n) => {
+            announce(n, queue);
+            ExitCode::SUCCESS
+        }
+        Err(f) => report(&f),
+    }
+}
+
+fn try_play_tracks(
+    env: &Env,
+    ids: Vec<String>,
+    from: usize,
+    queue: bool,
+    next: bool,
+) -> Result<usize, Failure> {
+    if from >= ids.len() {
+        return Err(Failure::Internal(anyhow!(
+            "no track at position {} of {}",
+            from + 1,
+            ids.len()
+        )));
+    }
+    let (client, ready) = prepare(env)?;
+    let known = match db::open_existing(env)? {
+        Some(conn) => mix::infos(&conn, &ids)?,
+        None => vec![None; ids.len()],
+    };
+    let mut tracks = Vec::with_capacity(ids.len());
+    for (id, info) in ids.iter().zip(known) {
+        match info {
+            Some(t) => tracks.push(t),
+            None => {
+                let r = resolve::resolve(&client, Kind::Track, id);
+                state::record(env, &r);
+                tracks.extend(r?);
+            }
+        }
+    }
+    let n = tracks.len();
+    let req = if queue {
+        Request::Queue { tracks, next }
+    } else {
+        Request::Play {
+            tracks,
+            shuffle: false,
+            start: from,
+        }
+    };
+    send(env, ready, &req)?;
+    Ok(n)
 }
 
 /// `open`: plays or queues what an address names. A malformed address is refused before

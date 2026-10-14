@@ -2619,3 +2619,96 @@ fn mpris_lists_the_scheme_it_opens() {
     let types: Vec<String> = root.get_property("SupportedMimeTypes").unwrap();
     assert!(types.is_empty());
 }
+
+/// A copy of the long album, for the tracks to be read from it.
+fn long_album_copied(sb: &Sandbox) {
+    long_album(sb);
+    sb.ok(&["sync", "--full"]);
+}
+
+#[test]
+fn play_several_tracks_from_one_starts_there_and_keeps_the_ones_before() {
+    let sb = Sandbox::new(true);
+    long_album_copied(&sb);
+    let out = sb.ok(&["play", "track", "--from", "3", "--", "t1", "t2", "t3", "t4"]);
+    assert!(out.contains("4 morceaux"), "{out}");
+    let list = sb.queue_list();
+    assert_eq!(ids(&list), ["t1", "t2", "t3", "t4"]);
+    assert_eq!(list["current"], 2);
+    wait_until(5, "t3 playing", || {
+        let n = sb.now();
+        n["id"] == "t3" && n["state"] == "playing"
+    });
+    wait_until(5, "now playing t3", || sb.scrobbled("t3", false));
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(!sb.scrobbled("t1", false), "the first track never started");
+    assert_eq!(sb.fake.calls_of("getSong"), 0, "no call per track");
+
+    // Previous goes back to the track before it.
+    sb.ok(&["prev"]);
+    wait_until(5, "t2 playing", || sb.now()["id"] == "t2");
+}
+
+#[test]
+fn play_several_tracks_reads_the_ids_from_stdin() {
+    let sb = Sandbox::new(true);
+    long_album_copied(&sb);
+    let mut child = sb
+        .cmd(&["play", "track", "--from", "2", "-"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"t5\nt1\nt4\n")
+        .unwrap();
+    let o = child.wait_with_output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let list = sb.queue_list();
+    assert_eq!(ids(&list), ["t5", "t1", "t4"]);
+    assert_eq!(list["current"], 1);
+}
+
+#[test]
+fn play_several_tracks_refuses_a_start_past_the_end_and_changes_nothing() {
+    let sb = Sandbox::new(true);
+    long_album_copied(&sb);
+    let o = sb.run(&["play", "track", "--from", "3", "--", "t1", "t2"]);
+    assert!(!o.status.success());
+    assert!(!sb.socket().exists(), "no daemon started");
+    // several ids are tracks only
+    let o = sb.run(&["play", "album", "--", "al1", "al2"]);
+    assert!(!o.status.success());
+}
+
+#[test]
+fn several_tracks_played_next_come_in_their_order() {
+    let sb = Sandbox::new(true);
+    long_album_copied(&sb);
+    // nothing plays: the first of them starts
+    sb.ok(&["queue", "--next", "track", "--", "t3", "t1", "t2"]);
+    assert_eq!(queue_ids(&sb), ["t3", "t1", "t2"]);
+    wait_until(5, "t3 playing", || sb.now()["id"] == "t3");
+    // something plays: right after it, in their order
+    sb.ok(&["queue", "--next", "track", "--", "t5", "t4"]);
+    assert_eq!(queue_ids(&sb), ["t3", "t5", "t4", "t1", "t2"]);
+    sb.ok(&["queue", "track", "--", "t2", "t3"]);
+    assert_eq!(queue_ids(&sb), ["t3", "t5", "t4", "t1", "t2", "t2", "t3"]);
+    assert_eq!(sb.now()["id"], "t3");
+    assert_eq!(sb.fake.calls_of("getSong"), 0);
+}
+
+#[test]
+fn a_track_missing_from_the_local_copy_is_asked_of_the_server() {
+    let sb = Sandbox::new(true);
+    sb.ok(&["sync", "--full"]);
+    // t4 and t5 came after the copy
+    long_album(&sb);
+    sb.ok(&["play", "track", "--", "t1", "t5"]);
+    assert_eq!(queue_ids(&sb), ["t1", "t5"]);
+    assert_eq!(sb.fake.calls_of("getSong"), 1);
+}
