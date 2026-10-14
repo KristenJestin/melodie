@@ -3,6 +3,7 @@
 //! ranks. A list read again (a sort, an edit) starts with nothing picked.
 
 use crate::browse::Place;
+use crate::launch::Job;
 use crate::table::Shown;
 use melodie_core::library::Track;
 use std::collections::BTreeSet;
@@ -22,7 +23,8 @@ impl Click {
             Self::Pick(How::Range)
         } else if ctrl {
             Self::Pick(How::Toggle)
-        } else if count >= 2 {
+        } else if count == 2 {
+            // once per series: a third quick click does not start the track again
             Self::Play
         } else {
             Self::Pick(How::Only)
@@ -86,6 +88,14 @@ impl Selection {
         *self = Self::default();
     }
 
+    /// Clears the rows picked when their list is one of these: a list read again holds other
+    /// rows at the same ranks.
+    pub fn clear_where(&mut self, read_again: impl Fn(&Place) -> bool) {
+        if self.of.as_ref().is_some_and(read_again) {
+            self.clear();
+        }
+    }
+
     fn of(&self, list: &Place) -> Option<&BTreeSet<usize>> {
         (self.of.as_ref() == Some(list)).then_some(&self.picked)
     }
@@ -131,9 +141,46 @@ impl Selection {
             .collect()
     }
 
-    /// The track Enter plays: the first one picked, in the order shown.
-    pub fn first(&self, list: &Place) -> Option<&Track> {
-        self.tracks(list).first().map(|&(_, t)| t)
+    /// A left click on the row `ix` of `shown`, the list at `list`, and what it plays. A double
+    /// click plays only a row its first click picked alone: one whose first click opened this
+    /// page (an album card, a link) only picks the row under the pointer.
+    pub fn left_click(
+        &mut self,
+        list: &Place,
+        shown: &Shown,
+        ix: usize,
+        click: Click,
+    ) -> Option<Job> {
+        match click {
+            Click::Play if self.alone(list, ix) => play_from(shown, ix),
+            Click::Play => {
+                self.click(list, shown, ix, How::Only);
+                None
+            }
+            Click::Pick(how) => {
+                self.click(list, shown, ix, how);
+                None
+            }
+        }
+    }
+
+    /// The row `ix` of `list` is picked alone, by its last click.
+    fn alone(&self, list: &Place, ix: usize) -> bool {
+        self.of.as_ref() == Some(list)
+            && self.anchor == Some(ix)
+            && self.picked.len() == 1
+            && self.picked.contains(&ix)
+    }
+
+    /// Two rows or more are picked in `list`: the selection bar shows, Escape clears them first.
+    pub fn several(&self, list: &Place) -> bool {
+        self.count(list) > 1
+    }
+
+    /// What Enter plays: the list from the first row picked, in the order shown.
+    pub fn play_picked(&self, list: &Place) -> Option<Job> {
+        let shown = self.shown(list)?;
+        play_from(shown, *self.picked.first()?)
     }
 
     /// The ids of the rows picked, in the list's order; `ids` is the list shown.
@@ -151,6 +198,16 @@ impl Selection {
             .filter_map(|ix| ids.get(ix).map(|id| (ix, id.as_ref().to_string())))
             .collect()
     }
+}
+
+/// The whole list in the order shown, from the row `ix` on: Previous goes back to the rows
+/// above it.
+fn play_from(shown: &Shown, ix: usize) -> Option<Job> {
+    let ids: Vec<String> = (0..shown.len())
+        .filter_map(|i| shown.row(i))
+        .map(|(_, t)| t.id.clone())
+        .collect();
+    (ix < ids.len()).then_some(Job::PlayTracks { ids, from: ix })
 }
 
 #[cfg(test)]
@@ -259,14 +316,89 @@ mod tests {
         assert_eq!(s.ranks(&here()), [1, 2, 3]);
     }
 
+    /// Three rows shown sorted: c, b, a.
+    fn sorted() -> Shown {
+        let tracks: Arc<[Track]> = [track("a", "A"), track("b", "B"), track("c", "C")].into();
+        Shown::new(
+            tracks,
+            Some(ColSort {
+                col: Col::Title,
+                descending: true,
+            }),
+        )
+    }
+
+    fn play_from(ids: &[&str], from: usize) -> Option<Job> {
+        Some(Job::PlayTracks {
+            ids: ids.iter().map(|s| s.to_string()).collect(),
+            from,
+        })
+    }
+
     #[test]
     fn double_click_plays_from_this_row() {
-        assert_eq!(Click::of(false, false, 2), Click::Play);
+        let (shown, mut s) = (sorted(), Selection::default());
+        // the first click of the series picks the row, the second plays
         assert_eq!(
-            Click::of(false, false, 3),
-            Click::Play,
-            "a third quick click too"
+            s.left_click(&here(), &shown, 1, Click::of(false, false, 1)),
+            None
         );
+        assert_eq!(
+            s.left_click(&here(), &shown, 1, Click::of(false, false, 2)),
+            play_from(&["c", "b", "a"], 1),
+            "the whole list in the order shown, from this row"
+        );
+    }
+
+    #[test]
+    fn a_triple_click_plays_once() {
+        let (shown, mut s) = (sorted(), Selection::default());
+        let clicks: Vec<_> = (1..=3)
+            .map(|n| s.left_click(&here(), &shown, 2, Click::of(false, false, n)))
+            .collect();
+        assert_eq!(clicks, [None, play_from(&["c", "b", "a"], 2), None]);
+        assert_eq!(s.ranks(&here()), [2]);
+    }
+
+    #[test]
+    fn a_double_click_on_a_row_not_picked_only_picks_it() {
+        // the first click of the series opened this page (an album card, a link)
+        let (shown, mut s) = (sorted(), Selection::default());
+        assert_eq!(s.left_click(&here(), &shown, 2, Click::Play), None);
+        assert_eq!(s.ranks(&here()), [2], "picked, not played");
+        // another row picked alone: the same
+        assert_eq!(s.left_click(&here(), &shown, 0, Click::Play), None);
+        assert_eq!(s.ranks(&here()), [0]);
+        // among several picked: it picks this one alone
+        s.click(&here(), &shown, 1, How::Toggle);
+        assert_eq!(s.left_click(&here(), &shown, 1, Click::Play), None);
+        assert_eq!(s.ranks(&here()), [1]);
+        // picked alone in another list
+        let mut s = Selection::default();
+        s.click(&Place::Tracks, &shown, 1, How::Only);
+        assert_eq!(s.left_click(&here(), &shown, 1, Click::Play), None);
+    }
+
+    #[test]
+    fn a_list_read_again_forgets_only_its_own_rows() {
+        let mut s = Selection::default();
+        s.click(&here(), &rows(), 3, How::Only);
+        s.clear_where(|p| *p == Place::Tracks);
+        assert_eq!(s.ranks(&here()), [3], "another list was read again");
+        s.clear_where(|p| *p == here());
+        assert!(s.ranks(&here()).is_empty());
+        assert!(s.shown(&here()).is_none());
+    }
+
+    #[test]
+    fn the_bar_shows_for_two_rows_picked_or_more() {
+        let mut s = Selection::default();
+        assert!(!s.several(&here()));
+        s.click(&here(), &rows(), 3, How::Only);
+        assert!(!s.several(&here()), "one row: no bar");
+        s.click(&here(), &rows(), 5, How::Toggle);
+        assert!(s.several(&here()));
+        assert!(!s.several(&Place::Tracks));
     }
 
     #[test]
@@ -317,19 +449,12 @@ mod tests {
     }
 
     #[test]
-    fn enter_plays_the_first_track_picked_in_the_order_shown() {
-        let tracks: Arc<[Track]> = [track("a", "A"), track("b", "B"), track("c", "C")].into();
-        let shown = Shown::new(
-            tracks,
-            Some(ColSort {
-                col: Col::Title,
-                descending: true,
-            }),
-        );
-        let mut s = Selection::default();
+    fn enter_plays_the_list_from_the_first_track_picked_in_the_order_shown() {
+        let (shown, mut s) = (sorted(), Selection::default());
+        assert_eq!(s.play_picked(&here()), None);
         s.click(&here(), &shown, 2, How::Toggle);
         s.click(&here(), &shown, 1, How::Toggle);
-        assert_eq!(s.first(&here()).map(|t| t.id.as_str()), Some("b"));
-        assert_eq!(s.first(&Place::Tracks), None);
+        assert_eq!(s.play_picked(&here()), play_from(&["c", "b", "a"], 1));
+        assert_eq!(s.play_picked(&Place::Tracks), None);
     }
 }

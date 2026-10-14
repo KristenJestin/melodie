@@ -181,8 +181,10 @@ impl SearchView {
                         this.want_covers(&a, cx);
                         this.answer = Some(Arc::new(a));
                         this.tables = tables;
-                        // the rows picked were rows of the tables replaced
-                        this.catalog.update(cx, |c, cx| c.unselect(cx));
+                        // the rows picked in the tables replaced, not those of another page
+                        this.catalog.update(cx, |c, cx| {
+                            c.unselect_where(melodie_desktop::keys::in_search, cx)
+                        });
                         // sorted meanwhile
                         this.resort(cx);
                         this.empty = Empty::Loading;

@@ -17,7 +17,7 @@ use melodie_desktop::home::{self, Highlight, Home, Row};
 use melodie_desktop::launch::{self, Job};
 use melodie_desktop::menu::{self, Item, Spot};
 use melodie_desktop::playlists;
-use melodie_desktop::selection::{How, Selection};
+use melodie_desktop::selection::{Click, Selection};
 use melodie_desktop::table::{self, ColSort, Shown, Sorts};
 use melodie_desktop::theme::Tint;
 use melodie_desktop::tint;
@@ -232,6 +232,8 @@ impl Catalog {
             }
         };
         let shown = Shown::new(tracks, self.sorts.get(place));
+        // a list read again (a copy finished): its rows picked would name other tracks
+        self.selection.clear_where(|p| p == place);
         self.views.insert(place.clone(), shown);
     }
 
@@ -258,10 +260,12 @@ impl Catalog {
         }
     }
 
-    /// A click on row `ix` of `shown`, the list at the current place.
-    pub fn select(&mut self, shown: &Shown, ix: usize, how: How, cx: &mut Context<Self>) {
+    /// A left click on row `ix` of `shown`, the list at the current place: it picks, or plays.
+    pub fn left_click(&mut self, shown: &Shown, ix: usize, click: Click, cx: &mut Context<Self>) {
         let here = self.here().clone();
-        self.selection.click(&here, shown, ix, how);
+        if let Some(job) = self.selection.left_click(&here, shown, ix, click) {
+            self.run(job, cx);
+        }
         cx.notify();
     }
 
@@ -285,9 +289,10 @@ impl Catalog {
         cx.notify();
     }
 
-    /// The list of tracks shown at the current place, as its table shows it.
-    pub fn shown(&self) -> Option<&Shown> {
-        self.views.get(self.here())
+    /// Unpicks the rows picked in the lists at these places.
+    pub fn unselect_where(&mut self, read_again: impl Fn(&Place) -> bool, cx: &mut Context<Self>) {
+        self.selection.clear_where(read_again);
+        cx.notify();
     }
 
     /// Runs `melodie` to change a playlist, then reads the playlists and the current place again
@@ -551,6 +556,7 @@ impl Catalog {
             move |this, list, _| {
                 if this.sorts.get(&Place::Tracks) == sort {
                     let shown = Shown::read_sorted(list.into(), sort);
+                    this.selection.clear_where(|p| *p == Place::Tracks);
                     this.views.insert(Place::Tracks, shown);
                 }
             },
