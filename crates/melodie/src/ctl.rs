@@ -426,35 +426,35 @@ pub fn control(req: Request) -> ExitCode {
     }
 }
 
-/// `quit`: the daemon may close the connection before it answers, which is the goal reached; it
-/// is a failure only if the daemon is still there afterwards. Never starts the daemon.
+/// Waits, for two seconds at most, until nobody answers on the socket any more.
+fn wait_until_gone() -> bool {
+    (0..40).any(|_| {
+        if connect().is_none() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        false
+    })
+}
+
+/// `quit`: the daemon may close the connection before it answers, which is the goal reached. It
+/// returns only once the daemon is gone, so that a `play` right after starts a new one instead of
+/// reaching the dying one. Never starts the daemon. Exit 1 means no player was running (the
+/// install script relies on it); exit 3, a player that could not be ended.
 pub fn quit() -> ExitCode {
     let Some(stream) = connect() else {
         eprintln!("No player is running");
         return ExitCode::from(1);
     };
-    match exchange(&stream, &Request::Quit) {
-        Ok(r) if !r.ok => {
-            eprintln!(
-                "{}",
-                r.error.unwrap_or_else(|| "refused by the player".into())
-            );
-            ExitCode::from(1)
-        }
-        Ok(_) => ExitCode::SUCCESS,
-        Err(e) => {
-            let gone = (0..40).any(|_| {
-                std::thread::sleep(Duration::from_millis(50));
-                connect().is_none()
-            });
-            if gone {
-                ExitCode::SUCCESS
-            } else {
-                eprintln!("melodie: {e:#}");
-                ExitCode::from(1)
-            }
-        }
-    }
+    let failure = match exchange(&stream, &Request::Quit) {
+        Ok(r) if !r.ok => r.error.unwrap_or_else(|| "refused by the player".into()),
+        Ok(_) if wait_until_gone() => return ExitCode::SUCCESS,
+        Ok(_) => "the player is still running".into(),
+        Err(_) if wait_until_gone() => return ExitCode::SUCCESS,
+        Err(e) => format!("{e:#}"),
+    };
+    eprintln!("melodie: {failure}");
+    ExitCode::from(3)
 }
 
 /// `volume` : sans démon, lit et écrit seulement le volume mémorisé (appliqué au

@@ -543,7 +543,13 @@ fn quit_stops_the_running_daemon_and_never_starts_one() {
             sb.try_now().is_some_and(|v| v["state"] == "playing")
         });
         sb.ok(&["quit"]);
-        wait_until(10, "daemon stopped", || !sb.socket().exists());
+        // Gone when `quit` returns, whichever way the daemon answered: a `play` right after must
+        // never reach the dying one, so nothing is waited for here.
+        assert!(
+            std::os::unix::net::UnixStream::connect(sb.socket()).is_err(),
+            "the daemon was still there after quit"
+        );
+        assert!(!sb.socket().exists());
     }
 }
 
