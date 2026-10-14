@@ -4,7 +4,7 @@ use crate::ctl::{self, Oops};
 use crate::notify;
 use melodie_core::db::{self, StarKind};
 use melodie_core::env::Env;
-use melodie_core::likes::{Mode, Target, apply, message};
+use melodie_core::likes::{Mode, Target, apply, glyph, message};
 use melodie_core::state::{self, Failure};
 use melodie_core::time::now_secs;
 use std::process::ExitCode;
@@ -64,6 +64,6 @@ fn try_run(env: &Env, target: Target, mode: Mode) -> Result<(), Oops> {
             format!("{summary} : {body}")
         }
     );
-    notify::send(&summary, &body);
+    notify::send_with_glyph(&summary, &body, glyph(on));
     Ok(())
 }
