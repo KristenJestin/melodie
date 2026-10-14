@@ -547,7 +547,7 @@ impl SelectionBar {
 
 impl Render for SelectionBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (count, playlist) = {
+        let (count, several, playlist) = {
             let c = self.catalog.read(cx);
             let here = c.here().clone();
             let playlist = match c.pages.get(&here).map(Arc::as_ref) {
@@ -556,10 +556,14 @@ impl Render for SelectionBar {
                 }
                 _ => None,
             };
-            (c.selection.count(&here), playlist)
+            (
+                c.selection.count(&here),
+                c.selection.several(&here),
+                playlist,
+            )
         };
         // one row picked is what a plain click leaves: no bar for it
-        let shows = count > 1;
+        let shows = several;
         let t = motion::flag("selection-bar", shows, motion::ENTER, window, cx);
         if shows {
             self.count = count;
