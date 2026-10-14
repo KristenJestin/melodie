@@ -22,7 +22,7 @@ use melodie_desktop::playlists::{self, PICTURE};
 use melodie_desktop::theme::{Palette, mix};
 
 /// The side of the badge on the cover of the source of the music, when only the icons show.
-const BADGE: f32 = 12.;
+const BADGE: f32 = 14.;
 
 /// A window narrower than this has the sidebar of icons.
 const COMPACT: f32 = 760.0;

@@ -22,6 +22,15 @@ const TICK: Duration = Duration::from_millis(80);
 /// Where the bars stand when they do not move: apart from each other.
 const STILL: f32 = 0.3;
 
+/// The accent, lightened: the bars of a badge stand on a dark square, where the accent of a light
+/// theme alone is hard to tell from it.
+fn lighter(accent: Hsla) -> Hsla {
+    Hsla {
+        l: accent.l + (1.0 - accent.l) * 0.5,
+        ..accent
+    }
+}
+
 /// How much of a badge its bars take.
 const BADGE_BARS: f32 = 0.6;
 
@@ -166,7 +175,7 @@ pub fn badge(id: impl Into<ElementId>, mark: Mark, side: f32, accent: Hsla) -> D
         .justify_center()
         .rounded(px(side / 4.))
         .bg(hsla(0., 0., 0., 0.78))
-        .child(Equaliser::new(id, mark, accent).side(side * BADGE_BARS))
+        .child(Equaliser::new(id, mark, lighter(accent)).side(side * BADGE_BARS))
 }
 
 /// A name on its line: when the music of what it names plays, in the accent and with the
@@ -201,7 +210,7 @@ pub fn name_line(
 
 #[cfg(test)]
 mod tests {
-    use super::{Equaliser, TICK, TURN, wait};
+    use super::{Equaliser, TICK, TURN, lighter, wait};
     use gpui_kit::{
         Context, IntoElement, ParentElement as _, Render, TestAppContext, VisualTestContext,
         Window, div, hsla,
@@ -219,6 +228,14 @@ mod tests {
             let at = Duration::from_millis(since) + w;
             assert_eq!(at.as_millis() % TICK.as_millis(), 0, "{since} ms: {w:?}");
         }
+    }
+
+    #[test]
+    fn the_bars_of_a_badge_are_lighter_than_the_accent_and_of_its_hue() {
+        let accent = hsla(0.6, 0.5, 0.35, 1.);
+        let bars = lighter(accent);
+        assert!(bars.l > accent.l && bars.l < 1.0);
+        assert_eq!((bars.h, bars.s, bars.a), (accent.h, accent.s, accent.a));
     }
 
     #[test]
