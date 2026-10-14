@@ -159,6 +159,8 @@ Screenshots and a recording of the animations, made with invented data, are in
     is the server's, as of the last copy.
   - Albums: a grid of covers, sorted by date added, name, artist, year, plays or last played (a
     second click on the sort turns it round). Artists: a long list sorted by a click on a column.
+    On an album, an artist in a circle on the home and an artist's row, the round play button
+    that fades in on hover starts it at once: for an artist, what "Play" of its right-click menu does.
   - **Every list of tracks is the same table** (Tracks, an album, a playlist, an artist's top
     tracks, the search's tracks; not the queue, whose order is the play order): a header row with
     the columns in one order, #, title, artist, album, year, plays, time, those that make no sense

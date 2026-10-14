@@ -4,6 +4,7 @@
 pub mod account;
 pub mod bar;
 pub mod browse;
+pub mod card;
 pub mod covers;
 pub mod edit;
 pub mod figures;

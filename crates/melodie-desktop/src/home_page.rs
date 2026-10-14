@@ -2,7 +2,7 @@
 //! then rows that scroll sideways: albums and playlists as squares, artists as circles, mixes as
 //! coloured cards. What it shows is decided in `melodie_desktop::home`.
 
-use crate::albums::{GAP, PAD, album_cell, content_width, cover_box, empty_state};
+use crate::albums::{GAP, PAD, album_cell, artist_play, content_width, cover_box, empty_state};
 use crate::app::Shared;
 use crate::catalog::Catalog;
 use crate::context_menu::Menued as _;
@@ -202,7 +202,8 @@ fn artist_cell(
     window: &mut Window,
     cx: &mut App,
 ) -> Stateful<Div> {
-    let (catalog, id) = (catalog.clone(), a.id.clone());
+    let (open, id) = (catalog.clone(), a.id.clone());
+    let item = Item::artist(a);
     let hover = hover(
         ElementId::Name(format!("home-artist-hover-{}", a.id).into()),
         window,
@@ -211,24 +212,40 @@ fn artist_cell(
     let look = hover.look;
     hover
         .track(v_flex().id(ElementId::Name(format!("home-artist-{}", a.id).into())))
-        .menu(Item::artist(a), Spot::Library)
+        .menu(item.clone(), Spot::Library)
         .w(px(CIRCLE))
         .flex_none()
         .items_center()
         .gap_1()
         .cursor_pointer()
         .on_click(on_card(move |cx| {
-            catalog.update(cx, |c, cx| c.go(Place::Artist(id.clone()), cx))
+            open.update(cx, |c, cx| c.go(Place::Artist(id.clone()), cx))
         }))
         .child(
-            picture(
-                a.cover.as_ref().and_then(|c| covers.get(c, CIRCLE)),
-                CIRCLE,
-                CIRCLE / 2.0,
-                IconName::MicVocal,
-                pal,
-            )
-            .opacity(look.under()),
+            div()
+                .relative()
+                .child(
+                    picture(
+                        a.cover.as_ref().and_then(|c| covers.get(c, CIRCLE)),
+                        CIRCLE,
+                        CIRCLE / 2.0,
+                        IconName::MicVocal,
+                        pal,
+                    )
+                    .opacity(look.under()),
+                )
+                // on the circle's edge, at the lower right, where the album's is on its corner
+                .children(
+                    artist_play(
+                        &format!("artist-play-{}", a.id),
+                        &item,
+                        40.,
+                        look,
+                        pal,
+                        catalog,
+                    )
+                    .map(|b| div().absolute().right(px(10.)).bottom(px(10.)).child(b)),
+                ),
         )
         .child(
             div()
