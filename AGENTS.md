@@ -166,8 +166,10 @@ Nobody edits a version: `Cargo.toml` stays at `0.0.0` and the version comes from
   `chore(repo): release` (a `chore` needs no `Closes #n`). `release.yml` runs on `main`:
   semantic-release reads the Angular subjects the merge brings and tags `vX.Y.Z` with its notes
   (`feat` moves the minor, `fix` the patch, a breaking change also the minor: Mélodie is in `0.x`
-  and `1.0` is the maintainer's decision). With no release yet it counts from a `0.0.0` it
-  makes in its own checkout and never pushes, so the first release is `v0.1.0`. Then the job
+  and `1.0` is the maintainer's decision). With no release yet it counts from a `v0.0.0` tag
+  it puts on the first commit before it runs, so the first release is `v0.1.0`; semantic-release
+  pushes its tags, so `v0.0.0` is published with that first release, harmlessly (it
+  is not a release). Then the job
   `build` builds the tag with `MELODIE_VERSION` and attaches
   `melodie-<version>-linux-x86_64.tar.gz` and its `.sha256` to the release.
 - **A beta** (`vX.Y.Z-beta.N`, a pre-release) is published by `beta.yml` at every push to `dev`:

@@ -45,8 +45,9 @@ jobs:
           node-version: 24
       - run: npm ci --ignore-scripts
       # With no release yet, semantic-release makes 1.0.0 whatever the commits say. Counting from a
-      # 0.0.0 on the first commit, in this checkout only (it is never pushed), makes the first
-      # release 0.1.0 for a `feat` and the 1.0 stays the maintainer's decision.
+      # 0.0.0 on the first commit makes the first release 0.1.0 for a `feat`, and the 1.0 stays the
+      # maintainer's decision. semantic-release pushes its tags, so `v0.0.0` is published with
+      # that first release, on the first commit: harmless, it is not a release.
       - name: Count from 0.0.0 until there is a release
         run: |
           if ! git tag --list 'v*' | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
