@@ -31,8 +31,10 @@ fi
 
 mkdir -p "$bin"
 for program in melodie melodie-desktop; do
-  # `install` replaces the file instead of writing into it: a program still running is not hurt.
-  install -m 755 "$here/$program" "$bin/$program"
+  # Copied beside, then renamed: a launcher starting the program meanwhile never finds a half
+  # written file, and a program still running is not hurt.
+  install -m 755 "$here/$program" "$bin/.$program.new"
+  mv -f "$bin/.$program.new" "$bin/$program"
   echo "Installed $bin/$program"
 done
 

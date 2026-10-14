@@ -142,6 +142,13 @@ fn install_puts_both_programs_in_the_prefix_and_leaves_the_user_alone() {
         assert!(said.contains(&installed.display().to_string()), "{said}");
     }
     assert!(said.contains("new 1.2.3"), "{said}");
+    // Each program was copied beside its place and renamed: nothing of the copy stays.
+    let mut names: Vec<_> = fs::read_dir(prefix.join("bin"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["melodie", "melodie-desktop"]);
     // Not a file in the home folder: no configuration, no copy of the library, nothing.
     assert!(
         fs::read_dir(work.path().join("home"))
