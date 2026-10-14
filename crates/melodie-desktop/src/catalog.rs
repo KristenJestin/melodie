@@ -60,6 +60,8 @@ pub enum Empty {
     Loading,
     /// No local copy yet.
     NoCopy,
+    /// The library is being copied: what is not there yet is on its way.
+    Copying,
     Failed,
 }
 
@@ -89,6 +91,8 @@ pub struct Catalog {
     cover_cache: Entity<CoverCache>,
     /// The last read of the local copy failed this way.
     pub empty: Empty,
+    /// A copy of the library runs: an empty view says it is coming.
+    pub copying: bool,
     /// The user logged in: the playlists that are theirs can be added to.
     pub user: Option<String>,
     /// The rows picked in the current list.
@@ -127,6 +131,7 @@ impl Catalog {
             covers: Arc::default(),
             cover_cache,
             empty: Empty::Loading,
+            copying: false,
             user,
             selection: Selection::default(),
             shared,
@@ -378,9 +383,14 @@ impl Catalog {
             let _ = this.update(cx, |this, cx| {
                 match answer {
                     Ok(Some(v)) => {
-                        this.empty = Empty::Loading;
+                        this.empty = if this.copying {
+                            Empty::Copying
+                        } else {
+                            Empty::Loading
+                        };
                         apply(this, v, cx);
                     }
+                    Ok(None) if this.copying => this.empty = Empty::Copying,
                     Ok(None) => this.empty = Empty::NoCopy,
                     Err(_) => this.empty = Empty::Failed,
                 }

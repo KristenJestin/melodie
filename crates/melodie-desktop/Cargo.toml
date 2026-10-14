@@ -29,4 +29,6 @@ toml = "0.8"
 [dev-dependencies]
 # The window's own tests: a window without a screen (`TestAppContext`) to click in.
 gpui-kit = { version = "=0.7.3", features = ["test-support"] }
+# The fake local server, to make a first copy that is cut off.
+melodie-core = { path = "../melodie-core", features = ["fake"] }
 tempfile = "3"

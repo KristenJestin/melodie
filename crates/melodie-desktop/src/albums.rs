@@ -222,7 +222,8 @@ pub fn empty_state(why: Empty, nothing: &'static str, pal: Palette) -> Div {
         .text_color(pal.secondary)
         .child(match why {
             Empty::Loading => "",
-            Empty::NoCopy => "No local copy of the library yet: run melodie sync",
+            Empty::NoCopy => "No local copy of the library yet",
+            Empty::Copying => "Copying the library from Navidrome…",
             Empty::Failed => "The local copy could not be read",
         })
         .when(why == Empty::Loading, |d| d.child(nothing))
@@ -351,7 +352,13 @@ impl Render for AlbumGrid {
         let body = match albums {
             None => empty_state(empty, "", pal).into_any_element(),
             Some(list) if list.is_empty() => {
-                empty_state(Empty::Loading, "No albums", pal).into_any_element()
+                // `Copying` while the first copy has not reached the albums yet
+                let why = if empty == Empty::Copying {
+                    empty
+                } else {
+                    Empty::Loading
+                };
+                empty_state(why, "No albums", pal).into_any_element()
             }
             Some(list) => {
                 let rows = list.len().div_ceil(cols);

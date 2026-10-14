@@ -225,6 +225,56 @@ pub fn synced_at(env: &Env) -> Option<u64> {
     db::get_meta(&conn, "synced_at")?.parse().ok()
 }
 
+/// The local copy, as the window follows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyState {
+    Missing,
+    /// A first copy not finished yet (still running, or cut off): what it holds so far.
+    Partial(db::Counts),
+    /// Made at this date, in seconds since the epoch (0 when the copy does not say).
+    Complete(u64),
+}
+
+/// Where the local copy stands. Blocking: run it away from the window.
+pub fn copy_state(env: &Env) -> CopyState {
+    let Ok(Some(conn)) = db::open_existing(env) else {
+        return CopyState::Missing;
+    };
+    if db::is_partial(&conn) {
+        // read while the copy commits a page: said next time
+        return db::counts(&conn).map_or(CopyState::Partial(db::Counts::default()), |c| {
+            CopyState::Partial(c)
+        });
+    }
+    CopyState::Complete(
+        db::get_meta(&conn, "synced_at")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0),
+    )
+}
+
+/// Whether the window starts the first copy itself: the server said the login holds, there is no
+/// complete copy, and the window did not start one yet. However the login came: in the window,
+/// with `melodie login`, or a keyring brought from another machine.
+pub fn starts_first_copy(standing: Standing, copy: CopyState, started: bool) -> bool {
+    standing == Standing::Ok && !started && !matches!(copy, CopyState::Complete(_))
+}
+
+/// What the bottom of the window says while a first copy fills the library.
+pub fn copy_notice(c: db::Counts) -> String {
+    let n = |n: i64, one: &str| format!("{n} {one}{}", if n == 1 { "" } else { "s" });
+    // the artists come first and are few: the albums and the tracks say how far it is
+    match (c.albums, c.tracks) {
+        (0, 0) => "Copying the library…".into(),
+        (a, 0) => format!("Copying the library: {} so far", n(a, "album")),
+        (a, t) => format!(
+            "Copying the library: {}, {} so far",
+            n(a, "album"),
+            n(t, "track")
+        ),
+    }
+}
+
 /// "Synced 5 min ago", for the settings.
 pub fn synced_text(synced_at: Option<u64>, now: u64) -> String {
     let Some(at) = synced_at else {
@@ -538,6 +588,75 @@ mod tests {
         db::set_meta(&tx, "synced_at", "1760000000").unwrap();
         tx.commit().unwrap();
         assert_eq!(synced_at(&env), Some(1_760_000_000));
+    }
+
+    #[test]
+    fn signed_in_with_no_local_copy_one_first_copy_starts() {
+        assert!(starts_first_copy(Standing::Ok, CopyState::Missing, false));
+        // once
+        assert!(!starts_first_copy(Standing::Ok, CopyState::Missing, true));
+        // a first copy cut off is taken up again
+        let some = db::Counts {
+            tracks: 500,
+            albums: 1,
+            artists: 2,
+            playlists: 0,
+        };
+        assert!(starts_first_copy(
+            Standing::Ok,
+            CopyState::Partial(some),
+            false
+        ));
+        // not before the server said yes, nor when it cannot
+        for s in [
+            Standing::Checking,
+            Standing::NoLogin,
+            Standing::AuthRefused,
+            Standing::Unreachable,
+        ] {
+            assert!(!starts_first_copy(s, CopyState::Missing, false), "{s:?}");
+        }
+    }
+
+    #[test]
+    fn with_a_local_copy_no_first_copy_starts() {
+        assert!(!starts_first_copy(
+            Standing::Ok,
+            CopyState::Complete(1_760_000_000),
+            false
+        ));
+    }
+
+    #[test]
+    fn a_first_copy_is_followed_as_it_fills() {
+        use melodie_core::api::{Client, Creds, token};
+        use melodie_core::{fake::Fake, sync};
+        let d = tempfile::tempdir().unwrap();
+        let env = Env::with_home(d.path());
+        assert_eq!(copy_state(&env), CopyState::Missing);
+        let creds = Creds {
+            u: "alice".into(),
+            t: token("sesame", "c19b2d"),
+            s: "c19b2d".into(),
+        };
+        let fake = Fake::start(1203, &creds.t);
+        let client = Client::new(&fake.url, creds);
+        *fake.state.fail_from_song.lock().unwrap() = Some(500);
+        assert!(sync::run(&env, &client, true).is_err());
+        let so_far = db::Counts {
+            tracks: 500,
+            albums: 1,
+            artists: 2,
+            playlists: 0,
+        };
+        assert_eq!(copy_state(&env), CopyState::Partial(so_far));
+        assert_eq!(
+            copy_notice(so_far),
+            "Copying the library: 1 album, 500 tracks so far"
+        );
+        *fake.state.fail_from_song.lock().unwrap() = None;
+        sync::run(&env, &client, false).unwrap();
+        assert!(matches!(copy_state(&env), CopyState::Complete(at) if at > 0));
     }
 
     #[test]

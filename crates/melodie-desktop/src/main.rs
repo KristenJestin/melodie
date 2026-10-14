@@ -405,16 +405,18 @@ fn sign_in_follow(
     let mut seen = (0, false);
     let catalog = catalog.clone();
     cx.observe_in(account, window, move |this, account, window, cx| {
-        let (step, user, signing) = {
+        let (step, user, signing, syncing) = {
             let a = account.read(cx);
-            (a.copy_step, a.user.clone(), a.screen(cx) == Screen::SignIn)
+            let signing = a.screen(cx) == Screen::SignIn;
+            (a.copy_step, a.user.clone(), signing, a.syncing)
         };
         catalog.update(cx, |c, cx| {
             if c.user != user {
                 c.user = user;
                 cx.notify();
             }
-            if step != seen.0 {
+            if step != seen.0 || c.copying != syncing {
+                c.copying = syncing;
                 c.reload(cx);
             }
         });
@@ -439,7 +441,9 @@ impl Render for Root {
         };
         let (signing, notice) = {
             let a = self.account.read(cx);
-            let own = account::notice(a.standing).map(SharedString::from);
+            let own = account::notice(a.standing)
+                .map(SharedString::from)
+                .or_else(|| a.copying.map(|c| account::copy_notice(c).into()));
             (a.screen(cx) == Screen::SignIn, notice.or(own))
         };
         if let Some(n) = &notice {

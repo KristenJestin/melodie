@@ -12,6 +12,7 @@ use gpui_kit::component::Icon;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use melodie_core::db::Counts;
 use melodie_core::env::Env;
 use melodie_core::store;
 use melodie_desktop::account::{self, Outcome, Screen, Standing};
@@ -21,9 +22,9 @@ use melodie_desktop::theme::Palette;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// How often, and how long, the window looks for the first copy after a sign-in: `melodie login`
-/// starts it in the background and does not wait for it.
-const COPY_EVERY: Duration = Duration::from_secs(2);
+/// How often, and how long, the window looks at a copy it waits for: the first copy fills the
+/// library as it runs, and the one `melodie login` starts runs in the background, not waited for.
+const COPY_EVERY: Duration = Duration::from_secs(1);
 const COPY_FOR: Duration = Duration::from_secs(15 * 60);
 
 fn program() -> PathBuf {
@@ -45,8 +46,14 @@ pub struct Account {
     pub server: Option<String>,
     pub user: Option<String>,
     pub synced_at: Option<u64>,
-    /// `melodie sync` runs, or the first copy after a sign-in is awaited.
+    /// `melodie sync` runs, or a copy is followed (the first one, the one after a sign-in).
     pub syncing: bool,
+    /// What a first copy under way holds so far.
+    pub copying: Option<Counts>,
+    /// The window started the first copy itself: once.
+    first_started: bool,
+    /// Grows each time the window starts following a copy, or stops: an older follower ends.
+    following: u64,
     pub signing_out: bool,
     /// Grows each time a new copy is there: the library reads it again.
     pub copy_step: u64,
@@ -77,6 +84,9 @@ impl Account {
             user: None,
             synced_at: None,
             syncing: false,
+            copying: None,
+            first_started: false,
+            following: 0,
             signing_out: false,
             copy_step: 0,
             env,
@@ -143,6 +153,9 @@ impl Account {
 
     fn set_standing(&mut self, s: Standing, cx: &mut Context<Self>) {
         self.standing = s;
+        if s == Standing::Ok {
+            self.first_copy(cx);
+        }
         if matches!(s, Standing::Ok | Standing::NoLogin) {
             // what the daemon said of an older login no longer holds
             self.shared.update(cx, |sh, cx| {
@@ -160,17 +173,40 @@ impl Account {
         self.shared.update(cx, |s, cx| s.fail(what, cx));
     }
 
-    /// After `melodie login` said yes: the library follows the first copy as it comes. `since` is
-    /// when the attempt began (`now_secs`).
+    /// After `melodie login` said yes: the library follows the copy it started as it comes.
+    /// `since` is when the attempt began (`now_secs`).
     pub fn signed_in(&mut self, since: u64, cx: &mut Context<Self>) {
         self.read_settings();
+        self.follow(since, cx);
         self.set_standing(Standing::Ok, cx);
-        self.await_copy(since, cx);
     }
 
-    /// Looks for the copy `melodie login` started, made since `since`, until it comes (or for a
-    /// quarter of an hour). `melodie sync` is waited for itself, never polled.
-    fn await_copy(&mut self, since: u64, cx: &mut Context<Self>) {
+    /// Signed in with no complete copy: the window starts the first one itself, once, whoever
+    /// made the login.
+    fn first_copy(&mut self, cx: &mut Context<Self>) {
+        if self.first_started || self.syncing {
+            return;
+        }
+        let env = self.env.clone();
+        let task = cx.background_spawn(async move { account::copy_state(&env) });
+        cx.spawn(async move |this, cx| {
+            let copy = task.await;
+            let _ = this.update(cx, |a, cx| {
+                if account::starts_first_copy(a.standing, copy, a.first_started) {
+                    a.first_started = true;
+                    a.sync_now(cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Follows the local copy until one made since `since` is complete (or for a quarter of an
+    /// hour): while a first copy fills, the library is read again at each step it takes. Whoever
+    /// runs the copy: this window, `melodie login`, the daemon.
+    fn follow(&mut self, since: u64, cx: &mut Context<Self>) {
+        self.following += 1;
+        let me = self.following;
         self.syncing = true;
         cx.notify();
         let env = self.env.clone();
@@ -178,19 +214,38 @@ impl Account {
             let started = std::time::Instant::now();
             loop {
                 let env = env.clone();
-                let at = cx
-                    .background_spawn(async move { account::synced_at(&env) })
+                let copy = cx
+                    .background_spawn(async move { account::copy_state(&env) })
                     .await;
-                let fresh = account::is_new_copy(at, since);
-                if fresh || started.elapsed() > COPY_FOR {
-                    let _ = this.update(cx, |a, cx| {
-                        a.syncing = false;
-                        a.synced_at = at;
-                        if fresh {
+                let late = started.elapsed() > COPY_FOR;
+                let go_on = this.update(cx, |a, cx| {
+                    if a.following != me {
+                        return false;
+                    }
+                    match copy {
+                        account::CopyState::Partial(so_far) if a.copying != Some(so_far) => {
+                            a.copying = Some(so_far);
                             a.copy_step += 1;
+                            cx.notify();
                         }
-                        cx.notify();
-                    });
+                        account::CopyState::Complete(at)
+                            if account::is_new_copy(Some(at), since) =>
+                        {
+                            a.synced_at = Some(at);
+                            a.copy_step += 1;
+                            a.stop_following(cx);
+                            return false;
+                        }
+                        _ => {}
+                    }
+                    if late {
+                        a.stop_following(cx);
+                        // the copy did not come: the server says why, if it is about the login
+                        a.check(cx);
+                    }
+                    !late
+                });
+                if !matches!(go_on, Ok(true)) {
                     return;
                 }
                 cx.background_executor().timer(COPY_EVERY).await;
@@ -199,13 +254,20 @@ impl Account {
         .detach();
     }
 
-    /// `melodie sync`: the same copy as the command line's.
+    fn stop_following(&mut self, cx: &mut Context<Self>) {
+        self.following += 1;
+        self.syncing = false;
+        self.copying = None;
+        cx.notify();
+    }
+
+    /// `melodie sync`: the same copy as the command line's. The copy is followed while it runs;
+    /// its end says only whether it failed.
     pub fn sync_now(&mut self, cx: &mut Context<Self>) {
         if self.syncing {
             return;
         }
-        self.syncing = true;
-        cx.notify();
+        self.follow(now_secs(), cx);
         let env = self.env.clone();
         let task = cx.background_spawn(async move {
             let out = std::process::Command::new(program())
@@ -229,31 +291,21 @@ impl Account {
         });
         cx.spawn(async move |this, cx| {
             let (code, refused, said) = task.await;
-            // what the run left, read before the screen says it is over
-            let env = this.read_with(cx, |a, _| a.env.clone());
-            let at = match env {
-                Ok(env) => {
-                    cx.background_spawn(async move { account::synced_at(&env) })
-                        .await
-                }
-                Err(_) => None,
-            };
             let _ = this.update(cx, |a, cx| {
-                a.syncing = false;
                 match account::sync_end(code, refused, &said) {
-                    account::SyncEnd::Done => {
-                        a.set_standing(Standing::Ok, cx);
-                        if a.synced_at != at {
-                            a.synced_at = at;
-                            a.copy_step += 1;
-                        }
-                    }
-                    account::SyncEnd::Standing(s) => a.set_standing(s, cx),
-                    account::SyncEnd::Failed(said) if said.is_empty() => {
-                        a.say("Could not sync the library", cx)
+                    // the follower sees the new copy, or the one another run is making
+                    account::SyncEnd::Done => a.set_standing(Standing::Ok, cx),
+                    account::SyncEnd::Standing(s) => {
+                        a.stop_following(cx);
+                        a.set_standing(s, cx);
                     }
                     account::SyncEnd::Failed(said) => {
-                        a.say(format!("Could not sync the library: {said}"), cx)
+                        a.stop_following(cx);
+                        if said.is_empty() {
+                            a.say("Could not sync the library", cx)
+                        } else {
+                            a.say(format!("Could not sync the library: {said}"), cx)
+                        }
                     }
                 }
                 cx.notify();
@@ -615,7 +667,9 @@ pub fn settings_section(account: &Entity<Account>, pal: Palette, cx: &App) -> im
         Standing::AuthRefused => "Login refused",
     };
     let (out, sync) = (account.clone(), account.clone());
-    let synced = if a.syncing {
+    let synced = if let Some(so_far) = a.copying {
+        account::copy_notice(so_far)
+    } else if a.syncing {
         "Syncing…".to_string()
     } else {
         account::synced_text(a.synced_at, now_secs())
