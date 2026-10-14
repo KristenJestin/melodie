@@ -13,8 +13,9 @@ use melodie_desktop::covers::Use;
 use melodie_desktop::launch::{self, Job, Kind, Lanes};
 use melodie_desktop::link::{self, Msg};
 use melodie_desktop::model::{Clock, Connection, Player};
-use melodie_desktop::playing::{self, Playing};
+use melodie_desktop::playing::{self, Playing, Ranks};
 use melodie_desktop::quick::Seen;
+use melodie_desktop::selection::Played;
 use melodie_desktop::theme::{self, Active, Choice, Omarchy, Palette, Settings, Tint};
 use melodie_desktop::thumbs::{self, Thumbs};
 use melodie_desktop::tint;
@@ -88,8 +89,9 @@ pub struct Shared {
     pub player: Player,
     /// Which rows of the lists are the music playing now.
     pub playing: Playing,
-    /// The play of some rows asked from a playlist's page, until it runs.
-    played_from: Option<(Job, String)>,
+    /// The play of some rows asked from a playlist's page, until it runs: the job, the playlist,
+    /// the playlist's own rank of each row sent.
+    played_from: Option<(Job, String, Vec<usize>)>,
     pub art: Art,
     /// The picture of each row of the queue, by entry; kept up to date away from the render path.
     pub thumbs: Arc<Thumbs>,
@@ -209,12 +211,14 @@ impl Shared {
         }
     }
 
-    /// Runs `job`, which plays rows of the list shown at `here`: when that list is a playlist,
-    /// the queue it makes is the playlist's (`playing` marks the playlist, and which occurrence).
-    pub fn play_from(&mut self, here: &Place, job: Job, cx: &mut Context<Self>) {
-        if let (Place::Playlist(id), Job::PlayTracks { .. }) = (here, &job) {
-            self.played_from = Some((job.clone(), id.clone()));
-        }
+    /// Runs `played`, rows of the list shown at `here`: when that list is a playlist, the queue
+    /// it makes is the playlist's (`playing` marks the playlist, and which occurrence).
+    pub fn play_from(&mut self, here: &Place, played: Played, cx: &mut Context<Self>) {
+        let Played { job, ranks } = played;
+        self.played_from = match (here, &job) {
+            (Place::Playlist(id), Job::PlayTracks { .. }) => Some((job.clone(), id.clone(), ranks)),
+            _ => None,
+        };
         self.run(job, cx);
     }
 
@@ -224,19 +228,32 @@ impl Shared {
         if let Some(seen) = Seen::of_job(&job) {
             cx.emit(Started(seen));
         }
-        match &job {
-            Job::Play {
-                kind: Kind::Playlist,
-                id,
-                ..
-            } => self.playing.start_playlist(id),
-            Job::PlayTracks { .. } => {
-                if let Some((_, id)) = self.played_from.take_if(|(from, _)| *from == job) {
-                    self.playing.start_playlist(&id);
+        if job.replaces() {
+            // a play from a playlist's rows waiting behind it was dropped, or is this one
+            let from = self.played_from.take().filter(|(from, ..)| *from == job);
+            match (&job, from) {
+                (
+                    Job::Play {
+                        kind: Kind::Playlist,
+                        id,
+                        shuffle,
+                    },
+                    _,
+                ) => self.playing.start_playlist(
+                    id,
+                    if *shuffle {
+                        Ranks::Shuffled
+                    } else {
+                        Ranks::Own
+                    },
+                ),
+                (Job::PlayTracks { .. }, Some((_, id, ranks))) => {
+                    self.playing.start_playlist(&id, Ranks::Of(ranks.into()))
                 }
+                _ => self.playing.play_elsewhere(),
             }
-            _ => {}
         }
+        let replaces = job.replaces();
         let lane = job.plays();
         let program = self.program.clone();
         let what = match &job {
@@ -300,6 +317,9 @@ impl Shared {
             };
             let _ = this.update(cx, |s, cx| {
                 if let Some(msg) = msg {
+                    if replaces {
+                        s.playing.play_failed();
+                    }
                     s.fail(msg, cx);
                 }
                 if lane && let Some(next) = s.play_jobs.done(PLAYER) {
@@ -791,7 +811,7 @@ pub fn start(
 
 #[cfg(test)]
 mod tests {
-    use super::{Seen, Shared, Started, bare, fake_melodie, ran};
+    use super::{Played, Seen, Shared, Started, bare, fake_melodie, ran};
     use gpui_kit::Entity;
     use gpui_kit::{TestAppContext, TestDispatcher};
     use melodie_core::db;
@@ -864,9 +884,12 @@ mod tests {
         let env = Env::with_home(dir.path().join("home"));
         let mut app = TestAppContext::single();
         let shared = app.update(|cx| bare(env, program, cx));
-        let tracks = || Job::PlayTracks {
-            ids: vec!["a".into(), "b".into()],
-            from: 0,
+        let tracks = || Played {
+            job: Job::PlayTracks {
+                ids: vec!["a".into(), "b".into()],
+                from: 0,
+            },
+            ranks: vec![0, 1],
         };
         let marked = |app: &mut TestAppContext, shared: &Entity<Shared>, queue: Player| {
             shared.update(app, |s, cx| {
@@ -900,6 +923,98 @@ mod tests {
         });
         app.run_until_parked();
         assert!(marked(&mut app, &shared, playing_queue(5, &["a", "b"])));
+    }
+
+    /// Whether the playlist `pl1` is marked once the queue is `queue`.
+    fn marks_pl1(app: &mut TestAppContext, shared: &Entity<Shared>, queue: Player) -> bool {
+        shared.update(app, |s, cx| {
+            s.player = queue;
+            s.follow_playing(cx);
+            s.playing.playlist("pl1").is_some()
+        })
+    }
+
+    fn play_pl1() -> Job {
+        Job::Play {
+            kind: Kind::Playlist,
+            id: "pl1".into(),
+            shuffle: false,
+        }
+    }
+
+    #[test]
+    fn another_play_forgets_the_playlist_waiting_for_its_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = fake_melodie(dir.path());
+        let env = Env::with_home(dir.path().join("home"));
+        let mut app = TestAppContext::single();
+        let shared = app.update(|cx| bare(env, program, cx));
+        // the playlist's play ran, its queue is not seen yet, and an album's play follows
+        shared.update(&mut app, |s, cx| {
+            s.run(play_pl1(), cx);
+            s.run(
+                Job::Play {
+                    kind: Kind::Album,
+                    id: "al1".into(),
+                    shuffle: false,
+                },
+                cx,
+            );
+        });
+        app.run_until_parked();
+        assert!(!marks_pl1(&mut app, &shared, playing_queue(1, &["a", "b"])));
+    }
+
+    #[test]
+    fn a_failed_play_of_a_playlist_does_not_claim_the_next_queue() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("melodie");
+        std::fs::write(&program, "#!/bin/sh\necho 'no daemon' >&2\nexit 1\n").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let env = Env::with_home(dir.path().join("home"));
+        let mut app = TestAppContext::single();
+        let shared = app.update(|cx| bare(env, program, cx));
+        shared.update(&mut app, |s, cx| s.run(play_pl1(), cx));
+        app.run_until_parked();
+        // another client plays something
+        assert!(!marks_pl1(&mut app, &shared, playing_queue(1, &["a", "b"])));
+    }
+
+    #[test]
+    fn a_play_of_a_playlist_s_rows_dropped_from_the_lane_is_forgotten() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = fake_melodie(dir.path());
+        let env = Env::with_home(dir.path().join("home"));
+        let mut app = TestAppContext::build(TestDispatcher::new(0), None);
+        let shared = app.update(|cx| bare(env, program.clone(), cx));
+        let rows = Job::PlayTracks {
+            ids: vec!["a".into(), "b".into()],
+            from: 0,
+        };
+        shared.update(&mut app, |s, cx| {
+            s.run(Job::Rediscover, cx);
+            // waits behind the rediscoveries, then dropped by the mix
+            s.play_from(
+                &Place::Playlist("pl1".into()),
+                Played {
+                    job: rows.clone(),
+                    ranks: vec![0, 1],
+                },
+                cx,
+            );
+            s.run(Job::PlayMix, cx);
+        });
+        app.run_until_parked();
+        // the same rows played later from elsewhere (a menu) are not the playlist's
+        shared.update(&mut app, |s, cx| s.run(rows, cx));
+        app.run_until_parked();
+        assert!(
+            ran(&program).starts_with("mix rediscover\nmix me\nplay "),
+            "the rows waiting were dropped: {}",
+            ran(&program)
+        );
+        assert!(!marks_pl1(&mut app, &shared, playing_queue(1, &["a", "b"])));
     }
 
     #[test]

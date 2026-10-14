@@ -69,6 +69,20 @@ struct Source {
     after: u64,
     /// The entries that queue was made of, in the order it was made. Empty until it is seen.
     entries: Arc<[u64]>,
+    /// The playlist's row each of those entries came from.
+    ranks: Ranks,
+}
+
+/// Which row of the playlist each entry of the queue its play made came from, in the order the
+/// entries were sent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Ranks {
+    /// The playlist's own order, from its first row: a play of the whole playlist.
+    Own,
+    /// The playlist's own rank of each row sent: a play from a row, in the order shown.
+    Of(Arc<[usize]>),
+    /// Unknown, shuffled: every occurrence of the track is marked.
+    Shuffled,
 }
 
 /// What is playing, as the lists need it.
@@ -127,13 +141,28 @@ impl Playing {
         }
     }
 
-    /// The window asks for the playlist `id` to be played: the queue that follows is its.
-    pub fn start_playlist(&mut self, id: &str) {
+    /// The window asks for the playlist `id` to be played, its rows sent in the order `ranks`
+    /// says: the queue that follows is its.
+    pub fn start_playlist(&mut self, id: &str, ranks: Ranks) {
         self.source = Some(Source {
             playlist: id.to_string(),
             after: self.seen,
             entries: Arc::default(),
+            ranks,
         });
+    }
+
+    /// The window asks for another queue: the queue that follows is no playlist's.
+    pub fn play_elsewhere(&mut self) {
+        self.source = None;
+    }
+
+    /// The play asked last failed: a source still waiting for its queue would claim the next
+    /// one, made by someone else.
+    pub fn play_failed(&mut self) {
+        if self.source.as_ref().is_some_and(|s| s.entries.is_empty()) {
+            self.source = None;
+        }
     }
 
     /// The track whose album and artist are to be read, once; `None` when they are known, being
@@ -169,13 +198,18 @@ impl Playing {
     /// The marks of the rows of `tracks`, the list shown at `list`.
     pub fn marks(&self, list: &Place, tracks: &[Track]) -> Marks {
         // The rank the queue is at, when the list is the playlist it was started from and the
-        // queue still tells which row each entry came from: the entry's place among the entries
-        // the play made, if that row holds the same track.
+        // queue still tells which row each entry came from: the row the entry was sent from, if
+        // it holds the same track.
         let only = match (list, &self.source, &self.current) {
             (Place::Playlist(p), Some(s), Some((entry, id))) if s.playlist == *p => s
                 .entries
                 .iter()
                 .position(|e| e == entry)
+                .and_then(|sent| match &s.ranks {
+                    Ranks::Own => Some(sent),
+                    Ranks::Of(ranks) => ranks.get(sent).copied(),
+                    Ranks::Shuffled => None,
+                })
                 .filter(|&rank| tracks.get(rank).is_some_and(|t| t.id == *id)),
             _ => None,
         };
@@ -221,7 +255,7 @@ impl Playing {
 
 #[cfg(test)]
 mod tests {
-    use super::{BARS, Mark, Origin, Playing, level, read_origin};
+    use super::{BARS, Mark, Origin, Playing, Ranks, level, read_origin};
     use crate::browse::Place;
     use crate::model::{PlayState, Player};
     use melodie_core::db;
@@ -348,7 +382,7 @@ mod tests {
     /// A playlist `pl1` of a, b, a, c played from its start: the queue's entries 11 to 14.
     fn playlist_played() -> (Playing, Vec<(u64, &'static str)>) {
         let mut p = following(&player(&[(3, "z")], Some(0), PlayState::Playing));
-        p.start_playlist("pl1");
+        p.start_playlist("pl1", Ranks::Own);
         let queue = vec![(11, "a"), (12, "b"), (13, "a"), (14, "c")];
         p.follow(&player(&queue, Some(0), PlayState::Playing));
         (p, queue)
@@ -388,14 +422,82 @@ mod tests {
     #[test]
     fn a_shuffled_playlist_marks_every_occurrence() {
         let mut p = Playing::default();
-        p.start_playlist("pl1");
-        // the queue is not in the playlist's order: the entry at rank 1 holds "c", not "b"
-        let q = [(1, "c"), (2, "a"), (3, "b")];
-        p.follow(&player(&q, Some(1), PlayState::Playing));
+        p.start_playlist("pl1", Ranks::Shuffled);
+        // the queue is not in the playlist's order: its first entry is the playlist's third row,
+        // which holds the same track as its first
+        let q = [(1, "a"), (2, "a"), (3, "b")];
+        p.follow(&player(&q, Some(0), PlayState::Playing));
         assert_eq!(
             marked(&p, &Place::Playlist("pl1".into()), &["a", "b", "a"]),
             [PLAYING, None, PLAYING]
         );
+        assert_eq!(
+            p.playlist("pl1"),
+            PLAYING,
+            "the playlist is still the source"
+        );
+    }
+
+    #[test]
+    fn a_sorted_view_with_duplicates_marks_the_occurrence_sent() {
+        // the playlist a, b, a, c shown sorted as its rows 2, 1, 0, 3; a double click on the
+        // first row shown sends them in that order
+        let mut p = following(&player(&[(3, "z")], Some(0), PlayState::Playing));
+        p.start_playlist("pl1", Ranks::Of([2, 1, 0, 3].into()));
+        let queue = [(11, "a"), (12, "b"), (13, "a"), (14, "c")];
+        p.follow(&player(&queue, Some(0), PlayState::Playing));
+        let list = Place::Playlist("pl1".into());
+        let ids = ["a", "b", "a", "c"];
+        assert_eq!(marked(&p, &list, &ids), [None, None, PLAYING, None]);
+        p.follow(&player(&queue, Some(2), PlayState::Playing));
+        assert_eq!(marked(&p, &list, &ids), [PLAYING, None, None, None]);
+    }
+
+    #[test]
+    fn a_row_past_the_hundredth_marks_its_own_occurrence() {
+        // 150 rows, the same track at ranks 100 and 120; a double click on rank 120 sends the
+        // rows from 20 on, and the queue is at its 100th entry
+        let ids: Vec<String> = (0..150)
+            .map(|i| match i {
+                100 | 120 => "a".to_string(),
+                _ => format!("t{i}"),
+            })
+            .collect();
+        let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let mut p = Playing::default();
+        p.start_playlist("pl1", Ranks::Of((20..150).collect()));
+        let queue: Vec<(u64, &str)> = (20..150).map(|r| (r as u64, ids[r])).collect();
+        p.follow(&player(&queue, Some(100), PlayState::Playing));
+        let marks = marked(&p, &Place::Playlist("pl1".into()), &ids);
+        let at: Vec<usize> = (0..ids.len()).filter(|&r| marks[r].is_some()).collect();
+        assert_eq!(at, [120]);
+    }
+
+    #[test]
+    fn a_play_asked_elsewhere_forgets_the_playlist_waiting_for_its_queue() {
+        let mut p = Playing::default();
+        p.start_playlist("pl1", Ranks::Own);
+        p.play_elsewhere();
+        p.follow(&player(&[(1, "a"), (2, "b")], Some(0), PlayState::Playing));
+        assert_eq!(p.playlist("pl1"), None);
+        assert_eq!(
+            marked(&p, &Place::Playlist("pl1".into()), &["a", "b", "a"]),
+            [PLAYING, None, PLAYING]
+        );
+    }
+
+    #[test]
+    fn a_failed_play_of_a_playlist_does_not_claim_the_next_queue() {
+        let mut p = Playing::default();
+        p.start_playlist("pl1", Ranks::Own);
+        p.play_failed();
+        // another client plays something
+        p.follow(&player(&[(1, "a")], Some(0), PlayState::Playing));
+        assert_eq!(p.playlist("pl1"), None);
+        // a failure after the queue was made leaves it the playlist's
+        let (mut p, _) = playlist_played();
+        p.play_failed();
+        assert_eq!(p.playlist("pl1"), PLAYING);
     }
 
     #[test]
@@ -421,7 +523,7 @@ mod tests {
     #[test]
     fn a_play_asked_is_tied_to_the_queue_it_makes_not_to_the_old_one() {
         let mut p = following(&player(&[(5, "a"), (6, "b")], Some(0), PlayState::Playing));
-        p.start_playlist("pl1");
+        p.start_playlist("pl1", Ranks::Own);
         // events about the old queue (a pause, a position) are not its queue
         p.follow(&player(&[(5, "a"), (6, "b")], Some(0), PlayState::Paused));
         assert_eq!(p.playlist("pl1"), None);
@@ -434,7 +536,7 @@ mod tests {
         let mut p = following(&player(&[(40, "a")], Some(0), PlayState::Playing));
         // the daemon quits, another one starts and is asked for the playlist
         p.follow(&Player::default());
-        p.start_playlist("pl1");
+        p.start_playlist("pl1", Ranks::Own);
         p.follow(&player(&[(1, "a"), (2, "b")], Some(0), PlayState::Playing));
         assert_eq!(p.playlist("pl1"), PLAYING);
         // and the playlist of the daemon that quit is not the new daemon's queue
