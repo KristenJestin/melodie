@@ -348,7 +348,7 @@ mod tests {
         for n in 0..12 {
             db::insert_track(
                 &tx,
-                &json!({"id":format!("t{n}"),"title":format!("Rain {n}")}),
+                &json!({"id":format!("t{n}"),"title":format!("Rain {n}"),"artistId":"ar1"}),
             )
             .unwrap();
         }

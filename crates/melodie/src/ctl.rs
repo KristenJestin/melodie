@@ -6,7 +6,7 @@ use crate::rules;
 use anyhow::{Context, Result, anyhow, bail};
 use melodie_core::address::{Address, Place};
 use melodie_core::api::Client;
-use melodie_core::env::{Env, NO_NOTIFY_VAR};
+use melodie_core::env::{Env, QUIET_FAILURES_VAR};
 use melodie_core::prefs::{self, Prefs};
 use melodie_core::proto::{self, Now, QueueView, Request, Response};
 use melodie_core::search::Kind;
@@ -48,7 +48,7 @@ fn spawn_daemon(env: &Env) -> Result<std::process::Child> {
 /// what it alone sees (a token refused while it plays).
 fn daemon_command(exe: &std::path::Path) -> Command {
     let mut c = Command::new(exe);
-    c.arg("daemon").env_remove(NO_NOTIFY_VAR);
+    c.arg("daemon").env_remove(QUIET_FAILURES_VAR);
     // SAFETY : `setsid` est sûr entre `fork` et `exec`.
     unsafe {
         c.pre_exec(|| {
@@ -105,7 +105,7 @@ pub fn report(f: &Failure) -> ExitCode {
         Failure::Syncing => "Mélodie : copie de la bibliothèque en cours",
         Failure::Internal(_) => "Mélodie : erreur",
     };
-    notify::send(summary, &f.to_string());
+    notify::send_failure(summary, &f.to_string());
     ExitCode::from(f.exit_code())
 }
 
@@ -133,7 +133,7 @@ pub fn report_oops(o: &Oops) -> ExitCode {
     match o {
         Oops::NothingPlaying => {
             eprintln!("Rien en lecture (le démon ne tourne pas ou la file est vide)");
-            notify::send("Mélodie", "Rien en lecture");
+            notify::send_failure("Mélodie", "Rien en lecture");
             ExitCode::from(1)
         }
         Oops::Failure(f) => report(f),
@@ -368,7 +368,7 @@ pub fn open(env: &Env, uri: &str) -> ExitCode {
         Ok(a) => a,
         Err(e) => {
             eprintln!("{e}");
-            notify::send("Mélodie : adresse refusée", &e.to_string());
+            notify::send_failure("Mélodie : adresse refusée", &e.to_string());
             return ExitCode::from(1);
         }
     };
@@ -630,7 +630,7 @@ mod tests {
     fn the_daemon_started_for_the_window_still_notifies() {
         let c = daemon_command(std::path::Path::new("/bin/melodie"));
         let env: Vec<_> = c.get_envs().collect();
-        assert!(env.contains(&(std::ffi::OsStr::new(NO_NOTIFY_VAR), None)));
+        assert!(env.contains(&(std::ffi::OsStr::new(QUIET_FAILURES_VAR), None)));
     }
 
     #[test]

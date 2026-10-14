@@ -46,7 +46,9 @@ configuration (see `AGENTS.md`). The daemon integration test starts its own priv
   synchronisation is running.
 - `melodie sync [--full]`: updates the local copy by hand. Not needed in normal use (see
   "Automatic synchronisation").
-- `melodie search <text…> [--json]`: searches the local copy.
+- `melodie search <text…> [--json]`: searches the local copy. Artists with nothing to play (no album
+  of their own, no track, no appearance on one: composers, producers…) are left out here and in
+  the window's lists; they stay in the copy, and their page says there is nothing to play.
 - `melodie playlists [--json]`: lists the playlists.
 - `melodie play <kind> <id> [--shuffle]`: `kind` is `playlist`, `album`, `artist` or `track`.
   Replaces the queue and starts playing. An artist gives all their albums (year, then name), tracks
@@ -457,10 +459,10 @@ exposed), and keeps the queue in step with mpv's playlist. The daemon does not l
   service removed, socket deleted). SIGTERM too. Clients following the event stream do not keep
   it alive.
 - Log: `~/.local/state/melodie/melodie.log`, overwritten at every start, without token.
-- Variables: `MELODIE_AO` sets mpv's audio output (`null` for tests). `MELODIE_NO_NOTIFY` silences
-  the desktop notification of a failure; the window sets it on every `melodie` it runs, so a
-  failure is told in its own toast and not twice (the daemon such a command starts does not
-  inherit it). Reserved for tests:
+- Variables: `MELODIE_AO` sets mpv's audio output (`null` for tests). `MELODIE_QUIET_FAILURES`
+  silences the desktop notification of a failure, never of a success; the window sets it on every
+  `melodie` it runs, so a failure is told in its own toast and not twice, while a like or a
+  playlist edit still notifies (the daemon such a command starts does not inherit it). Reserved for tests:
   `MELODIE_TEST_SECRET` (a file standing for the keyring; with it set, no notification is sent),
   `MELODIE_MPRIS_NAME` (replaces the bus name suffix), `MELODIE_IDLE_SECS` (the idle delay) and
   `MELODIE_OPEN_URI_HOLD_MS` (holds the MPRIS `OpenUri` answer back).
