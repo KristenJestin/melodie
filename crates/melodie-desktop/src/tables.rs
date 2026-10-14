@@ -8,7 +8,7 @@ use crate::app::Shared;
 use crate::catalog::Catalog;
 use crate::context_menu::{self, Menued as _};
 use crate::dialogs::{self, Dialog};
-use crate::equaliser::Equaliser;
+use crate::equaliser::{Equaliser, name_line};
 use crate::player::palette;
 use crate::tips::Tipped as _;
 use crate::widgets::{Hover, Revealed as _, hover, title_with_aside};
@@ -638,12 +638,14 @@ fn artist_header(sort: Sort<ArtistBy>, pal: Palette, catalog: Entity<Catalog>) -
         .map(|d| col("ah-tracks", "TRACKS", ArtistBy::Tracks, true, 1., d))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn artist_row(
     ix: usize,
     a: &Artist,
     covers: &Covers,
     pal: Palette,
     catalog: &Entity<Catalog>,
+    mark: Option<Mark>,
     window: &mut Window,
     cx: &mut App,
 ) -> Stateful<Div> {
@@ -692,12 +694,13 @@ fn artist_row(
                             .map(|b| div().absolute().top(px(6.)).left(px(6.)).child(b)),
                         ),
                 )
-                .child(
-                    cell(None, 4.)
-                        .truncate()
-                        .text_color(pal.fg)
-                        .child(a.name.clone()),
-                )
+                .child(name_line(
+                    cell(None, 4.).text_color(pal.fg),
+                    ElementId::Name(format!("artist-row-equaliser-{ix}").into()),
+                    a.name.clone(),
+                    mark,
+                    pal.accent,
+                ))
                 .child(
                     cell(None, 1.)
                         .text_color(pal.secondary)
@@ -735,9 +738,13 @@ impl Render for ArtistList {
             Some(list) => {
                 let list = list.clone();
                 let catalog = self.catalog.clone();
+                let playing = self.shared.read(cx).playing.clone();
                 uniform_list("artist-rows", list.len(), move |range, window, cx| {
                     range
-                        .map(|ix| artist_row(ix, &list[ix], &covers, pal, &catalog, window, cx))
+                        .map(|ix| {
+                            let mark = playing.artist(&list[ix].id);
+                            artist_row(ix, &list[ix], &covers, pal, &catalog, mark, window, cx)
+                        })
                         .collect()
                 })
                 .track_scroll(&self.scroll)

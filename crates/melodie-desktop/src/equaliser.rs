@@ -93,3 +93,24 @@ impl RenderOnce for Equaliser {
         }
     }
 }
+
+/// A name on its line: when the music of what it names plays, in the accent and with the
+/// equaliser before it. `line` is the line's own look, without the colour of the text.
+pub fn name_line(
+    line: Div,
+    id: impl Into<ElementId>,
+    name: impl Into<SharedString>,
+    mark: Option<Mark>,
+    accent: Hsla,
+) -> Div {
+    match mark {
+        None => line.truncate().child(name.into()),
+        Some(mark) => line
+            .text_color(accent)
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(Equaliser::new(id, mark, accent))
+            .child(div().min_w_0().truncate().child(name.into())),
+    }
+}

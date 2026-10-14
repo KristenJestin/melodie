@@ -44,6 +44,7 @@ fn album_rows(
     width: f32,
     pal: Palette,
     catalog: &Entity<Catalog>,
+    playing: &Playing,
 ) -> Div {
     let cols = browse::columns(width, MIN_CELL, GAP);
     let side = ((width - GAP * (cols - 1) as f32) / cols as f32).floor();
@@ -54,7 +55,7 @@ fn album_rows(
             .map(|row| {
                 h_flex().gap(px(GAP)).children(
                     row.iter()
-                        .map(|a| album_cell(a, covers, side, pal, catalog)),
+                        .map(|a| album_cell(a, covers, side, pal, catalog, playing.album(&a.id))),
                 )
             })
             .collect::<Vec<_>>(),
@@ -520,6 +521,7 @@ impl Render for PageView {
                         width,
                         pal,
                         catalog,
+                        &playing,
                     ))
                 })
                 .into_any_element(),

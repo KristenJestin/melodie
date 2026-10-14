@@ -7,6 +7,7 @@ use crate::app::Shared;
 use crate::catalog::{Catalog, Empty};
 use crate::context_menu::Menued as _;
 use crate::dialogs::{self, Dialog};
+use crate::equaliser::name_line;
 use crate::motion;
 use crate::player::palette;
 use crate::tables::{RowCtx, row_button, row_hover, track_header, track_row};
@@ -24,6 +25,7 @@ use melodie_desktop::covers::{Covers, Use};
 use melodie_desktop::find::{self, Action, Answer, Latest};
 use melodie_desktop::launch::{Adding, Kind};
 use melodie_desktop::menu::{Item, Spot};
+use melodie_desktop::playing::{Mark, Playing};
 use melodie_desktop::table::{self as track_table, ColSort, Cols, Shown, Sorts, Table};
 use melodie_desktop::theme::Palette;
 use std::collections::HashMap;
@@ -338,6 +340,17 @@ pub fn act(
 
 /// One result: its picture, its name, what it is; a click plays a track and opens the rest; on
 /// hover, its other actions fade in.
+/// The mark of a result that is not a track: its album, artist or playlist plays.
+fn mark_of(playing: &Playing, hit: &Hit) -> Option<Mark> {
+    match hit.kind {
+        search::Kind::Album => playing.album(&hit.id),
+        search::Kind::Artist => playing.artist(&hit.id),
+        search::Kind::Playlist => playing.playlist(&hit.id),
+        search::Kind::Track => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn result_row(
     list: &'static str,
     ix: usize,
@@ -346,6 +359,7 @@ fn result_row(
     pal: Palette,
     catalog: &Entity<Catalog>,
     hover: Hover,
+    mark: Option<Mark>,
 ) -> Stateful<Div> {
     let key = |what: &str| ElementId::Name(format!("{list}-{what}-{ix}").into());
     let round = if hit.kind == search::Kind::Artist {
@@ -381,13 +395,13 @@ fn result_row(
                     v_flex()
                         .flex_1()
                         .min_w_0()
-                        .child(
-                            div()
-                                .truncate()
-                                .text_sm()
-                                .text_color(pal.fg)
-                                .child(hit.name.clone()),
-                        )
+                        .child(name_line(
+                            div().text_sm().text_color(pal.fg),
+                            key("equaliser"),
+                            hit.name.clone(),
+                            mark,
+                            pal.accent,
+                        ))
                         .child(
                             div()
                                 .truncate()
@@ -611,6 +625,7 @@ impl Render for SearchView {
                 Some((kind, hits)) => {
                     let hits = Arc::clone(hits);
                     let c = catalog.clone();
+                    let playing = playing.clone();
                     // one id per kind: another filter fades in, the same one typed in does not
                     let id = ElementId::Name(format!("found-{}", kind.word()).into());
                     v_flex()
@@ -630,6 +645,7 @@ impl Render for SearchView {
                                             pal,
                                             &c,
                                             hover,
+                                            mark_of(&playing, &hits[ix]),
                                         )
                                     })
                                     .collect()
@@ -712,7 +728,8 @@ impl Render for SearchView {
                             }
                             None => d.children(g.hits.iter().enumerate().map(|(ix, h)| {
                                 let hover = row_hover(list, ix, window, cx);
-                                result_row(list, ix, h, &covers, pal, catalog, hover)
+                                let mark = mark_of(&playing, h);
+                                result_row(list, ix, h, &covers, pal, catalog, hover, mark)
                             })),
                         })
                 }))
