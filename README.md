@@ -457,9 +457,12 @@ connection states (see below), with a notification.
 - `melodie like [<kind> <id>]` / `unlike [<kind> <id>]`: `kind` is `track`, `album` or `artist`
   (`star.view` / `unstar.view` with `id`, `albumId`, `artistId`). Without argument, the current
   track (asked of the daemon; when nothing plays: "Rien en lecture", code 1, nothing is sent to
-  the server). `like --toggle` flips the state. Notification "♥ Ajouté aux favoris : <title>" or
-  "Retiré des favoris". The daemon updates `starred` (`now --json`, MPRIS `melodie:starred`) of the
-  current track; on a track change it reads the state again from the copy.
+  the server). `like --toggle` flips the state. Notification "Added to favourites" or
+  "Removed from favourites" with the title as body; the heart is in the icon, not in the text
+  (hint `string:omarchy-glyph:<glyph>`, Nerd Font `nf-md-heart` or `nf-md-heart_broken`;
+  other notification daemons ignore it). The daemon updates `starred` (`now --json`, MPRIS
+  `melodie:starred`) of the current track; on a track change it reads the state again from the
+  copy.
 - `melodie playlist add [--allow-duplicates | --dry-run] [--json] <playlistId> [track <id>… | album <id> | current]`:
   `updatePlaylist` with `songIdToAdd` repeated (`current`, the current track, is the default).
   The playlist is first read from the server (`getPlaylist`, not the local copy, which may be
