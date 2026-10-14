@@ -621,7 +621,9 @@ pub fn generate(
 pub enum Source {
     Track(usize),
     Album(Vec<usize>),
-    Artist(Vec<usize>),
+    /// The tracks they play on, and the artist whose tracks are favoured: the one asked, only
+    /// when some tracks are theirs (one only featured is not mixed with another's boost).
+    Artist(Vec<usize>, Option<u32>),
     Genre(u32),
 }
 
@@ -635,7 +637,7 @@ pub fn personal(lib: &Library, size: usize, rng: &mut Rng) -> Vec<usize> {
 pub fn instant(lib: &Library, source: &Source, size: usize, rng: &mut Rng) -> Vec<usize> {
     let src_tracks: Vec<usize> = match source {
         Source::Track(i) => vec![*i],
-        Source::Album(v) | Source::Artist(v) => v.clone(),
+        Source::Album(v) | Source::Artist(v, _) => v.clone(),
         Source::Genre(_) => Vec::new(),
     };
     // Genres de la source : union de ceux de ses morceaux.
@@ -676,11 +678,11 @@ pub fn instant(lib: &Library, source: &Source, size: usize, rng: &mut Rng) -> Ve
     // Ouverture : le morceau, ou un titre aimé/fréquent de l'album ou de l'artiste.
     let opener = match source {
         Source::Track(i) => Some(*i),
-        Source::Album(v) | Source::Artist(v) => open_with(lib, v, rng),
+        Source::Album(v) | Source::Artist(v, _) => open_with(lib, v, rng),
         Source::Genre(_) => None,
     };
     let boost = match source {
-        Source::Artist(v) => v.first().map(|&i| lib.tracks[i].artist),
+        Source::Artist(_, boost) => *boost,
         _ => None,
     };
 
@@ -919,20 +921,19 @@ pub fn find_source(
                     )
                 })
                 .ok_or_else(|| format!("unknown artist: {key}"))?;
-            let mut v = rowids("SELECT rowid FROM tracks WHERE artistId = ?1", &id);
-            if v.is_empty() {
-                // only featured on the tracks of others
-                v = rowids(
-                    "SELECT rowid FROM tracks
-                     WHERE id IN (SELECT track FROM track_artists WHERE artist = ?1) ORDER BY rowid",
-                    &id,
-                );
-            }
+            // the same tracks as the artist page and `play artist`: their own and those they
+            // are credited on
+            let v = rowids(
+                "SELECT rowid FROM tracks
+                 WHERE artistId = ?1 OR id IN (SELECT track FROM track_artists WHERE artist = ?1)
+                 ORDER BY rowid",
+                &id,
+            );
             if v.is_empty() {
                 let name = one("SELECT name FROM artists WHERE id = ?1", &id).unwrap_or(id);
                 Err(format!("Nothing to play for {name}"))
             } else {
-                Ok(Source::Artist(v))
+                Ok(Source::Artist(v, lib.artists.get(&id).copied()))
             }
         }
     }
