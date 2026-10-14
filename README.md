@@ -264,10 +264,13 @@ Screenshots and a recording of the animations, made with invented data, are in
 - **First copy**: signed in with no complete local copy (however the login was made: in the
   window, with `melodie login`, or a keyring brought from another machine), the window starts
   the first copy itself (`melodie sync`), once, as soon as `melodie status` says the login holds.
-  The views fill while it runs (read again at each step, the scroll position kept), and the bottom
-  of the window says how far it is ("Copying the library: 120 albums, 1500 tracks so far"). A
-  copy that fails says why (`no-login` and `auth-refused` bring the sign-in screen, `unreachable`
-  says "Navidrome is unreachable"); one cut off is taken up again by the next.
+  The views fill while it runs (read again every few seconds, the scroll position kept, a
+  selection cleared), and the bottom of the window says how far it is ("Copying the library: 120
+  albums, 1500 tracks so far"). A copy that fails says why (`no-login` and `auth-refused` bring
+  the sign-in screen, `unreachable` says "Navidrome is unreachable"; the settings say the copy is
+  not finished); one cut off is taken up again by the next. A copy the window did not start (the
+  one `melodie login` starts) is taken up by the window once it stands still and no `melodie sync`
+  runs.
 - **Colours**: the button at the top right chooses the theme. "Mélodie", the base theme, takes its
   colours from the cover and follows the desktop's dark or light setting. "Omarchy" is offered
   only on Omarchy (`ID=omarchy` in `/etc/os-release` and a readable
@@ -552,7 +555,8 @@ once "Copie de la bibliothèque en cours…" (see "Automatic synchronisation").
 - First copy (no copy yet): there is nothing to keep, so it is made in place and each page of 500
   is committed as it comes; the copy is readable while it fills (the window shows it growing), and
   `meta` says it is not finished (`copying`, where it goes on from). Cut off, it is taken up again
-  where it stopped by the next synchronisation, whatever starts it. Only the window reads it
+  where it stopped by the next synchronisation, whatever starts it, from the same server for the
+  same user (otherwise it starts again). Only the window reads it
   before it is finished: until then, the command line answers "Copie de la bibliothèque en
   cours…" as when there is no copy, and takes the copy up again in the background.
 - Incremental sync: `getScanStatus` (`lastScan`) compared with the stored value; unchanged:
