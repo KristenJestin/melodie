@@ -227,12 +227,14 @@ Screenshots and a recording of the animations, made with invented data, are in
 - **The search**, first in the sidebar: one field, and as you type the artists, albums, tracks and
   playlists of the local copy, grouped by kind. The kind whose best result is the most relevant
   comes first (at equal relevance: artists, albums, tracks, playlists), each with its five best
-  results, ranked as `melodie search` ranks them; "See all" lists every result of that kind. A
-  click on a track picks it, a double click plays the tracks found from it, a click on the rest
-  opens its page; on a row's hover: play, shuffle (not for a single track), play next, add to the
-  queue, open the album (a track), add to a playlist (a track or an album). The local copy is
-  read away from the window's thread, and the answer to an older
-  keystroke is never shown over a newer one; the search never touches the network.
+  results, ranked as `melodie search` ranks them. Under the field, filters by kind (All, Tracks,
+  Albums, Artists, Playlists) keep the same page and the same text: "See all" of a group picks its
+  filter, which lists every result of that kind ("9 for “…”"); a new text keeps the filter; the
+  back button and Escape return to All. A click on a track picks it, a double click plays the
+  tracks found from it, a click on the rest opens its page; on a row's hover: play, shuffle (not
+  for a single track), play next, add to the queue, open the album (a track), add to a playlist (a
+  track or an album). The local copy is read away from the window's thread, and the answer to an
+  older keystroke is never shown over a newer one; the search never touches the network.
 - **The menu of an item**: a right click on a track (any list, the search, the queue, the
   player and the player bar), an album, an artist, a playlist (the sidebar, the home, the search)
   or a mix card opens a menu of what can be done with it. A track: play, play next, add to the
@@ -260,7 +262,12 @@ Screenshots and a recording of the animations, made with invented data, are in
   plays a genre's mix; Shift+Enter adds to the queue; Ctrl+Enter opens a track's album, or plays
   an album, an artist or a playlist. The keys of the row chosen are shown at the bottom. Before
   anything is typed it lists what was opened (album, artist and playlist pages) or played (tracks,
-  genre mixes) in the window since it started, then the albums played last according to the local copy.
+  genre mixes) in the window, the last eight, kept between two launches, then the albums played
+  last according to the local copy; what the local copy no longer holds is dropped when the
+  window starts. Closed (Escape, Ctrl+K, a click outside, a result run) and opened again, it shows the last
+  non-empty text searched, selected (typing replaces it, Enter runs the same search again);
+  Escape empties a filled field (back to the recents) and closes an empty one, as on the search
+  page, and emptying the field does not make it forget that text.
 - **Keys**: Ctrl+F, or / when not typing, opens the search and puts the cursor in its field;
   Space plays or pauses (in the field, it is a space); `q` shows or hides the queue (in the field,
   it is a letter); Escape closes a dialog, else the queue laid over a narrow window or the
@@ -515,7 +522,7 @@ result), `--size N` (50 by default).
 - `~/.cache/melodie/waveforms/<id>.wave`: the waveforms of the window's position bar (404 bytes
   each).
 - `~/.cache/melodie/auth-refused`: marker of the last refusal by the server (see below).
-- `~/.local/state/melodie/window.toml`: the window's theme choice, and whether the queue is shown.
+- `~/.local/state/melodie/window.toml`: the window's theme choice, whether the queue is shown, and the palette's recents.
 - `~/.local/state/melodie/state.toml`: remembered volume; `melodie.log`: the daemon's log;
   `sync.log`: the log of background synchronisations. `XDG_STATE_HOME` honoured.
 - `$XDG_RUNTIME_DIR/melodie/melodie.sock`, `melodie.lock`: the daemon's socket and lock;

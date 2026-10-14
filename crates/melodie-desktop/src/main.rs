@@ -235,6 +235,7 @@ impl Root {
             held,
             can_back: c.nav.can_go_back(),
             field_empty: v.is_empty(),
+            palette_empty: self.views.quick.read(cx).is_empty(),
             sign_in: self.account.read(cx).screen(cx) == Screen::SignIn,
             sign_in_field_focused: self.views.sign_in.read(cx).has_focus(window, cx),
         })
@@ -271,9 +272,7 @@ impl Root {
         let covers = self.queue_place(window, cx).covers();
         match act {
             Act::OpenSearch => {
-                self.catalog
-                    .update(cx, |c, cx| c.start_at(Place::Search, cx));
-                self.views.search.update(cx, |v, cx| v.focus(window, cx));
+                self.views.search.update(cx, |v, cx| v.open(window, cx));
             }
             // what is open closes first; then a page goes back
             Act::CloseOverlays => self.shared.update(cx, |s, cx| {
@@ -299,6 +298,7 @@ impl Root {
             Act::ClearField => {
                 self.views.search.update(cx, |v, cx| v.clear(window, cx));
             }
+            Act::ClearPalette => self.views.quick.update(cx, |q, cx| q.clear(window, cx)),
             Act::Back => self.catalog.update(cx, |c, cx| c.back(cx)),
             Act::Forward => self.catalog.update(cx, |c, cx| c.forward(cx)),
             Act::PlayPause => self.shared.update(cx, |s, cx| {
@@ -473,7 +473,7 @@ impl Render for Root {
         let panel = QUEUE_WIDTH.min(width);
         let (here, step) = {
             let c = self.catalog.read(cx);
-            (c.here().clone(), c.nav.step)
+            (c.here().clone(), c.nav.view)
         };
         let v = &self.views;
         let content: AnyView = match here {

@@ -96,6 +96,8 @@ pub struct Situation<'a> {
     /// There is a page to go back to.
     pub can_back: bool,
     pub field_empty: bool,
+    /// The palette's field holds no text.
+    pub palette_empty: bool,
     /// The sign-in screen covers the window.
     pub sign_in: bool,
     /// The focus is in one of the sign-in screen's fields.
@@ -123,6 +125,8 @@ pub enum Act {
     Confirm,
     ClearSelection,
     ClearField,
+    /// Empties the palette's field, which stays open.
+    ClearPalette,
     Back,
     Forward,
     PlayPause,
@@ -136,14 +140,14 @@ pub enum Act {
     Pass,
 }
 
-/// The field is shown on the search and on its "see all" pages only; elsewhere it cannot be
-/// typed in, whatever the focus still says.
+/// The field is shown on the search page only (All or a filter); elsewhere it cannot be typed
+/// in, whatever the focus still says.
 pub fn typing(here: &Place, field_focused: bool) -> bool {
     field_focused && in_search(here)
 }
 
 pub fn in_search(here: &Place) -> bool {
-    matches!(here, Place::Search | Place::Found(_))
+    here.in_search()
 }
 
 /// What a right click does on the open palette: nothing inside it, whatever the row; outside it
@@ -192,6 +196,8 @@ pub fn act(key: Key, s: Situation) -> Act {
     // over the current place: its keys first, and what is typed goes to its field
     if s.palette_open {
         return match key {
+            // like the search page: the text goes first, then the palette closes
+            Key::Escape if !s.palette_empty => Act::ClearPalette,
             Key::Palette | Key::Escape => Act::TogglePalette,
             Key::Up => Act::PaletteUp,
             Key::Down => Act::PaletteDown,
@@ -254,6 +260,7 @@ mod tests {
             held: false,
             can_back: true,
             field_empty: true,
+            palette_empty: true,
             sign_in: false,
             sign_in_field_focused: false,
         }
@@ -383,7 +390,7 @@ mod tests {
         };
         assert_eq!(act(Key::Escape, full), Act::ClearField);
         assert_eq!(act(Key::Escape, at(&Place::Search, true)), Act::Back);
-        // on a "see all" page, back goes to the search with its text
+        // on a filter, back goes to All with its text
         let found = Situation {
             field_empty: false,
             ..at(&Place::Found(Kind::Track), true)
@@ -716,5 +723,23 @@ mod tests {
             ..picked
         };
         assert_eq!(act(Key::Enter, held), Act::Pass);
+    }
+
+    #[test]
+    fn escape_in_the_palette_empties_a_filled_field_then_closes_it() {
+        for here in places() {
+            let open = Situation {
+                palette_open: true,
+                ..at(&here, false)
+            };
+            assert_eq!(act(Key::Escape, open), Act::TogglePalette, "{here:?}");
+            let filled = Situation {
+                palette_empty: false,
+                ..open
+            };
+            assert_eq!(act(Key::Escape, filled), Act::ClearPalette, "{here:?}");
+            // Ctrl+K still closes it, whatever the field holds
+            assert_eq!(act(Key::Palette, filled), Act::TogglePalette, "{here:?}");
+        }
     }
 }
