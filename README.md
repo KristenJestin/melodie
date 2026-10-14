@@ -171,18 +171,25 @@ Screenshots and a recording of the animations, made with invented data, are in
   - A page for an album (its tracks; play, shuffle, play next, add to the queue, instant mix, add
     to a playlist), an artist (its top tracks by plays, its albums; play, shuffle, instant mix)
     and a playlist (its tracks, as the local copy holds them; play, shuffle, play next, add to the
-    queue). A click on a track plays it; on a row's hover, play it next, add it to the queue, add
-    it to a playlist, or start an instant mix from it. The back arrow (or Escape) goes back to where
-    the page was opened from.
+    queue). A click on a track picks it, a double click (or Enter) plays it; on a row's hover,
+    play it next, add it to the queue, add it to a playlist, or start an instant mix from it. The
+    back arrow (or Escape) goes back to where the page was opened from.
   - **Playlists**: the + beside "Playlists" in the sidebar creates one. The page of one of the
     user's playlists (other people's are only read) also renames it, deletes it (after a
     confirmation that says what goes), and finds its duplicates: they are listed (the exact ones,
     which go, and the likely ones, which stay) before "Remove" removes the exact ones shown, by
     rank, each checked to still hold the track shown (`playlist remove --expect`). On its rows,
     a button removes the track; a row dragged onto another moves it there.
-  - **Picking rows**: Ctrl+click picks a track, Shift+click the tracks between the last one
-    picked and this one (in Tracks, an album, a playlist). A bar then adds them to a playlist, or
-    removes them from the user's playlist shown (after a confirmation naming them).
+  - **Picking rows**: a click picks a track alone, Ctrl+click adds it (or takes it out),
+    Shift+click the tracks between the last one clicked and this one, in every track table (Tracks,
+    an album, a playlist, an artist's top tracks, the search). A picked row keeps its colour under
+    the pointer. Enter plays the first one picked, unless the search field has the focus. A bar
+    then adds them to a playlist, or removes them from the user's playlist shown (after a
+    confirmation naming them). A right click on a picked row opens the menu of all of them, in the
+    order shown: play, play next, add to the queue, add to a playlist, and in the user's playlist
+    remove them (after the same confirmation); `melodie` plays or queues one track at a time, so
+    the window runs it for each, one after the other. A right click on a row outside them picks
+    that row alone, then opens its menu.
   - **Adding to a playlist** (a track, the rows picked, an album, the current track from the
     player): a dialog lists the user's playlists and "New playlist…". The playlist is read first
     (`playlist add --dry-run`): when nothing is there yet, it is added at once; otherwise the window
@@ -206,9 +213,9 @@ Screenshots and a recording of the animations, made with invented data, are in
   playlists of the local copy, grouped by kind. The kind whose best result is the most relevant
   comes first (at equal relevance: artists, albums, tracks, playlists), each with its five best
   results, ranked as `melodie search` ranks them; "See all" lists every result of that kind. A
-  click on a track plays it, on the rest opens its page; on a row's hover: play, shuffle (not for a
-  single track), play next, add to the queue, open the album (a track), add to a playlist (a track
-  or an album). The local copy is read away from the window's thread, and the answer to an older
+  click on a track picks it, a double click plays it, a click on the rest opens its page; on a
+  row's hover: play, shuffle (not for a single track), play next, add to the queue, open the
+  album (a track), add to a playlist (a track or an album). The local copy is read away from the window's thread, and the answer to an older
   keystroke is never shown over a newer one; the search never touches the network.
 - **The menu of an item**: a right click on a track (any list, the search, the queue, the
   player and the player bar), an album, an artist, a playlist (the sidebar, the home, the search)
@@ -224,8 +231,8 @@ Screenshots and a recording of the animations, made with invented data, are in
   it, and "New playlist…"; the choice goes through the same dialogs as above (an artist's or a
   playlist's tracks are read from the local copy). The menu opens at the pointer and stays
   inside the window; the arrows, Enter, Right and Left (the playlists) and Escape work in it; a
-  click beside it closes it and goes no further. The menu key or Shift+F10 opens it on the row
-  picked (the one clicked last), at the pointer.
+  click beside it closes it and goes no further. The menu key or Shift+F10 opens the menu of
+  the rows picked, at the one clicked last.
   Ctrl+K with a menu open closes it and opens the search palette; in the palette, a right click
   opens no menu (beside its card, it closes it, as a left click does), and the menu key does
   nothing. Escape closes the topmost of the two.
