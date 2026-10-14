@@ -418,10 +418,10 @@ impl<T> Lanes<T> {
 }
 
 /// `melodie` run for an action of the window: the window tells its failure in its own toast, so
-/// the command sends no desktop notification on top.
+/// the command sends no desktop notification for a failure on top (a success still notifies).
 pub fn command(program: &Path) -> std::process::Command {
     let mut c = std::process::Command::new(program);
-    c.env(melodie_core::env::NO_NOTIFY_VAR, "1");
+    c.env(melodie_core::env::QUIET_FAILURES_VAR, "1");
     c
 }
 
@@ -444,7 +444,7 @@ mod tests {
         let c = command(Path::new("/bin/melodie"));
         assert_eq!(c.get_program(), "/bin/melodie");
         let env: Vec<_> = c.get_envs().collect();
-        let var = std::ffi::OsStr::new(melodie_core::env::NO_NOTIFY_VAR);
+        let var = std::ffi::OsStr::new(melodie_core::env::QUIET_FAILURES_VAR);
         assert_eq!(env, [(var, Some(std::ffi::OsStr::new("1")))]);
     }
 
