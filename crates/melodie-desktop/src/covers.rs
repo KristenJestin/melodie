@@ -11,13 +11,15 @@ use std::time::{Duration, Instant};
 
 /// How many times a cover may come back from a finished `cover-fetch` still missing before the
 /// window leaves it to what it has for a while (the server errs on it, or the process stopped
-/// before it): see [`RETRY_AFTER`].
+/// before it, failing): see [`RETRY_AFTER`].
 pub const MAX_TRIES: u32 = 3;
 /// The covers a round hands to one `cover-fetch`.
 const BATCH: usize = 48;
 /// How long a cover given up waits before a view that shows it may ask for it again; doubled
 /// each time it is given up again, up to [`RETRY_MAX`].
 pub const RETRY_AFTER: Duration = Duration::from_secs(60);
+/// The longest a cover given up waits: never left to the glyph for longer, while a cover the
+/// server keeps failing on costs one request every so often.
 pub const RETRY_MAX: Duration = Duration::from_secs(30 * 60);
 /// How long to wait before asking again when another `cover-fetch` held the lock.
 pub const LOCK_WAIT: Duration = Duration::from_secs(2);
