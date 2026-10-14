@@ -22,3 +22,4 @@ pub mod store;
 pub mod sync;
 pub mod time;
 pub mod track;
+pub mod waveform;

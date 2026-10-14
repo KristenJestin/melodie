@@ -2,6 +2,7 @@
 //! Omarchy's theme, the window's appearance.
 
 use crate::cover_cache::CoverCache;
+use crate::wave_cache::WaveCache;
 use futures::StreamExt as _;
 use gpui_kit::component::{Theme, ThemeMode};
 use gpui_kit::*;
@@ -15,6 +16,7 @@ use melodie_desktop::quick::Seen;
 use melodie_desktop::theme::{self, Active, Choice, Omarchy, Palette, Settings, Tint};
 use melodie_desktop::thumbs::{self, Thumbs};
 use melodie_desktop::tint;
+use melodie_desktop::wave;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -90,6 +92,8 @@ pub struct Shared {
     /// The cover files of the whole window: the queue, the player and the library views ask
     /// it, and it fetches what is missing.
     pub covers: Entity<CoverCache>,
+    /// The waveforms of the progress bar: the current track's and the next one's.
+    pub waves: Entity<WaveCache>,
     pub theme: ThemeState,
     /// The desktop asks for dark colours.
     pub dark: bool,
@@ -370,6 +374,12 @@ impl Shared {
         .detach();
     }
 
+    /// After the player changed: the waveforms of the current track and of the next one.
+    fn follow_waves(&mut self, cx: &mut Context<Self>) {
+        let ids = wave::wanted(&self.player);
+        self.waves.update(cx, |w, cx| w.want(ids, cx));
+    }
+
     /// After the player changed: load the new cover if there is one.
     fn follow_cover(&mut self, cx: &mut Context<Self>) {
         let cover = self
@@ -503,6 +513,10 @@ pub fn start(
         let scale = window.scale_factor();
         move |_| CoverCache::new(env, scale)
     });
+    let waves = cx.new({
+        let env = env.clone();
+        move |_| WaveCache::new(env)
+    });
     let shared = cx.new(|_| Shared {
         player: Player::default(),
         art: Art::default(),
@@ -510,6 +524,7 @@ pub fn start(
         thumbs_of: None,
         thumbs_gen: 0,
         covers: covers.clone(),
+        waves,
         theme,
         dark: is_dark(window.appearance()),
         queue_open: settings.queue,
@@ -553,6 +568,7 @@ pub fn start(
                 if changed.player {
                     s.follow_thumbs(false, cx);
                     s.follow_cover(cx);
+                    s.follow_waves(cx);
                     cx.notify();
                 }
             });

@@ -25,3 +25,4 @@ pub mod table;
 pub mod theme;
 pub mod thumbs;
 pub mod tint;
+pub mod wave;

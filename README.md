@@ -127,6 +127,18 @@ Screenshots and a recording of the animations, made with invented data, are in
   narrow main area (the queue docked counts) the parts go in this order: the volume, the times,
   the title and the artist, the heart; play/pause never. The colours follow the cover; the cover
   and the title cross-fade at each track, and play and pause turn into each other.
+- **The waveform**: the position bar of the player and of the player bar is the track's waveform
+  (its loudness along the track), the part played in the accent, the rest dimmed; it is dragged
+  and clicked as before. Navidrome gives none: `melodie waveform-fetch` (hidden, started by the
+  window) downloads the track a second time, as a light stream (Opus at 64 kbit/s, about 2 MB for
+  4 minutes; the file itself when the server cannot transcode), and decodes it with a private
+  libmpv that writes to a file (`ao=pcm`, mono, 8 kHz: never a sound output, never the daemon's
+  mpv), at the lowest priority, then keeps 400 levels in `~/.cache/melodie/waveforms/<id>.wave`;
+  a stream that ends well before the track's length (a dropped connection) is not kept. It is
+  asked for the current track and the next one only, one `waveform-fetch` at a time (lock
+  `waveforms/.fetch.lock`, exit 75 when taken: the window asks again a little later); one that
+  fails is tried twice, then the plain bar stays. While there is no waveform the plain bar
+  shows; the waveform fades in over it when it lands, and a kept one shows at once.
 - **The library**, in the sidebar: Home, Albums, Artists, Tracks, and the playlists, each with
   its own picture (the one the server makes from its covers; an icon while it has none).
   Everything is read from the local copy, away from the window's thread: browsing never touches
@@ -477,6 +489,8 @@ result), `--size N` (50 by default).
 - `~/.cache/melodie/covers/`: local covers (512 px, daemon, also the window's largest tier);
   `covers/thumbs/`: 128 px thumbnails for the launcher; `covers/row/`: 300 px covers of the
   window's grids and rows; `thumbs/<id>.img.none`: Navidrome's default image (set aside).
+- `~/.cache/melodie/waveforms/<id>.wave`: the waveforms of the window's position bar (404 bytes
+  each).
 - `~/.cache/melodie/auth-refused`: marker of the last refusal by the server (see below).
 - `~/.local/state/melodie/window.toml`: the window's theme choice, and whether the queue is shown.
 - `~/.local/state/melodie/state.toml`: remembered volume; `melodie.log`: the daemon's log;
