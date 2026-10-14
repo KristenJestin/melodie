@@ -1354,6 +1354,7 @@ pub fn run(env: &Env) -> Result<()> {
     }
 
     // Bounded: an mpv that no longer sends `idle` must not keep the daemon from answering.
+    // This wiring is untested (`run` needs a real session); `spawn_events` is.
     if mpv_started.recv_timeout(MPV_START).is_err() {
         dlog!("mpv did not say its core started");
     }
