@@ -31,6 +31,10 @@ pub fn log_path(env: &Env) -> PathBuf {
     env.state_dir().join("melodie.log")
 }
 
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
 /// Ce qu'on peut demander au démon.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
@@ -40,6 +44,9 @@ pub enum Request {
         tracks: Vec<TrackInfo>,
         #[serde(default)]
         shuffle: bool,
+        /// The track to start from (from 0): the ones before it stay in the queue, for Previous.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        start: usize,
     },
     /// Adds to the queue: at the end, or right after the current track with
     /// `next` (starts playing if nothing plays).
@@ -287,6 +294,12 @@ mod tests {
             Request::Play {
                 tracks: vec![t.clone()],
                 shuffle: true,
+                start: 0,
+            },
+            Request::Play {
+                tracks: vec![t.clone(), t.clone()],
+                shuffle: false,
+                start: 1,
             },
             Request::Queue {
                 tracks: vec![t.clone()],
@@ -339,7 +352,8 @@ mod tests {
             p,
             Request::Play {
                 tracks: vec![],
-                shuffle: false
+                shuffle: false,
+                start: 0
             }
         );
         assert!(decode::<Request>(r#"{"cmd":"explose"}"#).is_err());

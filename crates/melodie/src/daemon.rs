@@ -666,11 +666,12 @@ impl Engine {
             Request::Play {
                 mut tracks,
                 shuffle,
+                start,
             } => {
                 if shuffle {
                     rules::shuffle(&mut tracks, rules::random_below);
                 }
-                self.load(tracks, true)
+                self.load(tracks, true, if shuffle { 0 } else { start })
             }
             Request::Queue { tracks, next } => self.insert(tracks, next),
             Request::QueueList => return Response::queue(self.queue_view()),
@@ -727,10 +728,14 @@ impl Engine {
         self.mpv.set_property("pause", pause).map_err(mpv_err)
     }
 
-    /// Charge des morceaux dans mpv : remplace la file, ou l'allonge.
-    fn load(&mut self, tracks: Vec<TrackInfo>, replace: bool) -> Res<()> {
+    /// Loads tracks into mpv: replaces the queue, or adds to its end. A queue replaced plays from
+    /// `start` (from 0).
+    fn load(&mut self, tracks: Vec<TrackInfo>, replace: bool, start: usize) -> Res<()> {
         if tracks.is_empty() {
             return Err("aucun morceau".into());
+        }
+        if start >= tracks.len() {
+            return Err(format!("No track at position {} of the list", start + 1));
         }
         let mut first = replace;
         if replace {
@@ -740,7 +745,15 @@ impl Engine {
         }
         self.finish_candidate = None;
         self.queue_rev += 1;
-        for info in tracks {
+        let base = self.queue.len();
+        // mpv plays the first file it loads: `start` goes in first, and the tracks before it are
+        // moved in front of it afterwards, so the first track never starts for an instant.
+        let mut tracks: Vec<_> = tracks.into_iter().map(Some).collect();
+        let order: Vec<usize> = (start..tracks.len()).chain(0..start).collect();
+        for i in order {
+            let Some(info) = tracks[i].take() else {
+                continue;
+            };
             let url = self.client.stream_url(&info.id);
             let mode = if first { "replace" } else { "append" };
             self.mpv
@@ -750,11 +763,22 @@ impl Engine {
                 first = false;
                 self.set_pause(false)?;
             }
+            let (end, pos) = (self.queue.len(), base + i);
+            if i < start {
+                self.mpv
+                    .command("playlist-move", &[&end.to_string(), &pos.to_string()])
+                    .map_err(mpv_err)?;
+            }
             self.next_seq += 1;
-            self.queue.push(Entry {
+            let entry = Entry {
                 seq: self.next_seq,
                 info,
-            });
+            };
+            if i < start {
+                self.queue.insert(pos, entry);
+            } else {
+                self.queue.push(entry);
+            }
         }
         self.reconcile();
         Ok(())
@@ -764,7 +788,7 @@ impl Engine {
     /// playing the first of them if nothing plays.
     pub fn insert(&mut self, tracks: Vec<TrackInfo>, next: bool) -> Res<()> {
         if self.queue.is_empty() {
-            return self.load(tracks, true);
+            return self.load(tracks, true, 0);
         }
         if tracks.is_empty() {
             return Err("aucun morceau".into());
