@@ -21,6 +21,10 @@ pub const RETRY_AFTER: Duration = Duration::from_secs(60);
 pub const RETRY_MAX: Duration = Duration::from_secs(30 * 60);
 /// How long to wait before asking again when another `cover-fetch` held the lock.
 pub const LOCK_WAIT: Duration = Duration::from_secs(2);
+/// How long the rounds pause after a `cover-fetch` stopped for running past [`ROUND_LIMIT`]. Its
+/// likeliest hang is a keyring unlock prompt nobody answers: going on at once would open a new
+/// prompt every few minutes, for hours with a large backlog, and the covers are not to blame.
+pub const STALLED_WAIT: Duration = Duration::from_secs(10 * 60);
 
 /// The side, in logical pixels, a cover is drawn at: which tier it needs depends on it and on
 /// the screen's scale factor. Callers pass the side they draw; the constants are the usual ones.
@@ -61,8 +65,12 @@ pub enum Fetch {
     Done,
     /// Another one held the lock: nothing was done.
     Locked,
-    /// It could not run at all.
+    /// It could not start, or it ended with an error: what it got is on disk, the rest counts
+    /// as a try.
     Failed,
+    /// It ran past [`ROUND_LIMIT`] and was stopped: something held it (the keyring, the network),
+    /// not the covers.
+    Stopped,
 }
 
 /// How long a larger cover shows its smaller one under it, fading in. Longer than the fade, so
@@ -240,12 +248,13 @@ pub fn fetch(program: &Path, wants: &[Want], limit: Duration) -> Fetch {
         match child.try_wait() {
             Ok(Some(status)) => break status.code(),
             Ok(None) if Instant::now() < end => std::thread::sleep(Duration::from_millis(50)),
-            _ => {
-                // what it downloaded meanwhile is on disk; the rest counts as a try
+            Ok(None) => {
+                // what it downloaded meanwhile is on disk
                 let _ = child.kill();
                 let _ = child.wait();
-                break None;
+                return Fetch::Stopped;
             }
+            Err(_) => break None,
         }
     };
     match code {
@@ -264,6 +273,9 @@ pub struct Queue {
     waiting: HashSet<Want>,
     tries: HashMap<Want, u32>,
     running: bool,
+    /// A round asked for a pause: none starts until [`Queue::resume`], whatever is asked
+    /// meanwhile.
+    paused: bool,
     /// How many times each cover was given up, and when the last time lets it be asked again.
     given_up: HashMap<Want, u32>,
     retry_at: HashMap<Want, Instant>,
@@ -365,16 +377,27 @@ impl Queue {
     /// The covers for the next round, unless one is running or nothing waits. A round takes a
     /// bounded share, so that what is asked meanwhile does not wait for a whole library.
     pub fn start(&mut self) -> Option<Vec<Want>> {
-        if self.running || self.pending.is_empty() {
+        if self.running || self.paused || self.pending.is_empty() {
             return None;
         }
         self.running = true;
         Some(self.pending.iter().take(BATCH).cloned().collect())
     }
 
-    /// Takes a finished round in; true when it hit the lock and should be asked again after
-    /// [`LOCK_WAIT`].
-    pub fn finish(&mut self, batch: &[Want], round: &Round, now: Instant) -> bool {
+    /// The pause a round asked for is over.
+    pub fn resume(&mut self) {
+        self.paused = false;
+    }
+
+    /// Takes a finished round in; how long to wait before the next one, when it should not
+    /// follow at once: no round starts until [`Queue::resume`].
+    pub fn finish(&mut self, batch: &[Want], round: &Round, now: Instant) -> Option<Duration> {
+        let wait = self.take_in(batch, round, now);
+        self.paused = wait.is_some();
+        wait
+    }
+
+    fn take_in(&mut self, batch: &[Want], round: &Round, now: Instant) -> Option<Duration> {
         self.running = false;
         let gone: HashSet<&Want> = batch
             .iter()
@@ -389,7 +412,8 @@ impl Queue {
         match round.fetch {
             None => {}
             // nothing was done: the covers keep their tries
-            Some(Fetch::Locked) => return true,
+            Some(Fetch::Locked) => return Some(LOCK_WAIT),
+            Some(Fetch::Stopped) => return Some(STALLED_WAIT),
             Some(Fetch::Done | Fetch::Failed) => {
                 for w in &round.missing {
                     let tries = self.tries.entry(w.clone()).or_default();
@@ -407,7 +431,7 @@ impl Queue {
                 }
             }
         }
-        false
+        None
     }
 }
 
@@ -470,6 +494,7 @@ mod tests {
             });
             all.extend(r.found.clone());
             queue.finish(&batch, &r, now);
+            queue.resume();
             assert!(fetches < 50, "never ends");
         }
         (fetches, all)
@@ -509,20 +534,56 @@ mod tests {
     /// Issue #84: a `cover-fetch` that never ends (a keyring prompt nobody answers, a stalled
     /// connection) kept the round running for good, and no cover of the window was fetched again.
     #[test]
-    fn a_fetch_that_never_ends_is_stopped_and_counts_as_a_failure() {
+    fn a_fetch_that_never_ends_is_stopped() {
         let dir = tempfile::tempdir().unwrap();
         let stuck = program(dir.path(), "exec sleep 20");
         let t = Instant::now();
-        let ended = fetch(&stuck, &ids(&["a"]), Duration::from_millis(300));
+        let ended = fetch(&stuck, &ids(&["a"]), Duration::from_secs(1));
         assert!(t.elapsed() < Duration::from_secs(10), "{:?}", t.elapsed());
-        assert_eq!(ended, Fetch::Failed);
-        let pid = std::fs::read_to_string(dir.path().join("pid")).unwrap();
+        assert_eq!(ended, Fetch::Stopped);
+        // under load the shell may not have written its pid yet when it was stopped
+        let pid_file = dir.path().join("pid");
+        let wait = Instant::now();
+        while !pid_file.exists() && wait.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let Ok(pid) = std::fs::read_to_string(&pid_file) else {
+            return; // stopped before it ran its first line: nothing of it is left
+        };
         let alive = std::process::Command::new("kill")
             .args(["-0", pid.trim()])
             .status()
             .unwrap()
             .success();
         assert!(!alive, "the process is stopped, its lock with it");
+    }
+
+    /// Review of #84: the likeliest hang is a keyring unlock prompt. Charging the covers a try
+    /// and starting the next round at once burned a whole backlog to "given up" for a reason
+    /// that is not theirs, with a new prompt every few minutes.
+    #[test]
+    fn a_stopped_fetch_charges_no_try_and_pauses_the_rounds() {
+        let (_d, env) = env();
+        let mut q = Queue::default();
+        q.missing(ids(&["a"]));
+        for _ in 0..(MAX_TRIES * 2) {
+            let batch = q.start().unwrap();
+            let r = round(&env, &batch, |_| Fetch::Stopped);
+            assert_eq!(
+                q.finish(&batch, &r, Instant::now()),
+                Some(STALLED_WAIT),
+                "the next round waits"
+            );
+            q.missing(ids(&["asked-meanwhile"]));
+            assert!(q.start().is_none(), "even for what is asked meanwhile");
+            q.resume();
+        }
+        assert!(q.given_up.is_empty(), "not given up for a hang");
+        let (_, found) = drain(&env, &mut q, |wants| {
+            wants.iter().for_each(|w| put_want(&env, w));
+            Fetch::Done
+        });
+        assert!(found.contains_key("a"));
     }
 
     #[test]
@@ -533,10 +594,13 @@ mod tests {
         let batch = q.start().unwrap();
         let r = round(&env, &batch, |_| Fetch::Locked);
         assert!(r.found.is_empty());
-        assert!(
+        assert_eq!(
             q.finish(&batch, &r, Instant::now()),
+            Some(LOCK_WAIT),
             "told to wait, then ask again"
         );
+        assert!(q.start().is_none(), "not before the wait is over");
+        q.resume();
         let batch = q.start().expect("the ids are still wanted");
         assert_eq!(batch, ids(&["a", "b"]));
         let r = round(&env, &batch, |wants| {
@@ -544,7 +608,7 @@ mod tests {
             Fetch::Done
         });
         assert_eq!(r.found.len(), 2);
-        assert!(!q.finish(&batch, &r, Instant::now()));
+        assert_eq!(q.finish(&batch, &r, Instant::now()), None);
         assert!(q.start().is_none(), "nothing is lost, nothing is left");
     }
 
@@ -557,6 +621,7 @@ mod tests {
             let batch = q.start().unwrap();
             let r = round(&env, &batch, |_| Fetch::Locked);
             q.finish(&batch, &r, Instant::now());
+            q.resume();
         }
         let (_, found) = drain(&env, &mut q, |wants| {
             wants.iter().for_each(|w| put_want(&env, w));

@@ -5,9 +5,7 @@
 use gpui_kit::*;
 use melodie_core::cover::{Disk, Want};
 use melodie_core::env::Env;
-use melodie_desktop::covers::{
-    self, FADE_KEEP, Fetch, Files, LOCK_WAIT, Queue, ROUND_LIMIT, Use, resolve,
-};
+use melodie_desktop::covers::{self, FADE_KEEP, Fetch, Files, Queue, ROUND_LIMIT, Use, resolve};
 use melodie_desktop::launch;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -90,7 +88,7 @@ impl CoverCache {
     }
 
     /// Starts a round if none runs; the next one follows when it is done (after a pause when
-    /// another `cover-fetch` held the lock).
+    /// another `cover-fetch` held the lock, or this one had to be stopped).
     fn pump(&mut self, cx: &mut Context<Self>) {
         let Some(batch) = self.queue.start() else {
             return;
@@ -109,10 +107,13 @@ impl CoverCache {
             }) else {
                 return;
             };
-            if wait {
-                cx.background_executor().timer(LOCK_WAIT).await;
+            if let Some(wait) = wait {
+                cx.background_executor().timer(wait).await;
             }
-            let _ = this.update(cx, |this, cx| this.pump(cx));
+            let _ = this.update(cx, |this, cx| {
+                this.queue.resume();
+                this.pump(cx)
+            });
         })
         .detach();
     }
