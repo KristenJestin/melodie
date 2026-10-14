@@ -399,6 +399,15 @@ pub fn sync_lock() -> Option<std::path::PathBuf> {
         .map(|d| d.join("sync.lock"))
 }
 
+/// What a `melodie sync` that exited with `code` said of its failure. Killed (no code), it said
+/// nothing: its last lines are progress.
+pub fn failure_said(code: Option<i32>, stderr: &str) -> String {
+    if code.is_none() {
+        return String::new();
+    }
+    last_said(stderr)
+}
+
 /// What a failed `melodie sync` said: its last line, the progress lines come before.
 pub fn last_said(stderr: &str) -> String {
     stderr
@@ -891,6 +900,16 @@ mod tests {
         let said = "Artistes : 2\nAlbums : 1\nerreur : boom\n\n";
         assert_eq!(last_said(said), "erreur : boom");
         assert_eq!(last_said(""), "");
+    }
+
+    #[test]
+    fn a_sync_killed_mid_copy_says_none_of_its_progress() {
+        let said = "Artistes : 2\nAlbums : 720\n";
+        assert_eq!(failure_said(None, said), "");
+        assert_eq!(
+            failure_said(Some(3), "Albums : 1\nerreur : boom\n"),
+            "erreur : boom"
+        );
     }
 
     #[test]
