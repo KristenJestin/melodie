@@ -182,19 +182,21 @@ impl QuickSearch {
         }
     }
 
-    /// Opens it empty, on what was seen lately. What the last opening left is gone: Enter has
-    /// nothing to run until this opening's own answer is in.
+    /// Opens it on the last text typed, selected so that typing replaces it and Enter runs the
+    /// same search again; on what was seen lately when there is none. What the last opening left
+    /// is gone: Enter has nothing to run until this opening's own answer is in.
     fn show(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open = true;
         self.before = window.focused(cx);
         self.genres = None;
         self.shown = Shown::Rows(Arc::from([]));
         self.chosen = 0;
-        self.text.clear();
+        let text = self.text.clone();
         // no change event for this one
         self.input.update(cx, |i, cx| {
-            i.set_value("", window, cx);
-            i.focus(window, cx)
+            i.set_value(text, window, cx);
+            i.focus(window, cx);
+            i.select_all(window, cx)
         });
         let opening = self.openings.ask();
         self.ask(Some(opening), cx);
@@ -635,5 +637,88 @@ impl Render for QuickSearch {
                     ),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // not `super::*`: it would bring the `test` macro of GPUI along
+    use super::{QuickSearch, Shown};
+    use crate::app;
+    use crate::catalog::Catalog;
+    use gpui_kit::{AppContext as _, Entity, TestAppContext, VisualTestContext};
+    use melodie_core::db;
+    use melodie_core::env::Env;
+    use melodie_desktop::quick::Section;
+    use serde_json::json;
+
+    /// The real palette on a small local copy, in a window without a screen.
+    fn palette<'a>(
+        env: &Env,
+        app: &'a mut TestAppContext,
+    ) -> (Entity<QuickSearch>, &'a mut VisualTestContext) {
+        let env = env.clone();
+        let (quick, cx) = app.add_window_view(move |window, cx| {
+            gpui_kit::init(cx);
+            let (shared, _) = app::start(env.clone(), env.state_dir().join("no.sock"), window, cx);
+            let catalog = cx.new(|cx| Catalog::new(env.clone(), shared.clone(), cx));
+            QuickSearch::new(shared, catalog, env, window, cx)
+        });
+        (quick, cx)
+    }
+
+    fn library(env: &Env) {
+        let path = db::db_path(env);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut conn = db::create(&path).unwrap();
+        let tx = conn.transaction().unwrap();
+        db::insert_artist(&tx, &json!({"id":"ar1","name":"Nightfall","albumCount":1})).unwrap();
+        db::insert_album(
+            &tx,
+            &json!({"id":"al1","name":"Low Tide","artist":"Nightfall","artistId":"ar1"}),
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+
+    fn toggle(quick: &Entity<QuickSearch>, cx: &mut VisualTestContext) {
+        quick.update_in(cx, |q, window, cx| q.toggle(window, cx));
+        cx.run_until_parked();
+    }
+
+    #[test]
+    fn reopening_shows_the_last_text_selected_and_its_results_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        library(&env);
+        let mut app = TestAppContext::single();
+        let (quick, cx) = palette(&env, &mut app);
+        toggle(&quick, cx);
+        cx.simulate_input("low");
+        cx.run_until_parked();
+        let rows = |q: &QuickSearch| match &q.shown {
+            Shown::Rows(g) => g.iter().map(|g| g.section).collect::<Vec<_>>(),
+            _ => Vec::new(),
+        };
+        assert_eq!(quick.read_with(cx, |q, _| rows(q)).len(), 1);
+        // closed, then opened again
+        toggle(&quick, cx);
+        assert!(!quick.read_with(cx, |q, _| q.open));
+        toggle(&quick, cx);
+        let (value, sections) = quick.read_with(cx, |q, cx| (q.input.read(cx).value(), rows(q)));
+        assert_eq!(value, "low", "the field has the last text");
+        assert_eq!(sections.len(), 1, "its results are back");
+        assert!(
+            !sections.contains(&Section::Recent),
+            "the results of the text, not the recent list"
+        );
+        assert!(
+            quick.read_with(cx, |q, _| q.ready()),
+            "Enter runs the same search again"
+        );
+        // selected: typing replaces it
+        cx.simulate_input("ti");
+        cx.run_until_parked();
+        assert_eq!(quick.read_with(cx, |q, cx| q.input.read(cx).value()), "ti");
     }
 }
