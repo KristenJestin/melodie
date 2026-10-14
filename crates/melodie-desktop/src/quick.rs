@@ -286,12 +286,15 @@ fn find(
 }
 
 /// What of `seen` the local copy still holds, in the same order. All of it when there is no
-/// copy or it cannot be read: nothing can be said to be gone then. Blocking: run it away from the
-/// window.
+/// copy, it cannot be read, or a first copy is not finished: nothing can be said to be gone then.
+/// Blocking: run it away from the window.
 pub fn existing(env: &Env, seen: &[Seen]) -> Vec<Seen> {
     let Ok(Some(conn)) = db::open_existing(env) else {
         return seen.to_vec();
     };
+    if db::is_partial(&conn) {
+        return seen.to_vec();
+    }
     let mut genres = None;
     seen.iter()
         .filter(|s| !matches!(find(&conn, &mut genres, s), Ok(None)))
@@ -842,6 +845,19 @@ mod tests {
                 Seen::Artist("ar1".into()),
             ]
         );
+    }
+
+    #[test]
+    fn nothing_is_dropped_while_a_first_copy_is_partial() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        library(&env);
+        let conn = db::open_existing(&env).unwrap().unwrap();
+        db::set_meta(&conn, db::COPYING, "song:0").unwrap();
+        drop(conn);
+        // not copied yet is not gone
+        let saved = vec![Seen::Album("later".into()), Seen::Track("t1".into())];
+        assert_eq!(existing(&env, &saved), saved);
     }
 
     #[test]
