@@ -698,6 +698,14 @@ impl Render for Root {
 }
 
 fn main() -> ExitCode {
+    // Before anything is read or opened: the version is the build's, not Cargo.toml's (0.0.0).
+    if std::env::args().nth(1).as_deref() == Some("--version") {
+        println!(
+            "melodie-desktop {}",
+            option_env!("MELODIE_VERSION").unwrap_or("0.0.0-dev")
+        );
+        return ExitCode::SUCCESS;
+    }
     let env = match Env::from_process() {
         Ok(e) => e,
         Err(e) => {
