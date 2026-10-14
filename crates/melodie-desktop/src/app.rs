@@ -608,9 +608,12 @@ pub fn for_tests(env: Env, cx: &mut App) -> Entity<Shared> {
         failure: None,
         failures: 0,
         socket: env.state_dir().join("no-daemon.sock"),
+        // never a real `melodie`
+        program: env.state_dir().join("no-melodie"),
         env,
         _watch: None,
         playlist_jobs: Lanes::default(),
+        play_jobs: Lanes::default(),
     })
 }
 

@@ -263,8 +263,6 @@ impl Catalog {
 
     /// Reads the local copy again after a new one came: the playlists and the current place.
     pub fn reload(&mut self, cx: &mut Context<Self>) {
-        // the picked ranks belong to the list being replaced: rows may come in before them
-        self.selection.clear();
         self.load_playlists(cx);
         self.refresh(cx);
     }
@@ -665,25 +663,54 @@ mod tests {
     // not `super::*`: it would bring the `test` macro of GPUI along
     use super::Catalog;
     use gpui_kit::{AppContext as _, TestAppContext};
+    use melodie_core::db;
     use melodie_core::env::Env;
     use melodie_desktop::browse::Place;
     use melodie_desktop::selection::How;
+
+    /// A local copy holding the tracks `ids`.
+    fn copy_of(env: &Env, ids: &[&str]) {
+        let path = db::db_path(env);
+        let conn = db::open_existing(env)
+            .unwrap()
+            .unwrap_or_else(|| db::create(&path).unwrap());
+        for id in ids {
+            conn.execute("INSERT INTO tracks(id, title) VALUES (?1, ?1)", [id])
+                .unwrap();
+        }
+    }
 
     #[test]
     fn a_new_step_of_the_copy_clears_the_selection_its_rows_may_shift() {
         let mut app = TestAppContext::single();
         let d = tempfile::tempdir().unwrap();
         let env = Env::with_home(d.path());
+        copy_of(&env, &["b", "d", "f", "h", "j", "l"]);
         let catalog = app.update(|cx| {
             let shared = crate::app::for_tests(env.clone(), cx);
-            cx.new(|cx| Catalog::new(env, shared, cx))
+            cx.new(|cx| Catalog::new(env.clone(), shared, cx))
         });
+        catalog.update(&mut app, |c, cx| c.start_at(Place::Tracks, cx));
         app.run_until_parked();
-        catalog.update(&mut app, |c, cx| {
-            c.selection.click(&Place::Tracks, 2, How::Toggle);
-            c.selection.click(&Place::Tracks, 5, How::Range);
-            assert_eq!(c.selection.count(&Place::Tracks), 4);
-            c.reload(cx);
+        catalog.update(&mut app, |c, _| {
+            let shown = c.views[&Place::Tracks].clone();
+            c.selection.click(&Place::Tracks, &shown, 2, How::Toggle);
+            c.selection.click(&Place::Tracks, &shown, 4, How::Range);
+            assert_eq!(c.selection.count(&Place::Tracks), 3);
+        });
+        // a step that brought nothing to this list: the rows stay picked
+        catalog.update(&mut app, |c, cx| c.reload(cx));
+        app.run_until_parked();
+        assert_eq!(
+            catalog.read_with(&app, |c, _| c.selection.count(&Place::Tracks)),
+            3
+        );
+        // tracks came in before the picked rows: their ranks now hold others
+        copy_of(&env, &["a", "c"]);
+        catalog.update(&mut app, |c, cx| c.reload(cx));
+        app.run_until_parked();
+        catalog.read_with(&app, |c, _| {
+            assert_eq!(c.views[&Place::Tracks].len(), 8);
             assert_eq!(c.selection.count(&Place::Tracks), 0);
         });
     }
