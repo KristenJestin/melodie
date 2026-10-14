@@ -9,10 +9,11 @@ use crate::catalog::Catalog;
 use crate::motion;
 use crate::player::palette;
 use crate::search;
+use crate::widgets::search_field;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::Icon;
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use melodie_core::db;
@@ -457,14 +458,7 @@ struct Field {
 impl Render for Field {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let pal = palette(&self.shared, window, cx);
-        Input::new(&self.input)
-            .prefix(
-                Icon::new(IconName::Search)
-                    .size(px(18.))
-                    .text_color(pal.secondary),
-            )
-            .appearance(false)
-            .h(px(48.))
+        search_field(&self.input, pal).appearance(false)
     }
 }
 
@@ -683,7 +677,15 @@ impl Render for QuickSearch {
                             cx.stop_propagation()
                         }
                     })
-                    .child(div().px_3().child(self.field.clone()))
+                    .child(
+                        div()
+                            .debug_selector(|| "quick-field".into())
+                            .h(px(ROW))
+                            .px_3()
+                            .flex()
+                            .items_center()
+                            .child(div().w_full().child(self.field.clone())),
+                    )
                     .child(div().h(px(1.)).bg(Hsla { a: 0.08, ..pal.fg }))
                     .child(body)
                     .child(
@@ -928,5 +930,17 @@ mod tests {
         cx.simulate_input("ti");
         cx.run_until_parked();
         assert_eq!(quick.read_with(cx, |q, cx| q.input.read(cx).value()), "ti");
+    }
+
+    #[test]
+    fn the_field_has_room_around_its_text_as_high_as_a_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        library(&env);
+        let mut app = TestAppContext::single();
+        let (quick, cx) = palette(&env, &mut app);
+        toggle(&quick, cx);
+        let field = cx.debug_bounds("quick-field").expect("the field");
+        assert_eq!(field.size.height, gpui_kit::px(super::ROW));
     }
 }

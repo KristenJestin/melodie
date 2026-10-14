@@ -391,6 +391,21 @@ mod tests {
         }
     }
 
+    /// `Input::h` sets the height of a field of several lines only: the single line of the
+    /// search page's field and of the palette's gets it, and its padding, from the input's size.
+    /// Both go through the same function so that they cannot drift apart.
+    #[test]
+    fn the_palette_and_the_search_page_build_their_field_the_same_way() {
+        use crate::scan::sources;
+        for s in sources("")
+            .iter()
+            .filter(|s| s.name == "quick_view.rs" || s.name == "search.rs")
+        {
+            assert_eq!(s.calls("search_field").len(), 1, "{}", s.name);
+            assert!(s.calls("Input::new").is_empty(), "{}", s.name);
+        }
+    }
+
     fn genre(name: &str) -> Item {
         Item::Genre(Genre {
             name: name.into(),
