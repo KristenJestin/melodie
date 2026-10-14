@@ -212,7 +212,9 @@ Screenshots and a recording of the animations, made with invented data, are in
     there) or add them anyway.
   - Actions run `melodie` (`play`, `queue`, `mix`, `playlist add|create|rename|delete|remove|move|
     duplicates`): what needs the server still goes through it, and the window reads the local copy
-    again when it is done. The jobs of one playlist run one after the other, in the order asked. Covers come from `~/.cache/melodie/covers/`, at the size
+    again when it is done. The jobs of one playlist run one after the other, in the order asked. The jobs that change what plays
+    run one after the other too; one that replaces the queue (a play, a mix) drops those still
+    waiting, which it would wipe anyway, and the palette's recents note an item when its job runs. Covers come from `~/.cache/melodie/covers/`, at the size
     the window draws them: the window asks for the pixels a cover covers times the screen's scale
     factor and draws the smallest file that is not upscaled (128 px for list rows, 300 px for
     grids, rows and page headers, 512 px, the daemon's own file, above that, as on a screen at
@@ -243,7 +245,7 @@ Screenshots and a recording of the animations, made with invented data, are in
   artist: play, shuffle, play next, add to the queue, instant mix, add to a playlist, like or
   unlike, and an album's artist. A playlist: play, shuffle, play next, add to the queue, add to
   another playlist, and for the user's own, rename and delete (with the confirmation). A mix:
-  play, add to the queue (`melodie mix` has no "next"). What cannot apply is left out: the track
+  play, play next, add to the queue (`melodie mix --next`, `--queue`: computed once). What cannot apply is left out: the track
   playing is not offered to play, a page is not offered from that page, a heart only once the
   local copy says whether it is a favourite. "Add to playlist" opens the user's playlists beside
   it, and "New playlist…"; the choice goes through the same dialogs as above (an artist's or a
@@ -259,8 +261,8 @@ Screenshots and a recording of the animations, made with invented data, are in
   beside it closes it and gives the focus back where it was. It is the search page's search,
   with the genres of the local copy after the other kinds. Up and Down move through the results
   across the groups (round the ends); Enter plays a track, opens an album, an artist or a playlist,
-  plays a genre's mix; Shift+Enter adds to the queue; Ctrl+Enter opens a track's album, or plays
-  an album, an artist or a playlist. The keys of the row chosen are shown at the bottom. Before
+  plays a genre's mix; Shift+Enter adds to the queue (a genre's mix too); Ctrl+Enter opens a track's
+  album, plays an album, an artist or a playlist, or plays a genre's mix next. The keys of the row chosen are shown at the bottom. Before
   anything is typed it lists what was opened (album, artist and playlist pages) or played (tracks,
   genre mixes) in the window, the last eight, kept between two launches, then the albums played
   last according to the local copy; what the local copy no longer holds is dropped when the
@@ -478,7 +480,8 @@ Computed on `library.db`, without network and without radio, in about twenty mil
 call per track) and sends them to the daemon like `play`; the stream address is still built by the
 daemon.
 
-Options of `mix`: `--queue` (appends to the queue), `--print` (prints the list without playing),
+Options of `mix`: `--queue` (appends to the queue), `--next` (puts the tracks right after the
+current one without stopping it; with nothing playing, plays them), `--print` (prints the list without playing),
 `--json` (track entries in the launcher format, without playing), `--seed N` (reproducible
 result), `--size N` (50 by default).
 
