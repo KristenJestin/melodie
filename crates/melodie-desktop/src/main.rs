@@ -458,7 +458,7 @@ impl Render for Root {
         let panel = QUEUE_WIDTH.min(width);
         let (here, step) = {
             let c = self.catalog.read(cx);
-            (c.here().clone(), c.nav.step)
+            (c.here().clone(), c.nav.view)
         };
         let v = &self.views;
         let content: AnyView = match here {

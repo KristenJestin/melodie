@@ -29,16 +29,23 @@ impl Place {
             Self::Player | Self::Home | Self::Albums | Self::Artists | Self::Tracks | Self::Search
         )
     }
+
+    /// The search page: with a filter by kind or without (All). One page, one field.
+    pub fn in_search(&self) -> bool {
+        matches!(self, Self::Search | Self::Found(_))
+    }
 }
 
 /// The places opened since the last section, the current one last. `step` grows at every move,
-/// so the view that appears can be animated.
+/// so the view that appears can be animated; `view` only when the page changes (a filter of the
+/// search keeps its page, which animates its list alone).
 #[derive(Debug, Clone)]
 pub struct Nav {
     stack: Vec<Place>,
     /// The pages left by going back, the next one last: what the forward button comes back to.
     ahead: Vec<Place>,
     pub step: u64,
+    pub view: u64,
 }
 
 impl Nav {
@@ -47,6 +54,15 @@ impl Nav {
             stack: vec![start],
             ahead: Vec::new(),
             step: 0,
+            view: 0,
+        }
+    }
+
+    /// Notes a move from `from` to where the stack is now.
+    fn moved(&mut self, from: &Place) {
+        self.step += 1;
+        if !(from.in_search() && self.here().in_search()) {
+            self.view += 1;
         }
     }
 
@@ -54,18 +70,22 @@ impl Nav {
         self.stack.last().expect("never empty")
     }
 
-    /// A section starts over; a page goes on top, unless it is already the current one. Returns
-    /// whether the place changed.
+    /// A section starts over; a page goes on top, unless it is already the current one. A kind
+    /// of the search takes the place of the kind before it (a filter is chosen, not opened), so
+    /// that back always returns to All. Returns whether the place changed.
     pub fn go(&mut self, to: Place) -> bool {
         if *self.here() == to {
             return false;
         }
+        let from = self.here().clone();
         if to.is_section() {
             self.stack.clear();
+        } else if matches!((&from, &to), (Place::Found(_), Place::Found(_))) {
+            self.stack.pop();
         }
         self.ahead.clear();
         self.stack.push(to);
-        self.step += 1;
+        self.moved(&from);
         true
     }
 
@@ -74,9 +94,10 @@ impl Nav {
         if self.stack.len() == 1 && *self.here() == to {
             return false;
         }
+        let from = self.here().clone();
         self.stack = vec![to];
         self.ahead.clear();
-        self.step += 1;
+        self.moved(&from);
         true
     }
 
@@ -99,8 +120,8 @@ impl Nav {
             return false;
         }
         let left = self.stack.pop().expect("more than one place");
+        self.moved(&left);
         self.ahead.push(left);
-        self.step += 1;
         true
     }
 
@@ -113,8 +134,9 @@ impl Nav {
         let Some(page) = self.ahead.pop() else {
             return false;
         };
+        let from = self.here().clone();
         self.stack.push(page);
-        self.step += 1;
+        self.moved(&from);
         true
     }
 
@@ -142,6 +164,7 @@ pub fn row_covers(albums: &[Album], rows: Range<usize>, cols: usize) -> Vec<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::launch::Kind;
 
     #[test]
     fn a_section_starts_over_and_a_page_goes_on_top() {
@@ -242,6 +265,67 @@ mod tests {
         nav.back();
         nav.back();
         assert_eq!(nav.here(), &Place::Search, "back to the groups");
+    }
+
+    #[test]
+    fn see_all_stays_on_the_search_page_and_back_returns_to_all() {
+        let mut nav = Nav::new(Place::Albums);
+        nav.go(Place::Search);
+        let view = nav.view;
+        nav.go(Place::Found(Kind::Album));
+        assert!(
+            Place::Found(Kind::Album).in_search(),
+            "same page, same field"
+        );
+        assert_eq!(nav.view, view, "the page is not drawn in again");
+        nav.back();
+        assert_eq!(nav.here(), &Place::Search, "back is All");
+        assert_eq!(nav.view, view);
+        assert!(nav.can_go_forward(), "forward comes back to the filter");
+    }
+
+    #[test]
+    fn a_filter_replaces_the_one_before_it() {
+        let mut nav = Nav::new(Place::Albums);
+        nav.go(Place::Search);
+        assert!(nav.go(Place::Found(Kind::Album)), "from All it goes on top");
+        assert!(nav.go(Place::Found(Kind::Track)));
+        assert_eq!(nav.places(), [Place::Search, Place::Found(Kind::Track)]);
+        assert!(!nav.go(Place::Found(Kind::Track)), "the same one again");
+        nav.back();
+        assert_eq!(
+            nav.here(),
+            &Place::Search,
+            "one back is All, whatever was chosen"
+        );
+        assert!(!nav.can_go_back());
+        nav.go(Place::Found(Kind::Artist));
+        assert!(nav.go(Place::Search), "All starts the search over");
+        assert_eq!(nav.places(), [Place::Search]);
+        assert!(!nav.can_go_forward());
+    }
+
+    #[test]
+    fn only_a_move_out_of_the_search_or_into_it_starts_the_view_over() {
+        let mut nav = Nav::new(Place::Albums);
+        let view = nav.view;
+        nav.go(Place::Search);
+        assert!(nav.view > view, "into the search");
+        let view = nav.view;
+        nav.go(Place::Found(Kind::Track));
+        nav.go(Place::Found(Kind::Album));
+        nav.go(Place::Search);
+        assert_eq!(nav.view, view, "inside it");
+        nav.go(Place::Found(Kind::Track));
+        nav.go(Place::Album("al1".into()));
+        assert!(nav.view > view, "out of it");
+        let view = nav.view;
+        nav.back();
+        assert!(nav.view > view, "and back into it");
+        // a page asked for again changes nothing
+        let view = nav.view;
+        assert!(!nav.go(Place::Found(Kind::Track)));
+        assert_eq!(nav.view, view);
     }
 
     /// The views are drawn on every frame of a scroll or a fade: reading the local copy and

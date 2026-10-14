@@ -135,7 +135,7 @@ pub fn typing(here: &Place, field_focused: bool) -> bool {
 }
 
 pub fn in_search(here: &Place) -> bool {
-    matches!(here, Place::Search | Place::Found(_))
+    here.in_search()
 }
 
 /// What a right click does on the open palette: nothing inside it, whatever the row; outside it
