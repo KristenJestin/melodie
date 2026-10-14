@@ -505,11 +505,15 @@ impl Render for PageView {
                     cover(&artist.cover, 90.),
                     "ARTIST",
                     artist.name.clone(),
-                    format!(
-                        "{} · {}",
-                        plural(artist.albums, "album"),
-                        plural(artist.tracks, "track")
-                    )
+                    [
+                        Some(plural(artist.albums, "album")),
+                        Some(plural(artist.tracks, "track")),
+                        (!appears.is_empty()).then(|| plural(appears.len() as i64, "appearance")),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(" · ")
                     .into_any_element(),
                     actions(
                         Kind::Artist,
