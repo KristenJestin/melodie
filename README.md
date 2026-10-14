@@ -51,9 +51,17 @@ configuration (see `AGENTS.md`). The daemon integration test starts its own priv
 - `melodie play <kind> <id> [--shuffle]`: `kind` is `playlist`, `album`, `artist` or `track`.
   Replaces the queue and starts playing. An artist gives all their albums (year, then name), tracks
   in the server's order; a track plays alone. The list comes from the API (`getPlaylist`,
-  `getAlbum`, `getArtist`, `getSong`), not from the local copy.
+  `getAlbum`, `getArtist`), not from the local copy; a track is read as `play track` reads it.
+- `melodie play track [--from <pos> | --shuffle] <id>…`: plays several tracks, in this order (or
+  shuffled), from the one at `pos` (from 1); the ones before it stay in the queue, for Previous.
+  One id `-` reads the ids from stdin, one per line, for a list too long for a command line; it
+  is refused beside other ids or on a terminal, as is a `pos` past the end. The tracks come from
+  the local copy, as a mix's do; only those it does not hold yet are asked with `getSong`. A
+  player started by an older `melodie` ignores `--from`: `melodie` says so, and `melodie quit`
+  once makes the next play start the new one.
 - `melodie queue [--next] <kind> <id>`: adds to the queue, at the end or, with `--next`, right
-  after the current track (starts playing if nothing plays).
+  after the current track (starts playing if nothing plays). `queue [--next] track <id>…` adds
+  several tracks in this order, as `play track` reads them.
 - `melodie open <address>`: plays or queues what an address names (see "Addresses"). Same checks
   as `play`, same daemon start.
 - `melodie queue --list [--json] | --play <pos> | --move <from> <to> | --remove <pos> |
@@ -173,18 +181,30 @@ Screenshots and a recording of the animations, made with invented data, are in
   - A page for an album (its tracks; play, shuffle, play next, add to the queue, instant mix, add
     to a playlist), an artist (its top tracks by plays, its albums; play, shuffle, instant mix)
     and a playlist (its tracks, as the local copy holds them; play, shuffle, play next, add to the
-    queue). A click on a track plays it; on a row's hover, play it next, add it to the queue, add
-    it to a playlist, or start an instant mix from it. The back arrow (or Escape) goes back to where
-    the page was opened from.
+    queue). A click on a track picks it, a double click (or Enter) plays the list shown from
+    this track on, in the order shown: Previous goes back to the tracks above it. At most a
+    thousand tracks go to the queue: up to a hundred before this one, the rest after it. On a row's
+    hover, play it next, add it to the queue, add it to a playlist, or start an instant mix from
+    it. The back arrow (or Escape) goes back to where the page was opened from.
   - **Playlists**: the + beside "Playlists" in the sidebar creates one. The page of one of the
     user's playlists (other people's are only read) also renames it, deletes it (after a
     confirmation that says what goes), and finds its duplicates: they are listed (the exact ones,
     which go, and the likely ones, which stay) before "Remove" removes the exact ones shown, by
     rank, each checked to still hold the track shown (`playlist remove --expect`). On its rows,
     a button removes the track; a row dragged onto another moves it there.
-  - **Picking rows**: Ctrl+click picks a track, Shift+click the tracks between the last one
-    picked and this one (in Tracks, an album, a playlist). A bar then adds them to a playlist, or
-    removes them from the user's playlist shown (after a confirmation naming them).
+  - **Picking rows**: a click picks a track alone, Ctrl+click adds it (or takes it out),
+    Shift+click the tracks between the last one clicked and this one, in every track table (Tracks,
+    an album, a playlist, an artist's top tracks, the search). A picked row keeps its colour under
+    the pointer. Enter plays the list from the first one picked, unless the search field has the
+    focus or the settings or the queue cover the list. With two tracks picked or more, a bar adds
+    them to a playlist, or removes them from the user's playlist shown (after a confirmation
+    naming them), and Escape unpicks them before going back; one track picked (a plain click)
+    shows no bar, and Escape goes back at once (or unpicks it, with no page to go back to). A right
+    click on a picked row opens the menu of all of them, in the order shown: play, play next, add to
+    the queue, add to a playlist, and in the user's playlist remove them (after the same
+    confirmation); each is one `melodie play` or `melodie queue` with all their ids, run after the
+    plays asked before it, so the last click wins. A right click on a row outside them picks that
+    row alone, then opens its menu.
   - **Adding to a playlist** (a track, the rows picked, an album, the current track from the
     player): a dialog lists the user's playlists and "New playlist…". The playlist is read first
     (`playlist add --dry-run`): when nothing is there yet, it is added at once; otherwise the window
@@ -207,11 +227,14 @@ Screenshots and a recording of the animations, made with invented data, are in
 - **The search**, first in the sidebar: one field, and as you type the artists, albums, tracks and
   playlists of the local copy, grouped by kind. The kind whose best result is the most relevant
   comes first (at equal relevance: artists, albums, tracks, playlists), each with its five best
-  results, ranked as `melodie search` ranks them; "See all" lists every result of that kind. A
-  click on a track plays it, on the rest opens its page; on a row's hover: play, shuffle (not for a
-  single track), play next, add to the queue, open the album (a track), add to a playlist (a track
-  or an album). The local copy is read away from the window's thread, and the answer to an older
-  keystroke is never shown over a newer one; the search never touches the network.
+  results, ranked as `melodie search` ranks them. Under the field, filters by kind (All, Tracks,
+  Albums, Artists, Playlists) keep the same page and the same text: "See all" of a group picks its
+  filter, which lists every result of that kind ("9 for “…”"); a new text keeps the filter; the
+  back button and Escape return to All. A click on a track picks it, a double click plays the
+  tracks found from it, a click on the rest opens its page; on a row's hover: play, shuffle (not
+  for a single track), play next, add to the queue, open the album (a track), add to a playlist (a
+  track or an album). The local copy is read away from the window's thread, and the answer to an
+  older keystroke is never shown over a newer one; the search never touches the network.
 - **The menu of an item**: a right click on a track (any list, the search, the queue, the
   player and the player bar), an album, an artist, a playlist (the sidebar, the home, the search)
   or a mix card opens a menu of what can be done with it. A track: play, play next, add to the
@@ -226,8 +249,8 @@ Screenshots and a recording of the animations, made with invented data, are in
   it, and "New playlist…"; the choice goes through the same dialogs as above (an artist's or a
   playlist's tracks are read from the local copy). The menu opens at the pointer and stays
   inside the window; the arrows, Enter, Right and Left (the playlists) and Escape work in it; a
-  click beside it closes it and goes no further. The menu key or Shift+F10 opens it on the row
-  picked (the one clicked last), at the pointer.
+  click beside it closes it and goes no further. The menu key or Shift+F10 opens the menu of
+  the rows picked, at the one clicked last.
   Ctrl+K with a menu open closes it and opens the search palette; in the palette, a right click
   opens no menu (beside its card, it closes it, as a left click does), and the menu key does
   nothing. Escape closes the topmost of the two.
@@ -239,7 +262,12 @@ Screenshots and a recording of the animations, made with invented data, are in
   plays a genre's mix; Shift+Enter adds to the queue; Ctrl+Enter opens a track's album, or plays
   an album, an artist or a playlist. The keys of the row chosen are shown at the bottom. Before
   anything is typed it lists what was opened (album, artist and playlist pages) or played (tracks,
-  genre mixes) in the window since it started, then the albums played last according to the local copy.
+  genre mixes) in the window, the last eight, kept between two launches, then the albums played
+  last according to the local copy; what the local copy no longer holds is dropped when the
+  window starts. Closed (Escape, Ctrl+K, a click outside, a result run) and opened again, it shows the last
+  non-empty text searched, selected (typing replaces it, Enter runs the same search again);
+  Escape empties a filled field (back to the recents) and closes an empty one, as on the search
+  page, and emptying the field does not make it forget that text.
 - **Keys**: Ctrl+F, or / when not typing, opens the search and puts the cursor in its field;
   Space plays or pauses (in the field, it is a space); `q` shows or hides the queue (in the field,
   it is a letter); Escape closes a dialog, else the queue laid over a narrow window or the
@@ -504,7 +532,7 @@ result), `--size N` (50 by default).
 - `~/.cache/melodie/waveforms/<id>.wave`: the waveforms of the window's position bar (404 bytes
   each).
 - `~/.cache/melodie/auth-refused`: marker of the last refusal by the server (see below).
-- `~/.local/state/melodie/window.toml`: the window's theme choice, and whether the queue is shown.
+- `~/.local/state/melodie/window.toml`: the window's theme choice, whether the queue is shown, and the palette's recents.
 - `~/.local/state/melodie/state.toml`: remembered volume; `melodie.log`: the daemon's log;
   `sync.log`: the log of background synchronisations. `XDG_STATE_HOME` honoured.
 - `$XDG_RUNTIME_DIR/melodie/melodie.sock`, `melodie.lock`: the daemon's socket and lock;

@@ -22,7 +22,7 @@ use melodie_desktop::covers::Covers;
 use melodie_desktop::figures::{Figures as _, clock_text};
 use melodie_desktop::launch::{Adding, Job, Kind};
 use melodie_desktop::menu::{Item, Spot};
-use melodie_desktop::selection::{How, Selection};
+use melodie_desktop::selection::{Click, Selection};
 use melodie_desktop::table::{self, Col, ColSort, Cols, Shown, Table, Width};
 use melodie_desktop::theme::Palette;
 use std::sync::Arc;
@@ -119,9 +119,12 @@ pub fn row_button(
         .rounded_full()
         .cursor_pointer()
         .hover(|s| s.bg(Hsla { a: 0.12, ..pal.fg }))
-        .on_click(move |_, window, cx| {
+        .on_click(move |ev, window, cx| {
             cx.stop_propagation();
-            on_click(window, cx)
+            // GPUI calls it for each click of a series: a double click acts once
+            if ev.click_count() <= 1 {
+                on_click(window, cx)
+            }
         })
         .child(Icon::new(icon).size(px(16.)).text_color(pal.secondary))
         .tip(tip, pal)
@@ -158,9 +161,9 @@ pub struct RowCtx {
     pub rank: usize,
     /// The list is shown sorted: its rows are not dragged.
     pub sorted: bool,
-    /// Rows of this list can be picked (Ctrl+click, Shift+click).
-    pub selectable: bool,
     pub selected: bool,
+    /// The list the row is shown in, which a click picks in.
+    pub shown: Shown,
     /// The playlist the row is in, when the user may edit it: remove the row, drag it elsewhere.
     pub playlist: Option<(String, String)>,
     /// Whether the pointer is on the row, for its buttons to fade in (see `row_hover`).
@@ -168,32 +171,26 @@ pub struct RowCtx {
 }
 
 impl RowCtx {
-    /// A row at `rank` that only plays.
-    pub fn plain(rank: usize, sorted: bool, hover: Hover) -> Self {
+    /// The row shown at `ix` of `shown`, the list at `here`, picked or not.
+    pub fn of(selection: &Selection, here: &Place, shown: &Shown, ix: usize, hover: Hover) -> Self {
         Self {
-            rank,
-            sorted,
-            selectable: false,
-            selected: false,
+            rank: shown.row(ix).map_or(ix, |(rank, _)| rank),
+            sorted: shown.sort.is_some(),
+            selected: selection.has(here, ix),
+            shown: shown.clone(),
             playlist: None,
             hover,
         }
     }
+}
 
-    /// The row shown at `ix` in the list at `here`, picked or not.
-    pub fn of(
-        selection: &Selection,
-        here: &Place,
-        ix: usize,
-        rank: usize,
-        sorted: bool,
-        hover: Hover,
-    ) -> Self {
-        Self {
-            selectable: true,
-            selected: selection.has(here, ix),
-            ..Self::plain(rank, sorted, hover)
-        }
+/// What a left click on a row does, read from the click: `Click::of` decides.
+pub fn row_click(
+    on: impl Fn(Click, &mut Window, &mut App) + 'static,
+) -> impl Fn(&ClickEvent, &mut Window, &mut App) + 'static {
+    move |ev, window, cx| {
+        let m = ev.modifiers();
+        on(Click::of(m.control, m.shift, ev.click_count()), window, cx)
     }
 }
 
@@ -245,7 +242,7 @@ impl Render for Dragged {
     }
 }
 
-/// One track, shown at `ix`: a click plays it, Ctrl+click or Shift+click picks it; on hover, play it next, add
+/// One track, shown at `ix`: a click picks it, a double click plays it; on hover, play it next, add
 /// it at the end of the queue, add it to a playlist, an instant mix from it, and in the user's
 /// playlist, remove it. A row of the user's playlist can be dragged onto another.
 pub fn track_row(
@@ -267,11 +264,6 @@ pub fn track_row(
             catalog.update(cx, |c, cx| c.run(job, cx))
         }
     };
-    let play = job(|id| Job::Play {
-        kind: Kind::Track,
-        id,
-        shuffle: false,
-    });
     let pick = {
         let (id, title) = (t.id.clone(), t.title.clone());
         move |window: &mut Window, cx: &mut App| {
@@ -282,16 +274,22 @@ pub fn track_row(
             dialogs::open(dialog, window, cx)
         }
     };
-    let (select, selectable) = (catalog.clone(), row.selectable);
-    let accent = pal.accent;
+    let (select, shown) = (catalog.clone(), row.shown.clone());
+    let (accent, selected) = (pal.accent, row.selected);
     let look = row.hover.look;
-    let spot = match row.playlist.clone() {
-        Some((id, name)) => Spot::Playlist { id, name, rank },
-        None => Spot::Library,
-    };
+    let (menued, menu_shown, menu_playlist) =
+        (catalog.clone(), row.shown.clone(), row.playlist.clone());
     row.hover
         .track(h_flex().id(key("row")))
-        .menu(Item::track(t), spot)
+        .on_mouse_down(MouseButton::Right, move |ev, window, cx| {
+            cx.stop_propagation();
+            let menu = menued.update(cx, |c, cx| {
+                c.menu_on(&menu_shown, ix, menu_playlist.clone(), cx)
+            });
+            if let Some((item, spot)) = menu {
+                context_menu::open(item, spot, None, ev.position, window, cx)
+            }
+        })
         .h(px(TRACK_ROW))
         .flex_none()
         .w_full()
@@ -305,13 +303,15 @@ pub fn track_row(
                 .rounded_md()
                 .text_sm()
                 .cursor_pointer()
-                .when(row.selected, |d| {
-                    d.bg(Hsla {
-                        a: 0.18,
-                        ..pal.accent
+                .when(selected, |d| d.bg(Hsla { a: 0.18, ..accent }))
+                // a picked row stays picked under the pointer
+                .hover(move |s| {
+                    s.bg(if selected {
+                        Hsla { a: 0.26, ..accent }
+                    } else {
+                        Hsla { a: 0.07, ..pal.fg }
                     })
                 })
-                .hover(|s| s.bg(Hsla { a: 0.07, ..pal.fg }))
                 .children(cols.iter().map(|&col| {
                     let c = col_cell(col).text_color(pal.secondary);
                     match col {
@@ -431,15 +431,9 @@ pub fn track_row(
                 dropped.update(cx, |c, cx| c.move_in_playlist(from, rank, cx))
             })
         })
-        .on_click(move |ev, window, cx| {
-            let m = ev.modifiers();
-            if selectable && (m.control || m.shift) {
-                let how = if m.shift { How::Range } else { How::Toggle };
-                select.update(cx, |c, cx| c.select(ix, how, cx))
-            } else {
-                play(window, cx)
-            }
-        })
+        .on_click(row_click(move |click, _, cx| {
+            select.update(cx, |c, cx| c.left_click(&shown, ix, click, cx))
+        }))
 }
 
 pub struct TrackList {
@@ -525,15 +519,14 @@ pub fn track_rows(
     playlist: Option<(String, String)>,
 ) -> UniformList {
     let catalog = catalog.clone();
-    let sorted = shown.sort.is_some();
     uniform_list(id, shown.len(), move |range, window, cx| {
         range
             .filter_map(|ix| {
-                let (rank, t) = shown.row(ix)?;
+                let (_, t) = shown.row(ix)?;
                 let hover = row_hover(id, ix, window, cx);
                 let row = RowCtx {
                     playlist: playlist.clone(),
-                    ..RowCtx::of(&selection, &here, ix, rank, sorted, hover)
+                    ..RowCtx::of(&selection, &here, &shown, ix, hover)
                 };
                 Some(track_row(id, ix, t, &cols, pal, &catalog, row))
             })
@@ -732,16 +725,27 @@ impl Render for ArtistList {
 #[cfg(test)]
 mod tests {
     // not `super::*`: it would bring the `test` macro of GPUI along
-    use super::track_header;
+    use super::{RowCtx, TRACK_ROW, row_button, row_click, row_hover, track_header, track_row};
     use crate::albums::PAD;
+    use crate::catalog::Catalog;
+    use crate::context_menu::{ContextMenu, MenuHandle};
+    use gpui_kit::assets::IconName;
     use gpui_kit::{
-        Context, Entity, FocusHandle, InteractiveElement as _, IntoElement, Modifiers,
-        ParentElement as _, Render, Styled as _, TestAppContext, Window, div, point, px,
+        AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
+        Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, ParentElement as _, Pixels, Point,
+        Render, StatefulInteractiveElement as _, Styled as _, TestAppContext, VisualTestContext,
+        Window, div, point, px,
     };
+    use melodie_core::env::Env;
+    use melodie_core::library::Track;
+    use melodie_desktop::menu::Item;
+    use melodie_desktop::selection::{Click, How};
+    use melodie_desktop::table::Shown;
     use melodie_desktop::table::{Cols, Table};
     use melodie_desktop::theme::Palette;
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
+    use std::sync::Arc;
 
     const FIELD: f32 = 44.;
 
@@ -802,6 +806,193 @@ mod tests {
         assert!(
             cx.update(|window, _| field.is_focused(window)),
             "the field lost the focus to the click"
+        );
+    }
+
+    type Clicks = Rc<RefCell<Vec<Click>>>;
+
+    /// A track row's shape: the row, and one of its buttons at its left end.
+    struct Row {
+        clicks: Clicks,
+        button: Rc<Cell<u32>>,
+    }
+
+    impl Render for Row {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let (clicks, button) = (self.clicks.clone(), self.button.clone());
+            div().size_full().child(
+                div()
+                    .id("row")
+                    .flex()
+                    .h(px(40.))
+                    .w_full()
+                    .on_click(row_click(move |c, _, _| clicks.borrow_mut().push(c)))
+                    .child(row_button(
+                        "next".into(),
+                        IconName::ListStart,
+                        "Play next",
+                        Palette::base(None, true),
+                        move |_, _| button.set(button.get() + 1),
+                    )),
+            )
+        }
+    }
+
+    fn row_page(app: &mut TestAppContext) -> (Clicks, Rc<Cell<u32>>, &mut VisualTestContext) {
+        let clicks = Rc::new(RefCell::new(Vec::new()));
+        let button = Rc::new(Cell::new(0));
+        let (_, cx): (Entity<Row>, _) = app.add_window_view(|_, _| Row {
+            clicks: clicks.clone(),
+            button: button.clone(),
+        });
+        (clicks, button, cx)
+    }
+
+    /// The second click of a double click: the platform counts it.
+    fn second_click(cx: &mut VisualTestContext, position: Point<Pixels>) {
+        cx.simulate_click(position, Modifiers::none());
+        cx.simulate_event(MouseDownEvent {
+            position,
+            modifiers: Modifiers::none(),
+            button: MouseButton::Left,
+            click_count: 2,
+            first_mouse: false,
+        });
+        cx.simulate_event(MouseUpEvent {
+            position,
+            modifiers: Modifiers::none(),
+            button: MouseButton::Left,
+            click_count: 2,
+        });
+    }
+
+    #[test]
+    fn a_click_on_a_row_picks_it_a_double_click_plays_it() {
+        let mut app = TestAppContext::single();
+        let (clicks, button, cx) = row_page(&mut app);
+        let on_row = point(px(300.), px(20.));
+
+        cx.simulate_click(on_row, Modifiers::none());
+        assert_eq!(
+            *clicks.borrow(),
+            [Click::Pick(How::Only)],
+            "a click picks, never plays"
+        );
+
+        clicks.borrow_mut().clear();
+        second_click(cx, on_row);
+        assert_eq!(
+            *clicks.borrow(),
+            [Click::Pick(How::Only), Click::Play],
+            "a double click picks, then plays"
+        );
+
+        clicks.borrow_mut().clear();
+        cx.simulate_click(on_row, Modifiers::control());
+        cx.simulate_click(on_row, Modifiers::shift());
+        assert_eq!(
+            *clicks.borrow(),
+            [Click::Pick(How::Toggle), Click::Pick(How::Range)]
+        );
+
+        // a button of the row does what it does, once for a double click, and the row hears
+        // nothing
+        clicks.borrow_mut().clear();
+        second_click(cx, point(px(14.), px(20.)));
+        assert_eq!(button.get(), 1);
+        assert!(clicks.borrow().is_empty(), "{:?}", clicks.borrow());
+    }
+
+    /// Three tracks in the real track rows, with the window's state: the jobs run a script that
+    /// writes down what it was asked, never the machine's `melodie`.
+    struct Tracks {
+        catalog: Entity<Catalog>,
+        shown: Shown,
+    }
+
+    impl Render for Tracks {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let (here, selection) = {
+                let c = self.catalog.read(cx);
+                (c.here().clone(), c.selection.clone())
+            };
+            let cols = Table::Album.cols(1200.);
+            let pal = Palette::base(None, true);
+            div()
+                .size_full()
+                .children((0..self.shown.len()).filter_map(|ix| {
+                    let (_, t) = self.shown.row(ix)?;
+                    let hover = row_hover("t", ix, window, cx);
+                    let row = RowCtx::of(&selection, &here, &self.shown, ix, hover);
+                    Some(track_row("t", ix, t, &cols, pal, &self.catalog, row))
+                }))
+        }
+    }
+
+    #[test]
+    fn the_track_rows_pick_on_a_click_play_on_a_double_click_and_open_the_selections_menu() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = crate::app::fake_melodie(dir.path());
+        let ran = || crate::app::ran(&program);
+        let env = Env::with_home(dir.path().join("home"));
+
+        let mut app = TestAppContext::single();
+        let (view, cx): (Entity<Tracks>, _) = app.add_window_view(|_, cx| {
+            let shared = crate::app::bare(env.clone(), program.clone(), cx);
+            let catalog = cx.new(|cx| Catalog::new(env.clone(), shared.clone(), cx));
+            let menu = cx.new(|cx| ContextMenu::new(env.clone(), shared, catalog.clone(), cx));
+            cx.set_global(MenuHandle(menu));
+            let tracks: Arc<[Track]> = (0..3)
+                .map(|i| Track {
+                    id: format!("t{i}"),
+                    title: format!("Title {i}"),
+                    ..Track::default()
+                })
+                .collect();
+            Tracks {
+                catalog,
+                shown: Shown::new(tracks, None),
+            }
+        });
+        cx.run_until_parked();
+        let catalog = view.read_with(cx, |v, _| v.catalog.clone());
+        let picked =
+            |cx: &mut VisualTestContext| catalog.read_with(cx, |c, _| c.selection.ranks(c.here()));
+        // on the number of each row
+        let on = |ix: usize| point(px(PAD + 8. + 3.), px(TRACK_ROW * (ix as f32 + 0.5)));
+
+        cx.simulate_click(on(1), Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(picked(cx), [1], "a click picks the row");
+        assert_eq!(ran(), "", "and plays nothing");
+
+        second_click(cx, on(1));
+        cx.run_until_parked();
+        assert_eq!(
+            ran(),
+            "play track --from 2 -\nt0\nt1\nt2\n",
+            "a double click plays the list from this row, in one call"
+        );
+
+        // Ctrl+click another row, then a right click on a picked one: the menu of both
+        cx.simulate_click(on(2), Modifiers::control());
+        cx.simulate_event(MouseDownEvent {
+            position: on(2),
+            modifiers: Modifiers::none(),
+            button: MouseButton::Right,
+            click_count: 1,
+            first_mouse: false,
+        });
+        cx.run_until_parked();
+        assert_eq!(picked(cx), [1, 2], "the selection is kept");
+        let menu = cx.update(|_, cx| cx.global::<MenuHandle>().0.clone());
+        let item = menu.read_with(cx, |m, _| m.target().map(|t| t.item.clone()));
+        assert_eq!(
+            item,
+            Some(Item::Tracks {
+                picks: vec![(1, "t1".into()), (2, "t2".into())],
+                titles: vec!["Title 1".into(), "Title 2".into()],
+            })
         );
     }
 }

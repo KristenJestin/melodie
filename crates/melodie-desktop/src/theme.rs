@@ -1,6 +1,7 @@
 //! The window's colours: the base theme (tinted by the cover, like Amberol), or the current
 //! Omarchy theme when Omarchy is there (`docs/gui-toolkit.md`, "Following the theme").
 
+use crate::quick::Seen;
 use anyhow::{Context, Result};
 use gpui_kit::{Hsla, Rgba, hsla};
 use melodie_core::env::Env;
@@ -266,6 +267,22 @@ pub struct Settings {
     /// The queue is shown beside the main area (or over it, on a narrow window).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub queue: bool,
+    /// What the palette lists before anything is typed, the last one first. An entry this
+    /// version does not know is skipped, never taking the theme down with it.
+    #[serde(
+        default,
+        deserialize_with = "known_entries",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub recent: Vec<Seen>,
+}
+
+fn known_entries<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Seen>, D::Error> {
+    // anything but a list is no recents: it never takes the theme down with it
+    Ok(match toml::Value::deserialize(d)? {
+        toml::Value::Array(all) => all.into_iter().filter_map(|v| v.try_into().ok()).collect(),
+        _ => Vec::new(),
+    })
 }
 
 impl Settings {
@@ -587,6 +604,7 @@ background = "#eff1f5"
             Settings {
                 theme: Some(Choice::Omarchy),
                 queue: true,
+                ..Settings::default()
             }
         );
     }

@@ -21,7 +21,7 @@ use melodie_core::state::{self, Failure};
 use melodie_core::time::rfc3339;
 use melodie_core::{api, db, likes, mix, playlists, proto, search, store, sync};
 use rusqlite::Connection;
-use std::io::{BufRead, Write};
+use std::io::{BufRead, IsTerminal, Write};
 use std::process::ExitCode;
 
 #[derive(Parser)]
@@ -215,13 +215,18 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Plays a playlist, an album, an artist or a track
+    /// Plays a playlist, an album, an artist or tracks (several track ids, or `-` to read them
+    /// from stdin, one per line)
     Play {
         kind: KindArg,
-        id: String,
+        #[arg(required = true)]
+        ids: Vec<String>,
         /// Shuffles the queue
-        #[arg(long)]
+        #[arg(long, conflicts_with = "from")]
         shuffle: bool,
+        /// Starts at this track of the list (from 1); the ones before it stay in the queue
+        #[arg(long, value_name = "POS", value_parser = clap::value_parser!(u64).range(1..))]
+        from: Option<u64>,
     },
     /// Plays or queues what an address names: `melodie:<kind>/<id>[?shuffle=true][&queue=next|last]`
     Open {
@@ -235,9 +240,10 @@ enum Cmd {
             .args(["kind", "list", "play", "move_", "remove", "clear_after"])
     ))]
     Queue {
-        #[arg(requires = "id")]
+        #[arg(requires = "ids")]
         kind: Option<KindArg>,
-        id: Option<String>,
+        /// One id, or several track ids (`-`: read from stdin, one per line)
+        ids: Vec<String>,
         /// Adds right after the current track instead of at the end
         #[arg(long, requires = "kind")]
         next: bool,
@@ -379,18 +385,34 @@ fn run(cli: Cli) -> Result<ExitCode> {
             Ok(emit(&env, search_cmd(&env, &text), json))
         }
         Cmd::Playlists { json } => Ok(emit(&env, playlists_cmd(&env), json)),
-        Cmd::Play { kind, id, shuffle } => Ok(ctl::play_or_queue(
-            &env,
-            kind.into(),
-            &id,
+        Cmd::Play {
+            kind,
+            ids,
             shuffle,
-            false,
-            false,
-        )),
+            from,
+        } => {
+            let ids = stdin_ids(ids)?;
+            Ok(match (kind, from) {
+                (KindArg::Track, from) => {
+                    let start = match from {
+                        Some(p) if p as usize > ids.len() => {
+                            bail!("play: no track at position {p} of {}", ids.len())
+                        }
+                        Some(p) => p as usize - 1,
+                        None => 0,
+                    };
+                    ctl::play_tracks(&env, ids, start, shuffle, false, false)
+                }
+                (_, None) if ids.len() == 1 => {
+                    ctl::play_or_queue(&env, kind.into(), &ids[0], shuffle, false, false)
+                }
+                _ => bail!("play: several ids and --from are for tracks only"),
+            })
+        }
         Cmd::Open { address } => Ok(ctl::open(&env, &address)),
         Cmd::Queue {
             kind,
-            id,
+            ids,
             next,
             list,
             json,
@@ -415,10 +437,14 @@ fn run(cli: Cli) -> Result<ExitCode> {
             } else if clear_after {
                 ctl::control(proto::Request::QueueClearAfter)
             } else {
-                match (kind, id) {
-                    (Some(kind), Some(id)) => {
-                        ctl::play_or_queue(&env, kind.into(), &id, false, true, next)
+                match (kind, stdin_ids(ids)?) {
+                    (Some(KindArg::Track), ids) => {
+                        ctl::play_tracks(&env, ids, 0, false, true, next)
                     }
+                    (Some(kind), ids) if ids.len() == 1 => {
+                        ctl::play_or_queue(&env, kind.into(), &ids[0], false, true, next)
+                    }
+                    (Some(_), _) => bail!("queue: several ids are for tracks only"),
                     _ => bail!("queue: what to add is missing"),
                 }
             })
@@ -484,6 +510,40 @@ fn run(cli: Cli) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
     }
+}
+
+/// The ids given, or read from stdin (one per line) when the only one is `-`: a list as long
+/// as a whole library does not fit on a command line.
+fn stdin_ids(ids: Vec<String>) -> Result<Vec<String>> {
+    let stdin = std::io::stdin();
+    let terminal = stdin.is_terminal();
+    read_ids(ids, stdin.lock(), terminal)
+}
+
+/// `read_ids` with what stdin is: `terminal` when nothing is piped in.
+fn read_ids(ids: Vec<String>, input: impl BufRead, terminal: bool) -> Result<Vec<String>> {
+    if !ids.iter().any(|id| id == "-") {
+        return Ok(ids);
+    }
+    if ids.len() > 1 {
+        bail!("- reads every id from stdin: give no other id beside it");
+    }
+    if terminal {
+        // waiting for Ctrl-D would look like a hang
+        bail!("- reads the ids from stdin: pipe them in, one per line");
+    }
+    let mut read = Vec::new();
+    for line in input.lines() {
+        let line = line?;
+        let id = line.trim();
+        if !id.is_empty() {
+            read.push(id.to_string());
+        }
+    }
+    if read.is_empty() {
+        bail!("no id on stdin");
+    }
+    Ok(read)
 }
 
 fn star_target(kind: Option<StarArg>, id: Option<String>) -> likes::Target {
@@ -872,6 +932,28 @@ mod tests {
     use super::*;
     use clap::CommandFactory;
 
+    #[test]
+    fn ids_on_stdin_are_read_unless_it_is_a_terminal_or_mixed() {
+        let read = |ids: &[&str], input: &str, terminal| {
+            read_ids(
+                ids.iter().map(|s| s.to_string()).collect(),
+                input.as_bytes(),
+                terminal,
+            )
+        };
+        assert_eq!(read(&["t1", "t2"], "", true).unwrap(), ["t1", "t2"]);
+        assert_eq!(read(&["-"], "t1\n\n t2 \n", false).unwrap(), ["t1", "t2"]);
+        assert!(
+            read(&["-"], "t1\n", true).is_err(),
+            "a terminal: refused, not waited on"
+        );
+        assert!(
+            read(&["t1", "-"], "t2\n", false).is_err(),
+            "- among other ids"
+        );
+        assert!(read(&["-"], "", false).is_err(), "nothing on stdin");
+    }
+
     /// The window runs `melodie like track -- <id>`: the id must come out whole even when it
     /// starts with a dash.
     #[test]
@@ -936,11 +1018,21 @@ mod tests {
             Cli::try_parse_from(v).unwrap_or_else(|e| panic!("{a:?}: {e}"))
         };
         match parse(&["play", "album", "--shuffle", "--", "-al1"]).command {
-            Cmd::Play { id, shuffle, .. } => assert_eq!((id.as_str(), shuffle), ("-al1", true)),
+            Cmd::Play { ids, shuffle, .. } => {
+                assert_eq!((ids, shuffle), (vec!["-al1".into()], true))
+            }
             _ => panic!("not a play"),
         }
         match parse(&["queue", "playlist", "--next", "--", "-p1"]).command {
-            Cmd::Queue { id, next, .. } => assert_eq!((id.as_deref(), next), (Some("-p1"), true)),
+            Cmd::Queue { ids, next, .. } => assert_eq!((ids, next), (vec!["-p1".into()], true)),
+            _ => panic!("not a queue"),
+        }
+        match parse(&["play", "track", "--from", "2", "-"]).command {
+            Cmd::Play { ids, from, .. } => assert_eq!((ids, from), (vec!["-".into()], Some(2))),
+            _ => panic!("not a play"),
+        }
+        match parse(&["queue", "track", "--next", "--", "-t1", "t2"]).command {
+            Cmd::Queue { ids, .. } => assert_eq!(ids, ["-t1", "t2"]),
             _ => panic!("not a queue"),
         }
         match parse(&["mix", "artist", "--", "-ar1"]).command {

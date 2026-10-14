@@ -58,6 +58,26 @@ pub fn answer(env: &Env, text: &str, all: Option<Kind>) -> anyhow::Result<Option
     }))
 }
 
+/// The filters under the search's field, in order: All, then one per kind. Each is a place, so
+/// that the back button returns from a kind to All.
+pub fn filters() -> [(Place, &'static str); 5] {
+    [
+        (Place::Search, "All"),
+        (Place::Found(Kind::Track), "Tracks"),
+        (Place::Found(Kind::Album), "Albums"),
+        (Place::Found(Kind::Artist), "Artists"),
+        (Place::Found(Kind::Playlist), "Playlists"),
+    ]
+}
+
+/// The kind the search is filtered to at `place`; `None` for All, and elsewhere.
+pub fn filter_of(place: &Place) -> Option<Kind> {
+    match place {
+        Place::Found(kind) => Some(*kind),
+        _ => None,
+    }
+}
+
 /// What a result can do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
@@ -205,6 +225,27 @@ mod tests {
             album_id: None,
             artist_id: None,
         }
+    }
+
+    #[test]
+    fn the_filters_are_all_then_each_kind() {
+        let names: Vec<_> = filters().iter().map(|(_, n)| *n).collect();
+        assert_eq!(names, ["All", "Tracks", "Albums", "Artists", "Playlists"]);
+        for (place, _) in filters() {
+            assert!(place.in_search(), "every filter is the one page");
+        }
+        let all: Vec<_> = filters().iter().map(|(p, _)| filter_of(p)).collect();
+        assert_eq!(
+            all,
+            [
+                None,
+                Some(Kind::Track),
+                Some(Kind::Album),
+                Some(Kind::Artist),
+                Some(Kind::Playlist)
+            ]
+        );
+        assert_eq!(filter_of(&Place::Albums), None);
     }
 
     #[test]
