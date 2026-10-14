@@ -109,8 +109,12 @@ pub enum Job {
     MixGenre {
         name: String,
     },
-    /// A mix (`PlayMix`, `Rediscover` or `MixGenre`) added at the end of the queue.
-    QueueMix(Box<Job>),
+    /// A mix (`PlayMix`, `Rediscover` or `MixGenre`) added after the current track (`next`) or
+    /// at the end of the queue.
+    QueueMix {
+        mix: Box<Job>,
+        next: bool,
+    },
 }
 
 /// What is added to a playlist.
@@ -154,7 +158,7 @@ impl Job {
             | Self::Mix { .. }
             | Self::CreatePlaylist { .. }
             | Self::MixGenre { .. }
-            | Self::QueueMix(_) => None,
+            | Self::QueueMix { .. } => None,
         }
     }
 
@@ -264,10 +268,10 @@ impl Job {
                 a.push(name.clone());
                 a
             }
-            // `--queue` belongs to `mix`: before the dashes that end the options
-            Self::QueueMix(mix) => {
+            // `--next` and `--queue` belong to `mix`: before the dashes that end the options
+            Self::QueueMix { mix, next } => {
                 let mut a = mix.args();
-                a.insert(1, "--queue".into());
+                a.insert(1, if *next { "--next" } else { "--queue" }.into());
                 a
             }
             Self::Star { kind, id, starred } => vec![
@@ -295,7 +299,7 @@ impl Job {
                 | Self::QueueTracks { .. }
                 | Self::Mix { .. }
                 | Self::MixGenre { .. }
-                | Self::QueueMix(_)
+                | Self::QueueMix { .. }
         )
     }
 
@@ -502,20 +506,33 @@ mod tests {
     }
 
     #[test]
-    fn a_mix_goes_at_the_end_of_the_queue_with_the_flag_before_the_dashes() {
-        let genre = Job::QueueMix(Box::new(Job::MixGenre {
+    fn a_mix_goes_next_or_at_the_end_of_the_queue_with_the_flag_before_the_dashes() {
+        let queue = |mix: Job, next| Job::QueueMix {
+            mix: Box::new(mix),
+            next,
+        };
+        let genre = || Job::MixGenre {
             name: "-Hip Hop".into(),
-        }));
-        assert_eq!(genre.args(), ["mix", "--queue", "genre", "--", "-Hip Hop"]);
+        };
         assert_eq!(
-            Job::QueueMix(Box::new(Job::PlayMix)).args(),
-            ["mix", "--queue", "me"]
+            queue(genre(), false).args(),
+            ["mix", "--queue", "genre", "--", "-Hip Hop"]
         );
         assert_eq!(
-            Job::QueueMix(Box::new(Job::Rediscover)).args(),
+            queue(genre(), true).args(),
+            ["mix", "--next", "genre", "--", "-Hip Hop"]
+        );
+        assert_eq!(queue(Job::PlayMix, false).args(), ["mix", "--queue", "me"]);
+        assert_eq!(queue(Job::PlayMix, true).args(), ["mix", "--next", "me"]);
+        assert_eq!(
+            queue(Job::Rediscover, false).args(),
             ["mix", "--queue", "rediscover"]
         );
-        assert_eq!(Job::QueueMix(Box::new(Job::PlayMix)).playlist(), None);
+        assert_eq!(
+            queue(Job::Rediscover, true).args(),
+            ["mix", "--next", "rediscover"]
+        );
+        assert_eq!(queue(Job::PlayMix, true).playlist(), None);
     }
 
     #[test]
