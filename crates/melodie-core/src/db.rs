@@ -42,8 +42,9 @@ CREATE TABLE skips (id TEXT NOT NULL, at INTEGER NOT NULL);
 CREATE INDEX skips_at ON skips(at);
 CREATE INDEX tracks_album ON tracks(albumId);
 CREATE INDEX tracks_artist ON tracks(artistId);
-CREATE TABLE track_artists (track TEXT NOT NULL, artist TEXT NOT NULL);
+CREATE TABLE track_artists (track TEXT NOT NULL, artist TEXT NOT NULL, pos INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX track_artists_artist ON track_artists(artist);
+CREATE INDEX track_artists_track ON track_artists(track, pos);
 CREATE TABLE playlists (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, songCount INTEGER NOT NULL DEFAULT 0,
   duration INTEGER NOT NULL DEFAULT 0, changed TEXT, coverArt TEXT, owner TEXT
@@ -122,9 +123,9 @@ pub fn carry_skips(old: &std::path::Path, new: &std::path::Path) -> Result<()> {
 }
 
 /// What `upgrade` has to add: `(the created column, the playlist_tracks table, the
-/// playlist_synced table, the track_artists table)`. A copy without an `albums` table is no older
-/// copy: there is nothing to add a column to.
-fn upgrade_pending(conn: &Connection) -> Result<(bool, bool, bool, bool)> {
+/// playlist_synced table, the track_artists table, its pos column)`. A copy without an `albums`
+/// table is no older copy: there is nothing to add a column to.
+fn upgrade_pending(conn: &Connection) -> Result<(bool, bool, bool, bool, bool)> {
     let (columns, has_created): (i64, i64) = conn.query_row(
         "SELECT count(*), coalesce(sum(name = 'created'), 0) FROM pragma_table_info('albums')",
         [],
@@ -135,28 +136,38 @@ fn upgrade_pending(conn: &Connection) -> Result<(bool, bool, bool, bool)> {
             .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1")?
             .exists([name])?)
     };
+    let credits = has_table("track_artists")?;
+    let has_pos: bool = conn.query_row(
+        "SELECT count(*) > 0 FROM pragma_table_info('track_artists') WHERE name = 'pos'",
+        [],
+        |r| r.get(0),
+    )?;
     Ok((
         columns > 0 && has_created == 0,
         !has_table("playlist_tracks")?,
         !has_table("playlist_synced")?,
-        !has_table("track_artists")?,
+        !credits,
+        credits && !has_pos,
     ))
 }
 
 /// Brings a copy made by an older version up to the schema: what was added since is created
 /// empty, and filled by the next synchronisation (the date an album was added, by the next full
 /// one; the artists credited on each track, by the next full one, which the next sync makes, see
-/// `PARTICIPANTS`).
+/// `PARTICIPANTS`). The order of those artists needs no sync: a copy credited without it wrote
+/// the artists of each track one after the other, in the server's order, so the order they were
+/// written in is it.
 ///
 /// Every process that opens the copy runs it (the daemon, the command line, the window), so it
 /// is idempotent and safe in parallel: the work is checked again under the write lock, and a
 /// process that waited for the lock finds it done.
 pub fn upgrade(conn: &Connection) -> Result<()> {
-    if upgrade_pending(conn)? == (false, false, false, false) {
+    if upgrade_pending(conn)? == (false, false, false, false, false) {
         return Ok(());
     }
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    let (created, playlist_tracks, playlist_synced, track_artists) = upgrade_pending(&tx)?;
+    let (created, playlist_tracks, playlist_synced, track_artists, credit_pos) =
+        upgrade_pending(&tx)?;
     if created {
         tx.execute_batch("ALTER TABLE albums ADD COLUMN created TEXT")?;
     }
@@ -173,8 +184,19 @@ pub fn upgrade(conn: &Connection) -> Result<()> {
     }
     if track_artists {
         tx.execute_batch(
-            "CREATE TABLE track_artists (track TEXT NOT NULL, artist TEXT NOT NULL);
-             CREATE INDEX track_artists_artist ON track_artists(artist);",
+            "CREATE TABLE track_artists (track TEXT NOT NULL, artist TEXT NOT NULL, pos INTEGER NOT NULL DEFAULT 0);
+             CREATE INDEX track_artists_artist ON track_artists(artist);
+             CREATE INDEX track_artists_track ON track_artists(track, pos);",
+        )?;
+    }
+    if credit_pos {
+        tx.execute_batch(
+            "ALTER TABLE track_artists ADD COLUMN pos INTEGER NOT NULL DEFAULT 0;
+             UPDATE track_artists SET pos = o.pos
+               FROM (SELECT rowid AS r, row_number() OVER (PARTITION BY track ORDER BY rowid) - 1 AS pos
+                     FROM track_artists) o
+               WHERE track_artists.rowid = o.r;
+             CREATE INDEX track_artists_track ON track_artists(track, pos);",
         )?;
     }
     tx.commit()?;
@@ -363,10 +385,11 @@ pub fn insert_track(tx: &Transaction, v: &Value) -> Result<bool> {
         )?;
         // OpenSubsonic: every artist credited, the featured ones too, where `artistId` keeps one
         let credited = v.get("artists").and_then(Value::as_array);
-        for a in credited.into_iter().flatten().filter_map(self::id) {
+        let artists = credited.into_iter().flatten().filter_map(self::id);
+        for (pos, a) in artists.enumerate() {
             tx.execute(
-                "INSERT INTO track_artists(track, artist) VALUES (?1, ?2)",
-                params![id, a],
+                "INSERT INTO track_artists(track, artist, pos) VALUES (?1, ?2, ?3)",
+                params![id, a, pos as i64],
             )?;
         }
     }
@@ -785,6 +808,57 @@ mod tests {
         tx.commit().unwrap();
         let want = [("t1", "ar1"), ("t1", "ar9")].map(|(t, a)| (t.to_string(), a.to_string()));
         assert_eq!(credited(&conn), want);
+    }
+
+    fn credits_of(conn: &Connection, track: &str) -> Vec<String> {
+        conn.prepare("SELECT artist FROM track_artists WHERE track = ?1 ORDER BY pos")
+            .unwrap()
+            .query_map([track], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_track_keeps_its_artists_in_the_order_the_server_gives() {
+        let d = tempfile::tempdir().unwrap();
+        let mut conn = create(&d.path().join("l.db")).unwrap();
+        let tx = conn.transaction().unwrap();
+        insert_track(
+            &tx,
+            &serde_json::json!({"id":"t1","title":"A","artistId":"ar5","artists":[
+                {"id":"ar5","name":"Nova Reyes"},{"id":"ar1","name":"Lior Castell"},
+                {"id":"ar3","name":"Ada Marlow"}]}),
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        assert_eq!(credits_of(&conn, "t1"), ["ar5", "ar1", "ar3"]);
+    }
+
+    #[test]
+    fn a_copy_credited_without_the_order_gets_it_from_the_order_it_was_written_in() {
+        let d = tempfile::tempdir().unwrap();
+        let env = Env::with_home(d.path());
+        let old = create(&db_path(&env)).unwrap();
+        // as #83 made it: the artists of a track written one after the other, in the server's order
+        old.execute_batch(
+            "DROP TABLE track_artists;
+             CREATE TABLE track_artists (track TEXT NOT NULL, artist TEXT NOT NULL);
+             CREATE INDEX track_artists_artist ON track_artists(artist);
+             INSERT INTO meta(key, value) VALUES ('participants', '1');
+             INSERT INTO track_artists(track, artist) VALUES
+               ('t2', 'ar9'), ('t1', 'ar5'), ('t1', 'ar1'), ('t1', 'ar3'), ('t3', 'ar2'), ('t3', 'ar0');",
+        )
+        .unwrap();
+        drop(old);
+        let conn = open_existing(&env).unwrap().unwrap();
+        assert_eq!(credits_of(&conn, "t1"), ["ar5", "ar1", "ar3"]);
+        assert_eq!(credits_of(&conn, "t3"), ["ar2", "ar0"]);
+        assert_eq!(credits_of(&conn, "t2"), ["ar9"]);
+        upgrade(&conn).unwrap(); // twice is harmless
+        assert_eq!(credits_of(&conn, "t1"), ["ar5", "ar1", "ar3"]);
+        // nothing to read again: the next sync stays a light one
+        assert_eq!(get_meta(&conn, PARTICIPANTS).as_deref(), Some("1"));
     }
 
     #[test]
