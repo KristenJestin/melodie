@@ -461,29 +461,36 @@ fn filter_chips(here: &Place, pal: Palette, catalog: &Entity<Catalog>) -> Div {
         .px(px(PAD))
         .pb_2()
         .gap_1()
-        .children(find::filters().into_iter().map(|(place, label)| {
-            let on = *here == place;
-            let catalog = catalog.clone();
-            h_flex()
-                .id(ElementId::Name(format!("search-filter-{label}").into()))
-                .debug_selector(|| format!("search-filter-{label}"))
-                .h(px(30.))
-                .px_3()
-                .items_center()
-                .rounded_full()
-                .cursor_pointer()
-                .text_sm()
-                .text_color(if on { pal.fg } else { pal.secondary })
-                .bg(Hsla {
-                    a: if on { 0.12 } else { 0.0 },
-                    ..pal.fg
-                })
-                .hover(|s| s.bg(Hsla { a: 0.08, ..pal.fg }))
-                // the window's root takes the focus from any press that reaches it
-                .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
-                .on_click(move |_, _, cx| catalog.update(cx, |c, cx| c.filter(place.clone(), cx)))
-                .child(label)
-        }))
+        .children(
+            find::filters()
+                .into_iter()
+                .enumerate()
+                .map(|(ix, (place, label))| {
+                    let on = *here == place;
+                    let catalog = catalog.clone();
+                    h_flex()
+                        .id(("search-filter", ix))
+                        .debug_selector(|| format!("search-filter-{label}"))
+                        .h(px(30.))
+                        .px_3()
+                        .items_center()
+                        .rounded_full()
+                        .cursor_pointer()
+                        .text_sm()
+                        .text_color(if on { pal.fg } else { pal.secondary })
+                        .bg(Hsla {
+                            a: if on { 0.12 } else { 0.0 },
+                            ..pal.fg
+                        })
+                        .hover(|s| s.bg(Hsla { a: 0.08, ..pal.fg }))
+                        // the window's root takes the focus from any press that reaches it
+                        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+                        .on_click(move |_, _, cx| {
+                            catalog.update(cx, |c, cx| c.filter(place.clone(), cx))
+                        })
+                        .child(label)
+                }),
+        )
 }
 
 fn hint(id: &'static str, text: String, pal: Palette) -> AnyElement {
