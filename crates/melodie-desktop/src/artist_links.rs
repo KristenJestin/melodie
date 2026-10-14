@@ -17,7 +17,7 @@ const STEPS: i32 = 3;
 
 /// The artists of a track on one line. `link` draws the name of the artist at `ix`: it must cut
 /// itself (`truncate`) and may shrink to nothing (`min_w_0`).
-pub fn line(credits: &[Credit], link: impl Fn(usize, &Credit) -> AnyElement) -> Div {
+pub fn line(credits: &[Credit], mut link: impl FnMut(usize, &Credit) -> AnyElement) -> Div {
     h_flex()
         .min_w_0()
         .overflow_hidden()

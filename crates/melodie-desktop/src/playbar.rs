@@ -3,6 +3,7 @@
 //! What fits is decided by `bar::parts`, from the width of the main area.
 
 use crate::app::{Shared, Shown};
+use crate::artist_links;
 use crate::catalog::{Catalog, Facet};
 use crate::context_menu::Menued as _;
 use crate::motion;
@@ -19,6 +20,7 @@ use gpui_kit::*;
 use melodie_core::proto::Request;
 use melodie_desktop::bar;
 use melodie_desktop::browse::Place;
+use melodie_desktop::credits;
 use melodie_desktop::launch::{Job, Kind};
 use melodie_desktop::layout;
 use melodie_desktop::menu::{Item, Spot};
@@ -86,7 +88,7 @@ fn cover(shown: Option<&Shown>, size: f32, pal: Palette) -> AnyElement {
 
 /// A line of text that opens a page: lit and underlined under the pointer.
 fn link(
-    id: &'static str,
+    id: impl Into<ElementId>,
     text: String,
     base: Hsla,
     pal: Palette,
@@ -94,10 +96,11 @@ fn link(
     window: &mut Window,
     cx: &mut App,
 ) -> impl IntoElement {
-    let id = ElementId::from(id);
+    let id: ElementId = id.into();
     let (ptr, h, _) = pointer(&id, true, window, cx);
     let hovered = ptr.read(cx).hovered;
     follow_pointer(div().id(id), ptr)
+        .min_w_0()
         .max_w_full()
         .truncate()
         .cursor_pointer()
@@ -161,9 +164,15 @@ impl Render for PlayBar {
                     )
                 });
             let text = parts.text.then(|| {
-                let (title, artist) = match &track {
-                    Some(t) => (t.title.clone(), t.artist.clone()),
-                    None => ("Nothing playing".to_string(), String::new()),
+                let (title, artists) = match &track {
+                    Some(t) => {
+                        let credited = &self.shared.read(cx).credits;
+                        (
+                            t.title.clone(),
+                            credits::of(credited, &t.id, &t.artist, None),
+                        )
+                    }
+                    None => ("Nothing playing".to_string(), Vec::new()),
                 };
                 let (to_album, to_artist) = (id.clone(), id.clone());
                 let (catalog_a, catalog_b) = (self.catalog.clone(), self.catalog.clone());
@@ -193,16 +202,28 @@ impl Render for PlayBar {
                         )
                     })
                     .when(!has_track, |d| d.child(div().truncate().child(title)))
-                    .when(has_track && !artist.is_empty(), |d| {
-                        d.child(div().text_xs().max_w_full().child(link(
-                            "bar-artist",
-                            artist,
-                            pal.secondary,
-                            pal,
-                            open(to_artist, catalog_b, Facet::Artist),
-                            window,
-                            cx,
-                        )))
+                    .when(has_track && !artists.is_empty(), |d| {
+                        let line = artist_links::line(&artists, |i, a| {
+                            // an artist the copy does not know: found from the track on click
+                            let go: Box<dyn Fn(&mut App)> = match a.id.clone() {
+                                Some(id) => {
+                                    let catalog = catalog_b.clone();
+                                    Box::new(move |cx: &mut App| {
+                                        let to = Place::Artist(id.clone());
+                                        catalog.update(cx, |c, cx| c.go(to, cx))
+                                    })
+                                }
+                                None => Box::new(open(
+                                    to_artist.clone(),
+                                    catalog_b.clone(),
+                                    Facet::Artist,
+                                )),
+                            };
+                            let id = ElementId::NamedInteger("bar-artist".into(), i as u64);
+                            link(id, a.name.clone(), pal.secondary, pal, go, window, cx)
+                                .into_any_element()
+                        });
+                        d.child(div().text_xs().max_w_full().child(line))
                     })
                     .text_sm()
                     .font_weight(FontWeight::MEDIUM)

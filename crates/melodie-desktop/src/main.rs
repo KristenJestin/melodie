@@ -746,8 +746,8 @@ fn main() -> ExitCode {
             };
             let (stacked, inline) = (position(false, window, cx), position(true, window, cx));
             let views = Views {
-                player: cx.new(|_| PlayerView::new(s.clone(), stacked, volume.clone())),
-                queue: cx.new(|cx| QueuePanel::new(s.clone(), cx)),
+                player: cx.new(|_| PlayerView::new(s.clone(), c.clone(), stacked, volume.clone())),
+                queue: cx.new(|cx| QueuePanel::new(s.clone(), c.clone(), cx)),
                 sidebar: cx.new(|_| Sidebar::new(s.clone(), c.clone())),
                 home: cx.new(|cx| HomeView::new(s.clone(), c.clone(), cx)),
                 albums: cx.new(|_| AlbumGrid::new(s.clone(), c.clone())),

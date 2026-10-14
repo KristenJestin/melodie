@@ -134,7 +134,7 @@ pub fn row_button(
 }
 
 /// A link to an artist or an album inside a row.
-fn link(
+pub(crate) fn link(
     id: ElementId,
     text: String,
     to: Option<Place>,
