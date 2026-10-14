@@ -233,6 +233,7 @@ impl Root {
             selection: c.selection.count(c.here()) > 0,
             several: c.selection.several(c.here()),
             held,
+            can_back: c.nav.can_go_back(),
             field_empty: v.is_empty(),
             sign_in: self.account.read(cx).screen(cx) == Screen::SignIn,
             sign_in_field_focused: self.views.sign_in.read(cx).has_focus(window, cx),

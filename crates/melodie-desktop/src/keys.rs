@@ -93,6 +93,8 @@ pub struct Situation<'a> {
     pub several: bool,
     /// The key repeats, held down.
     pub held: bool,
+    /// There is a page to go back to.
+    pub can_back: bool,
     pub field_empty: bool,
     /// The sign-in screen covers the window.
     pub sign_in: bool,
@@ -204,8 +206,9 @@ pub fn act(key: Key, s: Situation) -> Act {
         Key::Find => Act::OpenSearch,
         Key::Slash if !typing => Act::OpenSearch,
         Key::Escape if s.overlay_open => Act::CloseOverlays,
-        // one row picked is what a plain click leaves: it must not cost a second Escape
-        Key::Escape if s.several => Act::ClearSelection,
+        // one row picked is what a plain click leaves: it must not cost a second Escape, unless
+        // there is no page to go back to
+        Key::Escape if s.several || (s.selection && !s.can_back) => Act::ClearSelection,
         // the field empties first, then the search is left
         Key::Escape if *s.here == Place::Search && !s.field_empty => Act::ClearField,
         Key::Escape => Act::Back,
@@ -249,6 +252,7 @@ mod tests {
             selection: false,
             several: false,
             held: false,
+            can_back: true,
             field_empty: true,
             sign_in: false,
             sign_in_field_focused: false,
@@ -446,6 +450,16 @@ mod tests {
             ..at(&page, false)
         };
         assert_eq!(act(Key::Escape, one), Act::Back);
+    }
+
+    #[test]
+    fn escape_with_one_row_picked_and_no_page_to_go_back_to_clears_it() {
+        let one = Situation {
+            selection: true,
+            can_back: false,
+            ..at(&Place::Tracks, false)
+        };
+        assert_eq!(act(Key::Escape, one), Act::ClearSelection);
     }
 
     #[test]
