@@ -1,0 +1,514 @@
+//! A round icon button, or a pill with a label, whose hover and press are animated (gpui-kit's
+//! buttons change at once).
+
+use crate::motion;
+use crate::tips::{self, Tip};
+use gpui_kit::assets::IconName;
+use gpui_kit::base::h_flex;
+use gpui_kit::component::Icon;
+use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
+use melodie_desktop::figures::{self, Line};
+use melodie_desktop::reveal;
+use melodie_desktop::theme::{Palette, mix};
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Look {
+    /// No background until hovered.
+    Ghost,
+    /// Filled with the accent: the play button.
+    Primary,
+}
+
+type OnClick = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
+
+#[derive(IntoElement)]
+pub struct IconButton {
+    id: ElementId,
+    icon: IconName,
+    label: Option<SharedString>,
+    diameter: f32,
+    pal: Palette,
+    look: Look,
+    selected: bool,
+    disabled: bool,
+    tip: Option<SharedString>,
+    /// Another icon the first one changes into, and how far it has (0 to 1).
+    morph: Option<(IconName, f32)>,
+    on_click: Option<OnClick>,
+}
+
+/// Where the pointer is, kept per element by its id.
+#[derive(Default, Clone, Copy)]
+pub struct Pointer {
+    pub hovered: bool,
+    pub pressed: bool,
+}
+
+/// The pointer state of the element `id`, and its hover and press animated from 0 to 1 (both
+/// stay 0 while it is not `live`).
+pub fn pointer(
+    id: &ElementId,
+    live: bool,
+    window: &mut Window,
+    cx: &mut App,
+) -> (Entity<Pointer>, f32, f32) {
+    let pointer = window.use_keyed_state(id.clone(), cx, |_, _| Pointer::default());
+    let p = *pointer.read(cx);
+    let h = motion::flag(
+        (id.clone(), "hover"),
+        p.hovered && live,
+        motion::HOVER,
+        window,
+        cx,
+    );
+    let d = motion::flag(
+        (id.clone(), "press"),
+        p.pressed && live,
+        motion::PRESS,
+        window,
+        cx,
+    );
+    (pointer, h, d)
+}
+
+/// Keeps `pointer` up to date from the element's own events.
+pub fn follow_pointer(el: Stateful<Div>, pointer: Entity<Pointer>) -> Stateful<Div> {
+    follow_pointer_tip(el, pointer, None)
+}
+
+/// The same, and the tooltip `tip` while the pointer rests on the element (an element has one
+/// hover listener, so the tooltip rides on it).
+pub fn follow_pointer_tip(
+    el: Stateful<Div>,
+    pointer: Entity<Pointer>,
+    tip: Option<Tip>,
+) -> Stateful<Div> {
+    let (hover, press, release, out) = (pointer.clone(), pointer.clone(), pointer.clone(), pointer);
+    let el = match &tip {
+        Some(tip) => tip.track(el),
+        None => el,
+    };
+    el.on_hover(move |on, window, cx| {
+        if let Some(tip) = &tip {
+            tip.hovered(*on, window, cx);
+        }
+        hover.update(cx, |p, cx| {
+            p.hovered = *on;
+            p.pressed &= *on;
+            cx.notify()
+        })
+    })
+    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+        tips::hide(cx);
+        press.update(cx, |p, cx| {
+            p.pressed = true;
+            cx.notify()
+        })
+    })
+    .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+        release.update(cx, |p, cx| {
+            p.pressed = false;
+            cx.notify()
+        })
+    })
+    .on_mouse_up_out(MouseButton::Left, move |_, _, cx| {
+        out.update(cx, |p, cx| {
+            p.pressed = false;
+            cx.notify()
+        })
+    })
+}
+
+/// Whether the pointer is on an element that holds something shown only then, and how far that
+/// thing has come in. Make it with `hover`, wire it to the element with `track`, and give the
+/// thing its look with `Revealed::revealed`.
+#[derive(Clone)]
+pub struct Hover {
+    state: Entity<Revealing>,
+    pub look: reveal::Look,
+}
+
+#[derive(Default, Clone, Copy)]
+struct Revealing {
+    hovered: bool,
+    /// Whether the last change came from the pointer moving, not from the layout under it.
+    moved: bool,
+}
+
+/// The pointer's moves, window-wide: a row cannot tell alone whether it was the pointer that moved.
+#[derive(Default)]
+struct PointerMoves(reveal::Moves<Point<Pixels>>);
+
+impl Global for PointerMoves {}
+
+/// The hover of the element called `id`: the pointer's place, and the look of what it reveals,
+/// moving towards shown or hidden (a pointer that leaves turns it round where it is).
+pub fn hover(id: impl Into<ElementId>, window: &mut Window, cx: &mut App) -> Hover {
+    let id: ElementId = id.into();
+    let state = window.use_keyed_state((id.clone(), "reveal"), cx, |_, _| Revealing::default());
+    let Revealing { hovered, moved } = *state.read(cx);
+    let t = motion::to(
+        (id, "reveal"),
+        if hovered { 1.0f32 } else { 0.0 },
+        reveal::duration(hovered, moved),
+        window,
+        cx,
+    );
+    Hover {
+        state,
+        look: reveal::at(t),
+    }
+}
+
+impl Hover {
+    /// Makes `el` follow the pointer: the thing it reveals shows while the pointer is on it.
+    pub fn track(&self, el: Stateful<Div>) -> Stateful<Div> {
+        let state = self.state.clone();
+        el.on_hover(move |on, window, cx| {
+            let moved = cx
+                .default_global::<PointerMoves>()
+                .0
+                .seen(window.mouse_position());
+            if moved {
+                // once the other hovers of this move are told
+                window.defer(cx, |_, cx| cx.default_global::<PointerMoves>().0.settle());
+            }
+            state.update(cx, |s, cx| {
+                *s = Revealing {
+                    hovered: *on,
+                    moved,
+                };
+                cx.notify()
+            })
+        })
+    }
+}
+
+/// A page's title (2xl, bold) and, beside it, a count or a few words (sm) on the title's
+/// baseline. GPUI does not tell the flex layout where a text's baseline is, so `items_baseline`
+/// would bottom-align the two: the smaller text is raised by the difference instead, worked out
+/// from the font actually drawn.
+pub fn title_with_aside(
+    title: &'static str,
+    aside: Option<SharedString>,
+    pal: Palette,
+    window: &Window,
+) -> Div {
+    let style = window.text_style();
+    let rem = window.rem_size();
+    // the line box follows the font size (GPUI's default is the golden ratio, rounded)
+    let line = |em: f32| {
+        let size = em * rem.as_f32();
+        Line {
+            size,
+            height: style
+                .line_height
+                .to_pixels(px(size).into(), rem)
+                .round()
+                .as_f32(),
+        }
+    };
+    let text = window.text_system();
+    let font = text.resolve_font(&style.font());
+    // GPUI gives the descent below the baseline as a negative number
+    let em = |f: fn(&WindowTextSystem, FontId, Pixels) -> Pixels| {
+        f(text, font, px(1000.0)).as_f32().abs() / 1000.0
+    };
+    let lift = figures::baseline_lift(
+        line(1.5),
+        line(0.875),
+        em(|t, f, s| t.ascent(f, s)),
+        em(|t, f, s| t.descent(f, s)),
+    );
+    h_flex()
+        .gap_3()
+        .items_end()
+        .child(
+            div()
+                .text_2xl()
+                .font_weight(FontWeight::BOLD)
+                .text_color(pal.fg)
+                .child(title),
+        )
+        .when_some(aside, |d, text| {
+            d.child(
+                figures::count_text(text)
+                    .text_sm()
+                    .text_color(pal.secondary)
+                    .mb(px(lift)),
+            )
+        })
+}
+
+/// How a revealed thing is drawn: it fades in and slides into its place.
+pub trait Revealed: Styled + Sized {
+    /// Faded to `look`, and moved as far as it has still to go: down for a thing that rises,
+    /// to the right for one that slides in from the side. Hidden, it is not drawn at all.
+    fn revealed(self, look: reveal::Look, from_the_side: bool) -> Self {
+        if look.hidden() {
+            return self.invisible();
+        }
+        let moved = self.relative().opacity(look.opacity);
+        if from_the_side {
+            moved.left(px(look.offset))
+        } else {
+            moved.top(px(look.offset))
+        }
+    }
+}
+
+impl<T: Styled> Revealed for T {}
+
+impl IconButton {
+    pub fn new(id: impl Into<ElementId>, icon: IconName, pal: Palette) -> Self {
+        Self {
+            id: id.into(),
+            icon,
+            label: None,
+            diameter: 40.0,
+            pal,
+            look: Look::Ghost,
+            selected: false,
+            disabled: false,
+            tip: None,
+            morph: None,
+            on_click: None,
+        }
+    }
+
+    /// The icon changes into `into` as `t` goes from 0 to 1: play and pause cross-fade.
+    pub fn morph(mut self, into: IconName, t: f32) -> Self {
+        self.morph = Some((into, t));
+        self
+    }
+
+    /// What the button does, said when the pointer rests on it. Every button without a text
+    /// has one (a test checks).
+    pub fn tip(mut self, text: impl Into<SharedString>) -> Self {
+        self.tip = Some(text.into());
+        self
+    }
+
+    pub fn diameter(mut self, d: f32) -> Self {
+        self.diameter = d;
+        self
+    }
+
+    /// A pill: the icon, then this text.
+    pub fn label(mut self, text: impl Into<SharedString>) -> Self {
+        self.label = Some(text.into());
+        self
+    }
+
+    pub fn primary(mut self) -> Self {
+        self.look = Look::Primary;
+        self
+    }
+
+    pub fn selected(mut self, on: bool) -> Self {
+        self.selected = on;
+        self
+    }
+
+    pub fn disabled(mut self, on: bool) -> Self {
+        self.disabled = on;
+        self
+    }
+
+    pub fn on_click(mut self, f: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Self {
+        self.on_click = Some(Box::new(f));
+        self
+    }
+}
+
+impl RenderOnce for IconButton {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let live = !self.disabled;
+        let (pointer, h, d) = pointer(&self.id, live, window, cx);
+        let s = motion::flag(
+            (self.id.clone(), "selected"),
+            self.selected,
+            motion::HOVER,
+            window,
+            cx,
+        );
+        let pal = self.pal;
+        let (bg, fg) = match self.look {
+            Look::Ghost => (
+                Hsla {
+                    a: 0.09 * h + 0.08 * d + 0.12 * s,
+                    ..pal.fg
+                },
+                mix(pal.fg, pal.accent, s),
+            ),
+            Look::Primary => (
+                mix(mix(pal.accent, pal.fg, 0.14 * h), pal.bg, 0.18 * d),
+                pal.on_accent,
+            ),
+        };
+        let icon_size = (self.diameter * 0.45).round();
+        let label = self.label;
+        let tip = self.tip.map(|text| Tip::new(text, pal));
+        follow_pointer_tip(div().id(self.id), pointer, tip)
+            .h(px(self.diameter))
+            .when(label.is_none(), |d| d.w(px(self.diameter)))
+            .when(label.is_some(), |d| d.pl_3().pr_4().gap_2())
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_full()
+            .bg(bg)
+            .when(self.disabled, |d| d.opacity(0.4))
+            .when(live, |d| d.cursor_pointer())
+            .when_some(self.on_click.filter(|_| live), |d, f| d.on_click(f))
+            .map(|b| match self.morph {
+                Some((into, t)) if t > 0.0 => b.child(
+                    div()
+                        .relative()
+                        .size(px(icon_size))
+                        .mt(px(d))
+                        .child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .opacity(1.0 - t)
+                                .child(Icon::new(self.icon).size(px(icon_size)).text_color(fg)),
+                        )
+                        .child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .opacity(t)
+                                .child(Icon::new(into).size(px(icon_size)).text_color(fg)),
+                        ),
+                ),
+                _ => b.child(
+                    Icon::new(self.icon)
+                        .size(px(icon_size))
+                        .text_color(fg)
+                        // the press sinks the icon a little: felt, not seen
+                        .mt(px(d)),
+                ),
+            })
+            .when_some(label, |b, text| {
+                b.child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(fg)
+                        .mt(px(d))
+                        .child(text),
+                )
+            })
+    }
+}
+
+/// The field of the window's searches (the search page's, the palette's): the magnifier, then the
+/// text, at the input's own size, whose height and inner padding both fields share. Not
+/// `Input::h`: it only sets the height of a field of several lines.
+pub fn search_field(input: &Entity<InputState>, pal: Palette) -> Input {
+    Input::new(input).prefix(
+        Icon::new(IconName::Search)
+            .size(px(18.))
+            .text_color(pal.secondary),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    /// The line (from 1) of every `IconButton::new(…)` in `src` whose chain of calls says neither
+    /// `.tip(…)` nor `.label(…)`: a button of an icon alone, mute when the pointer rests on it.
+    fn mute_buttons(src: &str) -> Vec<usize> {
+        let bytes = src.as_bytes();
+        let mut mute = Vec::new();
+        for (at, _) in src.match_indices("IconButton::new(") {
+            let line_start = src[..at].rfind('\n').map_or(0, |n| n + 1);
+            if src[line_start..at].trim_start().starts_with("//") {
+                continue;
+            }
+            // follow `( … ).call( … ).call( … )` to the end of the chain
+            let mut i = at + "IconButton::new".len();
+            loop {
+                let mut depth = 0;
+                while i < bytes.len() {
+                    match bytes[i] {
+                        b'"' => {
+                            i += 1;
+                            while bytes[i] != b'"' {
+                                i += if bytes[i] == b'\\' { 2 } else { 1 };
+                            }
+                        }
+                        b'(' => depth += 1,
+                        b')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    i += 1;
+                }
+                i += 1;
+                let rest = src[i..].trim_start();
+                let Some(call) = rest.strip_prefix('.') else {
+                    break;
+                };
+                let name = call
+                    .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+                    .unwrap_or(call.len());
+                i = src.len() - call.len() + name;
+                if !src[i..].starts_with('(') {
+                    break;
+                }
+            }
+            let chain = &src[at..i];
+            if !chain.contains(".tip(") && !chain.contains(".label(") {
+                mute.push(src[..at].matches('\n').count() + 1);
+            }
+        }
+        mute
+    }
+
+    #[test]
+    fn the_check_finds_a_button_without_a_tip_or_a_label() {
+        let src = r#"
+            IconButton::new("a", IconName::Play, pal).tip("Play (now)").on_click(|_, _, _| {});
+            // IconButton::new("commented", IconName::X, pal)
+            IconButton::new("b", IconName::X, pal)
+                .diameter(34.)
+                .on_click(move |_, _, cx| clear.update(cx, |c, cx| c.unselect(cx))),
+            IconButton::new("c", IconName::Plus, pal).label("New").primary()
+            IconButton::new("d", IconName::Plus, pal).disabled(true)
+        "#;
+        assert_eq!(mute_buttons(src), [4, 8]);
+    }
+
+    #[test]
+    fn every_icon_button_says_what_it_does() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut seen = 0;
+        for file in std::fs::read_dir(dir).unwrap() {
+            let path = file.unwrap().path();
+            if path.extension().is_none_or(|e| e != "rs") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&path).unwrap();
+            seen += src.matches("IconButton::new(").count();
+            // the definition of the button is not a use of it
+            if path.ends_with("widgets.rs") {
+                continue;
+            }
+            assert_eq!(
+                mute_buttons(&src),
+                Vec::<usize>::new(),
+                "{}: an IconButton without .tip(…) or .label(…) (lines)",
+                path.display()
+            );
+        }
+        assert!(seen > 20, "the check looks at the sources: {seen}");
+    }
+}

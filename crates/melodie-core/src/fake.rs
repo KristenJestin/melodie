@@ -1,0 +1,544 @@
+//! Faux serveur Subsonic pour les tests : HTTP minimal sur un port local.
+
+use serde_json::{Value, json};
+use std::collections::HashMap;
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+
+pub struct Fake {
+    pub url: String,
+    pub state: Arc<State>,
+}
+
+pub struct State {
+    pub songs: Mutex<Vec<Value>>,
+    /// Artists listed after the two fixed ones, without any album of their own: `getArtist`
+    /// answers them with none, as Navidrome does for an artist only featured on tracks.
+    pub featured: Mutex<Vec<Value>>,
+    /// Content of the playlists a test chose to seed, by playlist id. A playlist that is not
+    /// here keeps the fixed answer (all the songs) and ignores `updatePlaylist`.
+    pub playlists: Mutex<HashMap<String, Vec<Value>>>,
+    pub last_scan: Mutex<String>,
+    /// The `changed` date `getPlaylists` gives the playlist `p1`.
+    pub playlist_changed: Mutex<String>,
+    /// While true, `getPlaylist` does not know `p1` (code 70) though `getPlaylists` still
+    /// lists it: it was deleted between the two calls.
+    pub playlist_gone: AtomicBool,
+    /// Entries `getPlaylist` counts in `songCount` but leaves out, as Navidrome does with the
+    /// tracks whose file is missing.
+    pub hidden_entries: AtomicUsize,
+    /// Taken after the next `getPlaylist` of a seeded playlist, and becomes its content: another
+    /// client changed it just after it was read.
+    pub change_after_read: Mutex<Option<Vec<Value>>>,
+    pub expected_token: Mutex<String>,
+    /// When set, a token made from this password and the request's salt is accepted too, as a
+    /// real server does after a login.
+    pub password: Mutex<Option<String>>,
+    /// Code d'erreur Subsonic à renvoyer pour tout, si présent.
+    pub fail_code: Mutex<Option<i64>>,
+    /// Réponse HTTP brute à renvoyer pour tout (état, corps), si présente.
+    pub raw: Mutex<Option<(u16, String)>>,
+    /// When set, a `search3` asking for songs from this offset on fails (HTTP 500): a copy cut
+    /// off halfway.
+    pub fail_from_song: Mutex<Option<usize>>,
+    pub calls: Mutex<Vec<String>>,
+    /// The methods that came as a posted form, in order.
+    pub posted: Mutex<Vec<String>>,
+    pub tokens_seen: Mutex<Vec<String>>,
+    pub stop: AtomicBool,
+    /// Durée en secondes des flux servis.
+    pub stream_secs: AtomicUsize,
+    /// Stream length in seconds for the tracks that must differ from `stream_secs`, by song id.
+    pub stream_secs_of: Mutex<HashMap<String, usize>>,
+    /// Songs whose stream is a tone growing louder, from silence to full ([`wav_ramp`]), instead
+    /// of silence: a sound whose loudness is known along it.
+    pub stream_ramp: Mutex<Vec<String>>,
+    /// Songs whose stream stops half way, its connection closed before the length it announced,
+    /// as when the link drops.
+    pub stream_cut: Mutex<Vec<String>>,
+    /// The server cannot transcode: a stream asked in another format than `raw` is refused.
+    pub refuse_transcode: AtomicBool,
+    pub n_requests: AtomicUsize,
+    /// Délai en millisecondes avant chaque pochette servie.
+    pub cover_delay_ms: AtomicUsize,
+    /// Tant que vrai, le serveur retient ses réponses (20 s au plus) : sert à
+    /// prouver qu'un appel ne dépend pas du réseau sans mesurer de durée.
+    pub hold: AtomicBool,
+}
+
+/// Décode `%XX` et `+` d'une valeur de requête.
+fn decode(v: &str) -> String {
+    let b = v.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'+' => out.push(b' '),
+            b'%' if i + 2 < b.len() && u8::from_str_radix(&v[i + 1..i + 3], 16).is_ok() => {
+                out.push(u8::from_str_radix(&v[i + 1..i + 3], 16).unwrap());
+                i += 2;
+            }
+            c => out.push(c),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
+
+/// The request line and the body of a request (`Content-Length` bytes).
+fn read_request(s: &mut impl Read) -> (String, String) {
+    let mut raw = Vec::new();
+    let mut buf = [0u8; 8192];
+    let head_end = loop {
+        if let Some(i) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+            break i + 4;
+        }
+        match s.read(&mut buf) {
+            Ok(0) | Err(_) => break raw.len(),
+            Ok(n) => raw.extend_from_slice(&buf[..n]),
+        }
+    };
+    let head = String::from_utf8_lossy(&raw[..head_end]).to_string();
+    let length: usize = head
+        .lines()
+        .find_map(|l| {
+            let (k, v) = l.split_once(':')?;
+            k.eq_ignore_ascii_case("content-length")
+                .then(|| v.trim().parse().ok())?
+        })
+        .unwrap_or(0);
+    while raw.len() < head_end + length {
+        match s.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => raw.extend_from_slice(&buf[..n]),
+        }
+    }
+    let end = raw.len().min(head_end + length);
+    let body = String::from_utf8_lossy(&raw[head_end..end]).to_string();
+    (head.lines().next().unwrap_or("").to_string(), body)
+}
+
+fn param(query: &str, key: &str) -> Option<String> {
+    query.split('&').find_map(|kv| {
+        let (k, v) = kv.split_once('=')?;
+        (k == key).then(|| decode(v))
+    })
+}
+
+/// Toutes les valeurs d'un paramètre répété.
+pub fn params(query: &str, key: &str) -> Vec<String> {
+    query
+        .split('&')
+        .filter_map(|kv| {
+            let (k, v) = kv.split_once('=')?;
+            (k == key).then(|| decode(v))
+        })
+        .collect()
+}
+
+fn page(items: &[Value], query: &str, count: &str, offset: &str) -> Vec<Value> {
+    let c: usize = param(query, count)
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let o: usize = param(query, offset)
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    items.iter().skip(o).take(c).cloned().collect()
+}
+
+pub fn song(i: usize) -> Value {
+    json!({"id": format!("s{i}"), "title": format!("Titre numéro {i}"),
+           "artist": if i.is_multiple_of(2) {"Daft Punk"} else {"Beyoncé"}, "artistId": if i.is_multiple_of(2) {"ar1"} else {"ar2"},
+           "album": "Discovery", "albumId": "al1", "year": 2001, "duration": 200,
+           "suffix": "flac", "bitRate": 900, "playCount": 0, "coverArt": format!("mf-s{i}")})
+}
+
+impl Fake {
+    pub fn start(n_songs: usize, token: &str) -> Fake {
+        let state = Arc::new(State {
+            songs: Mutex::new((0..n_songs).map(song).collect()),
+            featured: Mutex::new(Vec::new()),
+            playlists: Mutex::new(HashMap::new()),
+            last_scan: Mutex::new("2026-10-01T10:00:00Z".into()),
+            playlist_changed: Mutex::new("2026-10-01T10:00:00Z".into()),
+            playlist_gone: AtomicBool::new(false),
+            hidden_entries: AtomicUsize::new(0),
+            change_after_read: Mutex::new(None),
+            expected_token: Mutex::new(token.to_string()),
+            password: Mutex::new(None),
+            fail_code: Mutex::new(None),
+            raw: Mutex::new(None),
+            fail_from_song: Mutex::new(None),
+            calls: Mutex::new(Vec::new()),
+            posted: Mutex::new(Vec::new()),
+            tokens_seen: Mutex::new(Vec::new()),
+            stop: AtomicBool::new(false),
+            stream_secs: AtomicUsize::new(3),
+            stream_secs_of: Mutex::new(HashMap::new()),
+            stream_ramp: Mutex::new(Vec::new()),
+            stream_cut: Mutex::new(Vec::new()),
+            refuse_transcode: AtomicBool::new(false),
+            n_requests: AtomicUsize::new(0),
+            cover_delay_ms: AtomicUsize::new(0),
+            hold: AtomicBool::new(false),
+        });
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let st = state.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if st.stop.load(Ordering::SeqCst) {
+                    break;
+                }
+                let Ok(mut s) = stream else { continue };
+                let st = st.clone();
+                std::thread::spawn(move || {
+                    let (line, body) = read_request(&mut s);
+                    let target = line.split(' ').nth(1).unwrap_or("");
+                    // Like nginx's default (`large_client_header_buffers 4 8k`).
+                    if target.len() > 8192 {
+                        let _ = s.write_all(
+                            b"HTTP/1.1 414 X\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        );
+                        return;
+                    }
+                    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+                    // A form posted reads like a query, as Navidrome merges them.
+                    let posted = line.starts_with("POST ");
+                    let merged;
+                    let query = if posted {
+                        merged = [query, body.as_str()]
+                            .into_iter()
+                            .filter(|q| !q.is_empty())
+                            .collect::<Vec<_>>()
+                            .join("&");
+                        merged.as_str()
+                    } else {
+                        query
+                    };
+                    let method = path
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or("")
+                        .trim_end_matches(".view")
+                        .to_string();
+                    st.n_requests.fetch_add(1, Ordering::SeqCst);
+                    st.calls.lock().unwrap().push(format!("{method}?{query}"));
+                    if posted {
+                        st.posted.lock().unwrap().push(method.clone());
+                    }
+                    if let Some(t) = param(query, "t") {
+                        st.tokens_seen.lock().unwrap().push(t);
+                    }
+                    if matches!(method.as_str(), "stream" | "getCoverArt") {
+                        let (status, ctype, body) = st.binary(&method, query);
+                        let head = format!(
+                            "HTTP/1.1 {status} X\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        );
+                        let _ = s.write_all(head.as_bytes());
+                        let cut = method == "stream"
+                            && param(query, "id")
+                                .is_some_and(|id| st.stream_cut.lock().unwrap().contains(&id));
+                        let sent = if cut { body.len() / 2 } else { body.len() };
+                        let _ = s.write_all(&body[..sent]);
+                        return;
+                    }
+                    let (status, body) = st.respond(&method, query);
+                    let reply = format!(
+                        "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = s.write_all(reply.as_bytes());
+                });
+            }
+        });
+        Fake { url, state }
+    }
+
+    pub fn calls_of(&self, method: &str) -> usize {
+        self.state
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| c.starts_with(&format!("{method}?")))
+            .count()
+    }
+
+    pub fn clear_calls(&self) {
+        self.state.calls.lock().unwrap().clear();
+    }
+}
+
+fn ok(body: Value) -> (u16, String) {
+    let mut r = json!({"status": "ok", "version": "1.16.1", "type": "navidrome"});
+    for (k, v) in body.as_object().unwrap() {
+        r[k] = v.clone();
+    }
+    (200, json!({"subsonic-response": r}).to_string())
+}
+
+impl State {
+    fn respond(&self, method: &str, query: &str) -> (u16, String) {
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while self.hold.load(Ordering::SeqCst) && std::time::Instant::now() < end {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        if let Some(r) = self.raw.lock().unwrap().clone() {
+            return r;
+        }
+        if let Some(code) = *self.fail_code.lock().unwrap() {
+            return (
+                200,
+                json!({"subsonic-response": {"status": "failed", "version": "1.16.1",
+                       "error": {"code": code, "message": "refusé"}}})
+                .to_string(),
+            );
+        }
+        let t = param(query, "t");
+        let from_password = self.password.lock().unwrap().as_deref().is_some_and(|p| {
+            t.as_deref()
+                == Some(crate::api::token(p, &param(query, "s").unwrap_or_default()).as_str())
+        });
+        if !from_password && t.as_deref() != Some(self.expected_token.lock().unwrap().as_str()) {
+            return (
+                200,
+                json!({"subsonic-response": {"status": "failed", "version": "1.16.1",
+                       "error": {"code": 40, "message": "Wrong username or password"}}})
+                .to_string(),
+            );
+        }
+        let songs = self.songs.lock().unwrap().clone();
+        match method {
+            "ping" => ok(json!({})),
+            "getScanStatus" => ok(json!({"scanStatus": {"scanning": false, "count": 1,
+                "lastScan": self.last_scan.lock().unwrap().clone()}})),
+            "search3" => {
+                let from: Option<usize> = param(query, "songOffset").and_then(|v| v.parse().ok());
+                if let (Some(cut), Some(from)) = (*self.fail_from_song.lock().unwrap(), from)
+                    && from >= cut
+                {
+                    return (500, "boom".into());
+                }
+                let mut artists = vec![
+                    json!({"id":"ar1","name":"Daft Punk","albumCount":1,"coverArt":"ar-ar1"}),
+                    json!({"id":"ar2","name":"Beyoncé","albumCount":1}),
+                ];
+                artists.extend(self.featured.lock().unwrap().iter().cloned());
+                let albums = vec![json!({"id":"al1","name":"Discovery","artist":"Daft Punk",
+                    "artistId":"ar1","year":2001,"songCount":songs.len(),"coverArt":"al-al1","playCount":1})];
+                ok(json!({"searchResult3": {
+                    "artist": page(&artists, query, "artistCount", "artistOffset"),
+                    "album": page(&albums, query, "albumCount", "albumOffset"),
+                    "song": page(&songs, query, "songCount", "songOffset"),
+                }}))
+            }
+            "getPlaylists" => ok(json!({"playlists": {"playlist": [
+                {"id":"p1","name":"Daft Mix","songCount":42,"duration":7500,
+                 "changed":self.playlist_changed.lock().unwrap().clone(),"owner":"alice","coverArt":"pl-p1"}]}})),
+            "getStarred2" => ok(json!({"starred2": {"song": [
+                {"id":"s1","starred":"2026-09-01T00:00:00Z"}]}})),
+            "getAlbumList2" => ok(json!({"albumList2": {"album": [
+                {"id":"al1","name":"Discovery","playCount":7,"played":"2026-10-02T00:00:00Z"}]}})),
+            "getAlbum" => {
+                let id = param(query, "id").unwrap_or_default();
+                let mut in_album: Vec<Value> = songs
+                    .iter()
+                    .filter(|s| s["albumId"] == id.as_str())
+                    .cloned()
+                    .collect();
+                for s in &mut in_album {
+                    if s["id"] == "s0" {
+                        s["playCount"] = json!(5);
+                        s["played"] = json!("2026-10-02T00:00:00Z");
+                    }
+                }
+                if in_album.is_empty() {
+                    return no_such("getAlbum");
+                }
+                ok(json!({"album": {"id": id, "song": in_album}}))
+            }
+            "getSong" => {
+                let id = param(query, "id").unwrap_or_default();
+                match songs.iter().find(|s| s["id"] == id.as_str()) {
+                    Some(s) => ok(json!({"song": s})),
+                    None => no_such("getSong"),
+                }
+            }
+            "getArtist" if self.featured_one(query).is_some() => {
+                ok(json!({"artist": self.featured_one(query)}))
+            }
+            "getArtist" => ok(
+                json!({"artist": {"id": "ar1", "name": "Daft Punk", "album": [
+                {"id":"al1","name":"Discovery","year":2001},
+                {"id":"al2","name":"Homework","year":1997}]}}),
+            ),
+            "getPlaylist" => {
+                if self.playlist_gone.load(Ordering::SeqCst) {
+                    return no_such(method);
+                }
+                let id = param(query, "id").unwrap_or_default();
+                let entry = match self.playlists.lock().unwrap().get_mut(&id) {
+                    Some(seeded) => {
+                        let read = seeded.clone();
+                        if let Some(changed) = self.change_after_read.lock().unwrap().take() {
+                            *seeded = changed;
+                        }
+                        read
+                    }
+                    None => songs,
+                };
+                let count = entry.len() + self.hidden_entries.load(Ordering::SeqCst);
+                ok(
+                    json!({"playlist": {"id": "p1", "name": "Daft Mix", "songCount": count, "entry": entry}}),
+                )
+            }
+            "updatePlaylist" => {
+                let id = param(query, "playlistId").unwrap_or_default();
+                if let Some(entries) = self.playlists.lock().unwrap().get_mut(&id) {
+                    // Like Navidrome: the indexes to remove all refer to the order before
+                    // the call; the songs to add land at the end.
+                    let drop: Vec<usize> = params(query, "songIndexToRemove")
+                        .iter()
+                        .filter_map(|i| i.parse().ok())
+                        .collect();
+                    let mut i = 0;
+                    entries.retain(|_| {
+                        i += 1;
+                        !drop.contains(&(i - 1))
+                    });
+                    for sid in params(query, "songIdToAdd") {
+                        let known = songs.iter().find(|s| s["id"] == sid.as_str());
+                        entries.push(known.cloned().unwrap_or_else(|| json!({"id": sid})));
+                    }
+                }
+                ok(json!({}))
+            }
+            "scrobble" | "star" | "unstar" | "deletePlaylist" => ok(json!({})),
+            "createPlaylist" => {
+                // With a `playlistId`, Navidrome replaces the tracks of that playlist.
+                if let Some(id) = param(query, "playlistId") {
+                    let ids = params(query, "songId");
+                    if let Some(entries) = self.playlists.lock().unwrap().get_mut(&id) {
+                        let before = entries.clone();
+                        *entries = ids
+                            .iter()
+                            .map(|sid| {
+                                before
+                                    .iter()
+                                    .chain(songs.iter())
+                                    .find(|s| s["id"] == sid.as_str())
+                                    .cloned()
+                                    .unwrap_or_else(|| json!({"id": sid}))
+                            })
+                            .collect();
+                    }
+                    return ok(json!({"playlist": {"id": id, "songCount": ids.len()}}));
+                }
+                let n = params(query, "songId").len();
+                ok(
+                    json!({"playlist": {"id": "p9", "name": param(query, "name").unwrap_or_default(),
+                    "songCount": n, "duration": n * 200, "owner": "alice",
+                    "changed": "2026-10-08T10:00:00Z"}}),
+                )
+            }
+            _ => no_such(method),
+        }
+    }
+
+    /// The featured artist the request names.
+    fn featured_one(&self, query: &str) -> Option<Value> {
+        let id = param(query, "id")?;
+        let featured = self.featured.lock().unwrap();
+        featured.iter().find(|a| a["id"] == id.as_str()).cloned()
+    }
+
+    /// Réponses non JSON : flux audio (WAV de silence) et pochette (PNG).
+    /// Le jeton est vérifié comme ailleurs ; sinon, erreur Subsonic en JSON.
+    fn binary(&self, method: &str, query: &str) -> (u16, &'static str, Vec<u8>) {
+        let (status, body) = self.respond("ping", query);
+        if status != 200 || !body.contains("\"status\":\"ok\"") {
+            return (200, "application/json", body.into_bytes());
+        }
+        if method == "stream"
+            && self.refuse_transcode.load(Ordering::SeqCst)
+            && param(query, "format").is_some_and(|f| f != "raw")
+        {
+            let body = json!({"subsonic-response": {"status": "failed", "version": "1.16.1",
+                   "error": {"code": 0, "message": "transcoding failed"}}});
+            return (200, "application/json", body.to_string().into_bytes());
+        }
+        if method == "stream" {
+            let own = param(query, "id")
+                .and_then(|id| self.stream_secs_of.lock().unwrap().get(&id).copied());
+            let secs = own.unwrap_or_else(|| self.stream_secs.load(Ordering::SeqCst)) as u32;
+            let ramp =
+                param(query, "id").is_some_and(|id| self.stream_ramp.lock().unwrap().contains(&id));
+            let wav = if ramp {
+                wav_ramp(secs)
+            } else {
+                wav_silence(secs)
+            };
+            (200, "audio/wav", wav)
+        } else {
+            let ms = self.cover_delay_ms.load(Ordering::SeqCst) as u64;
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+            (200, "image/png", PNG.to_vec())
+        }
+    }
+}
+
+fn no_such(method: &str) -> (u16, String) {
+    (
+        200,
+        json!({"subsonic-response": {"status": "failed", "version": "1.16.1",
+               "error": {"code": 70, "message": format!("inconnu : {method}")}}})
+        .to_string(),
+    )
+}
+
+/// WAV mono 8 kHz 16 bits de `secs` secondes de silence.
+pub fn wav_silence(secs: u32) -> Vec<u8> {
+    let rate = 8000u32;
+    let data = rate * 2 * secs;
+    let mut w = Vec::with_capacity(44 + data as usize);
+    w.extend_from_slice(b"RIFF");
+    w.extend_from_slice(&(36 + data).to_le_bytes());
+    w.extend_from_slice(b"WAVEfmt ");
+    w.extend_from_slice(&16u32.to_le_bytes());
+    w.extend_from_slice(&1u16.to_le_bytes());
+    w.extend_from_slice(&1u16.to_le_bytes());
+    w.extend_from_slice(&rate.to_le_bytes());
+    w.extend_from_slice(&(rate * 2).to_le_bytes());
+    w.extend_from_slice(&2u16.to_le_bytes());
+    w.extend_from_slice(&16u16.to_le_bytes());
+    w.extend_from_slice(b"data");
+    w.extend_from_slice(&data.to_le_bytes());
+    w.resize(44 + data as usize, 0);
+    w
+}
+
+/// The same WAV holding a 440 Hz tone whose amplitude grows evenly from silence to full.
+pub fn wav_ramp(secs: u32) -> Vec<u8> {
+    let mut w = wav_silence(secs);
+    let n = (w.len() - 44) / 2;
+    for i in 0..n {
+        let t = i as f32 / 8000.0;
+        let amp = 30000.0 * i as f32 / n as f32;
+        let s = (amp * (t * 440.0 * std::f32::consts::TAU).sin()) as i16;
+        w[44 + 2 * i..46 + 2 * i].copy_from_slice(&s.to_le_bytes());
+    }
+    w
+}
+
+/// PNG 1x1 valide.
+pub const PNG: &[u8] = &[
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+    0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0xF8, 0xFF, 0xFF, 0x3F,
+    0x00, 0x05, 0xFE, 0x02, 0xFE, 0xA7, 0x35, 0x81, 0x84, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E,
+    0x44, 0xAE, 0x42, 0x60, 0x82,
+];

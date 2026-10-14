@@ -1,0 +1,995 @@
+//! Copie locale de la bibliothèque : SQLite + index plein texte FTS5.
+
+use crate::env::Env;
+use anyhow::{Context, Result};
+use rusqlite::{Connection, Transaction, TransactionBehavior, params};
+use serde_json::Value;
+use std::path::PathBuf;
+
+/// `$XDG_CACHE_HOME/melodie`.
+pub fn cache_dir(env: &Env) -> PathBuf {
+    env.cache_dir()
+}
+
+pub fn db_path(env: &Env) -> PathBuf {
+    cache_dir(env).join("library.db")
+}
+
+/// Index insensibles à la casse et aux accents. `id` n'est pas indexé :
+/// il ne sert qu'à retrouver la ligne de la table de base.
+pub const SCHEMA: &str = "
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE artists (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, albumCount INTEGER NOT NULL DEFAULT 0,
+  starred TEXT, userRating INTEGER NOT NULL DEFAULT 0, coverArt TEXT
+);
+CREATE TABLE albums (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, artist TEXT NOT NULL DEFAULT '', artistId TEXT,
+  year INTEGER NOT NULL DEFAULT 0, genre TEXT, songCount INTEGER NOT NULL DEFAULT 0,
+  duration INTEGER NOT NULL DEFAULT 0, playCount INTEGER NOT NULL DEFAULT 0, played TEXT,
+  starred TEXT, userRating INTEGER NOT NULL DEFAULT 0, coverArt TEXT, created TEXT
+);
+CREATE TABLE tracks (
+  id TEXT PRIMARY KEY, title TEXT NOT NULL, artist TEXT NOT NULL DEFAULT '', artistId TEXT,
+  album TEXT NOT NULL DEFAULT '', albumId TEXT, genre TEXT, genres TEXT,
+  year INTEGER NOT NULL DEFAULT 0, track INTEGER NOT NULL DEFAULT 0,
+  duration INTEGER NOT NULL DEFAULT 0, suffix TEXT, bitRate INTEGER NOT NULL DEFAULT 0,
+  samplingRate INTEGER NOT NULL DEFAULT 0, bitDepth INTEGER NOT NULL DEFAULT 0,
+  channelCount INTEGER NOT NULL DEFAULT 0, playCount INTEGER NOT NULL DEFAULT 0, played TEXT,
+  starred TEXT, userRating INTEGER NOT NULL DEFAULT 0, coverArt TEXT
+);
+CREATE TABLE skips (id TEXT NOT NULL, at INTEGER NOT NULL);
+CREATE INDEX skips_at ON skips(at);
+CREATE INDEX tracks_album ON tracks(albumId);
+CREATE INDEX tracks_artist ON tracks(artistId);
+CREATE TABLE track_artists (track TEXT NOT NULL, artist TEXT NOT NULL, pos INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX track_artists_artist ON track_artists(artist);
+CREATE INDEX track_artists_track ON track_artists(track, pos);
+CREATE TABLE playlists (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, songCount INTEGER NOT NULL DEFAULT 0,
+  duration INTEGER NOT NULL DEFAULT 0, changed TEXT, coverArt TEXT, owner TEXT
+);
+CREATE TABLE playlist_tracks (playlist TEXT NOT NULL, pos INTEGER NOT NULL, track TEXT NOT NULL);
+CREATE INDEX playlist_tracks_playlist ON playlist_tracks(playlist);
+CREATE TABLE playlist_synced (playlist TEXT PRIMARY KEY, changed TEXT);
+CREATE VIRTUAL TABLE fts_playlists USING fts5(id UNINDEXED, name, tokenize='unicode61 remove_diacritics 2');
+CREATE VIRTUAL TABLE fts_artists USING fts5(id UNINDEXED, name, tokenize='unicode61 remove_diacritics 2');
+CREATE VIRTUAL TABLE fts_albums USING fts5(id UNINDEXED, name, artist, tokenize='unicode61 remove_diacritics 2');
+CREATE VIRTUAL TABLE fts_tracks USING fts5(id UNINDEXED, title, artist, album, tokenize='unicode61 remove_diacritics 2');
+";
+
+/// Crée une base neuve avec son schéma.
+pub fn create(path: &std::path::Path) -> Result<Connection> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let _ = std::fs::remove_file(path);
+    let conn = Connection::open(path).with_context(|| format!("création de {}", path.display()))?;
+    conn.execute_batch("PRAGMA journal_mode = OFF; PRAGMA synchronous = OFF;")?;
+    conn.execute_batch(SCHEMA)?;
+    Ok(conn)
+}
+
+/// A copy as the versions before the library browsing made it: no `albums.created`, no
+/// `playlist_tracks`, no `track_artists`. For tests of the upgrade, which must start from a schema
+/// that truly lacks them.
+#[cfg(any(test, feature = "fake"))]
+pub fn create_before_browsing(path: &std::path::Path) -> Result<Connection> {
+    let conn = create(path)?;
+    conn.execute_batch("DROP TABLE playlist_tracks; DROP TABLE playlist_synced; DROP TABLE track_artists; ALTER TABLE albums DROP COLUMN created;")?;
+    Ok(conn)
+}
+
+/// Note qu'un morceau a été passé (`next` trop tôt). La table est créée si
+/// la copie date d'avant son apparition. Ne crée pas la base : sans copie
+/// locale, rien n'est noté (`false`).
+pub fn record_skip(env: &Env, track_id: &str, at: u64) -> Result<bool> {
+    let Some(conn) = open_existing(env)? else {
+        return Ok(false);
+    };
+    conn.busy_timeout(std::time::Duration::from_secs(2))?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS skips (id TEXT NOT NULL, at INTEGER NOT NULL);
+         CREATE INDEX IF NOT EXISTS skips_at ON skips(at);",
+    )?;
+    conn.execute(
+        "INSERT INTO skips(id, at) VALUES (?1, ?2)",
+        params![track_id, at as i64],
+    )?;
+    Ok(true)
+}
+
+/// Reporte les morceaux passés de l'ancienne copie dans la nouvelle (une
+/// synchronisation complète recrée le fichier).
+pub fn carry_skips(old: &std::path::Path, new: &std::path::Path) -> Result<()> {
+    if !old.is_file() {
+        return Ok(());
+    }
+    let conn = Connection::open(new)?;
+    conn.execute(
+        "ATTACH DATABASE ?1 AS old",
+        [old.to_string_lossy().as_ref()],
+    )?;
+    let has: bool = conn.query_row(
+        "SELECT count(*) > 0 FROM old.sqlite_master WHERE type = 'table' AND name = 'skips'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has {
+        conn.execute("INSERT INTO skips(id, at) SELECT id, at FROM old.skips", [])?;
+    }
+    conn.execute_batch("DETACH DATABASE old")?;
+    Ok(())
+}
+
+/// What `upgrade` has to add: `(the created column, the playlist_tracks table, the
+/// playlist_synced table, the track_artists table, its pos column)`. A copy without an `albums`
+/// table is no older copy: there is nothing to add a column to.
+fn upgrade_pending(conn: &Connection) -> Result<(bool, bool, bool, bool, bool)> {
+    let (columns, has_created): (i64, i64) = conn.query_row(
+        "SELECT count(*), coalesce(sum(name = 'created'), 0) FROM pragma_table_info('albums')",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let has_table = |name: &str| -> Result<bool> {
+        Ok(conn
+            .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1")?
+            .exists([name])?)
+    };
+    let credits = has_table("track_artists")?;
+    let has_pos: bool = conn.query_row(
+        "SELECT count(*) > 0 FROM pragma_table_info('track_artists') WHERE name = 'pos'",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok((
+        columns > 0 && has_created == 0,
+        !has_table("playlist_tracks")?,
+        !has_table("playlist_synced")?,
+        !credits,
+        credits && !has_pos,
+    ))
+}
+
+/// Brings a copy made by an older version up to the schema: what was added since is created
+/// empty, and filled by the next synchronisation (the date an album was added, by the next full
+/// one; the artists credited on each track, by the next full one, which the next sync makes, see
+/// `PARTICIPANTS`). The order of those artists needs no sync: a copy credited without it wrote
+/// the artists of each track one after the other, in the server's order, so the order they were
+/// written in is it.
+///
+/// Every process that opens the copy runs it (the daemon, the command line, the window), so it
+/// is idempotent and safe in parallel: the work is checked again under the write lock, and a
+/// process that waited for the lock finds it done.
+pub fn upgrade(conn: &Connection) -> Result<()> {
+    if upgrade_pending(conn)? == (false, false, false, false, false) {
+        return Ok(());
+    }
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let (created, playlist_tracks, playlist_synced, track_artists, credit_pos) =
+        upgrade_pending(&tx)?;
+    if created {
+        tx.execute_batch("ALTER TABLE albums ADD COLUMN created TEXT")?;
+    }
+    if playlist_tracks {
+        tx.execute_batch(
+            "CREATE TABLE playlist_tracks (playlist TEXT NOT NULL, pos INTEGER NOT NULL, track TEXT NOT NULL);
+             CREATE INDEX playlist_tracks_playlist ON playlist_tracks(playlist);",
+        )?;
+    }
+    if playlist_synced {
+        tx.execute_batch(
+            "CREATE TABLE playlist_synced (playlist TEXT PRIMARY KEY, changed TEXT);",
+        )?;
+    }
+    if track_artists {
+        tx.execute_batch(
+            "CREATE TABLE track_artists (track TEXT NOT NULL, artist TEXT NOT NULL, pos INTEGER NOT NULL DEFAULT 0);
+             CREATE INDEX track_artists_artist ON track_artists(artist);
+             CREATE INDEX track_artists_track ON track_artists(track, pos);",
+        )?;
+    }
+    if credit_pos {
+        tx.execute_batch(
+            "ALTER TABLE track_artists ADD COLUMN pos INTEGER NOT NULL DEFAULT 0;
+             UPDATE track_artists SET pos = o.pos
+               FROM (SELECT rowid AS r, row_number() OVER (PARTITION BY track ORDER BY rowid) - 1 AS pos
+                     FROM track_artists) o
+               WHERE track_artists.rowid = o.r;
+             CREATE INDEX track_artists_track ON track_artists(track, pos);",
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// Ouvre la copie existante, mise à niveau si elle date d'avant ; `None` si elle n'existe pas.
+pub fn open_existing(env: &Env) -> Result<Option<Connection>> {
+    let p = db_path(env);
+    if !p.is_file() {
+        return Ok(None);
+    }
+    let conn = Connection::open(&p).with_context(|| format!("ouverture de {}", p.display()))?;
+    conn.busy_timeout(std::time::Duration::from_secs(2))?;
+    upgrade(&conn)?;
+    Ok(Some(conn))
+}
+
+pub fn set_meta(conn: &Connection, key: &str, value: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO meta(key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
+        params![key, value],
+    )?;
+    Ok(())
+}
+
+/// The `meta` key of a first copy that is not finished: where it goes on from (`song:1000`, see
+/// `sync`). Its absence means the copy is complete.
+pub const COPYING: &str = "copying";
+
+/// Whether the copy is a first copy still being made (or cut off): what it holds is readable, but
+/// not all of the library.
+pub fn is_partial(conn: &Connection) -> bool {
+    get_meta(conn, COPYING).is_some()
+}
+
+/// The `meta` key of a copy whose tracks were all read with the artists credited on them
+/// (`track_artists`). A copy without it was made by an older version: the next sync makes it
+/// again in full.
+pub const PARTICIPANTS: &str = "participants";
+
+pub fn get_meta(conn: &Connection, key: &str) -> Option<String> {
+    conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
+        .ok()
+}
+
+fn text(v: &Value, k: &str) -> Option<String> {
+    v.get(k).and_then(Value::as_str).map(str::to_string)
+}
+
+fn num(v: &Value, k: &str) -> i64 {
+    v.get(k).and_then(Value::as_i64).unwrap_or(0)
+}
+
+/// Les identifiants Subsonic sont des chaînes, mais certains serveurs
+/// envoient des nombres.
+fn id(v: &Value) -> Option<String> {
+    match v.get("id")? {
+        Value::String(s) if !s.is_empty() => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+fn cover(v: &Value) -> Option<String> {
+    match v.get("coverArt") {
+        Some(Value::String(s)) if !s.is_empty() => Some(s.clone()),
+        Some(Value::Number(n)) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+/// Liste des genres d'un morceau (OpenSubsonic `genres`, sinon `genre`), en JSON.
+fn genres(v: &Value) -> Option<String> {
+    let list: Vec<String> = match v.get("genres").and_then(Value::as_array) {
+        Some(a) => a
+            .iter()
+            .filter_map(|g| g.get("name").and_then(Value::as_str).map(str::to_string))
+            .collect(),
+        None => text(v, "genre").into_iter().collect(),
+    };
+    (!list.is_empty()).then(|| serde_json::to_string(&list).unwrap_or_default())
+}
+
+/// Insère un artiste ; renvoie `true` s'il est nouveau.
+pub fn insert_artist(tx: &Transaction, v: &Value) -> Result<bool> {
+    let (Some(id), Some(name)) = (id(v), text(v, "name")) else {
+        return Ok(false);
+    };
+    let n = tx.execute(
+        "INSERT OR IGNORE INTO artists(id, name, albumCount, starred, userRating, coverArt)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            id,
+            name,
+            num(v, "albumCount"),
+            text(v, "starred"),
+            num(v, "userRating"),
+            cover(v)
+        ],
+    )?;
+    if n == 1 {
+        tx.execute(
+            "INSERT INTO fts_artists(id, name) VALUES (?1, ?2)",
+            params![id, name],
+        )?;
+    }
+    Ok(n == 1)
+}
+
+pub fn insert_album(tx: &Transaction, v: &Value) -> Result<bool> {
+    let Some(id) = id(v) else { return Ok(false) };
+    let name = text(v, "name")
+        .or_else(|| text(v, "title"))
+        .unwrap_or_default();
+    let artist = text(v, "artist").unwrap_or_default();
+    let n = tx.execute(
+        "INSERT OR IGNORE INTO albums(id, name, artist, artistId, year, genre, songCount, duration,
+           playCount, played, starred, userRating, coverArt, created)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+        params![
+            id,
+            name,
+            artist,
+            text(v, "artistId"),
+            num(v, "year"),
+            text(v, "genre"),
+            num(v, "songCount"),
+            num(v, "duration"),
+            num(v, "playCount"),
+            text(v, "played"),
+            text(v, "starred"),
+            num(v, "userRating"),
+            cover(v),
+            text(v, "created")
+        ],
+    )?;
+    if n == 1 {
+        tx.execute(
+            "INSERT INTO fts_albums(id, name, artist) VALUES (?1, ?2, ?3)",
+            params![id, name, artist],
+        )?;
+    }
+    Ok(n == 1)
+}
+
+pub fn insert_track(tx: &Transaction, v: &Value) -> Result<bool> {
+    let Some(id) = id(v) else { return Ok(false) };
+    let title = text(v, "title").unwrap_or_default();
+    let artist = text(v, "artist").unwrap_or_default();
+    let album = text(v, "album").unwrap_or_default();
+    let n = tx.execute(
+        "INSERT OR IGNORE INTO tracks(id, title, artist, artistId, album, albumId, genre, genres,
+           year, track, duration, suffix, bitRate, samplingRate, bitDepth, channelCount,
+           playCount, played, starred, userRating, coverArt)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
+           ?19, ?20, ?21)",
+        params![
+            id,
+            title,
+            artist,
+            text(v, "artistId"),
+            album,
+            text(v, "albumId"),
+            text(v, "genre"),
+            genres(v),
+            num(v, "year"),
+            num(v, "track"),
+            num(v, "duration"),
+            text(v, "suffix"),
+            num(v, "bitRate"),
+            num(v, "samplingRate"),
+            num(v, "bitDepth"),
+            num(v, "channelCount"),
+            num(v, "playCount"),
+            text(v, "played"),
+            text(v, "starred"),
+            num(v, "userRating"),
+            cover(v)
+        ],
+    )?;
+    if n == 1 {
+        tx.execute(
+            "INSERT INTO fts_tracks(id, title, artist, album) VALUES (?1, ?2, ?3, ?4)",
+            params![id, title, artist, album],
+        )?;
+        // OpenSubsonic: every artist credited, the featured ones too, where `artistId` keeps one
+        let credited = v.get("artists").and_then(Value::as_array);
+        let artists = credited.into_iter().flatten().filter_map(self::id);
+        for (pos, a) in artists.enumerate() {
+            tx.execute(
+                "INSERT INTO track_artists(track, artist, pos) VALUES (?1, ?2, ?3)",
+                params![id, a, pos as i64],
+            )?;
+        }
+    }
+    Ok(n == 1)
+}
+
+/// Remplace toutes les playlists.
+pub fn replace_playlists(tx: &Transaction, list: &[Value]) -> Result<usize> {
+    tx.execute("DELETE FROM playlists", [])?;
+    tx.execute("DELETE FROM fts_playlists", [])?;
+    let mut n = 0;
+    for v in list {
+        let (Some(id), Some(name)) = (id(v), text(v, "name")) else {
+            continue;
+        };
+        let k = tx.execute(
+            "INSERT OR IGNORE INTO playlists(id, name, songCount, duration, changed, coverArt, owner)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![id, name, num(v, "songCount"), num(v, "duration"), text(v, "changed"),
+                    cover(v), text(v, "owner")],
+        )?;
+        if k == 1 {
+            tx.execute(
+                "INSERT INTO fts_playlists(id, name) VALUES (?1, ?2)",
+                params![id, name],
+            )?;
+            n += 1;
+        }
+    }
+    Ok(n)
+}
+
+/// Remet à jour les favoris : tout est effacé puis reposé d'après `getStarred2`.
+pub fn apply_starred(tx: &Transaction, starred: &Value) -> Result<()> {
+    for table in ["artists", "albums", "tracks"] {
+        tx.execute(
+            &format!("UPDATE {table} SET starred = NULL WHERE starred IS NOT NULL"),
+            [],
+        )?;
+    }
+    for (key, table) in [
+        ("artist", "artists"),
+        ("album", "albums"),
+        ("song", "tracks"),
+    ] {
+        let Some(list) = starred.get(key).and_then(Value::as_array) else {
+            continue;
+        };
+        let mut st = tx.prepare(&format!("UPDATE {table} SET starred = ?2 WHERE id = ?1"))?;
+        for v in list {
+            if let Some(i) = id(v) {
+                st.execute(params![i, text(v, "starred").unwrap_or_else(|| "1".into())])?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Met à jour les compteurs d'écoute d'un album d'après `getAlbumList2`.
+/// Renvoie `true` si l'album est connu et que ses compteurs ont changé.
+pub fn update_album_counters(tx: &Transaction, v: &Value) -> Result<bool> {
+    let Some(i) = id(v) else { return Ok(false) };
+    let old: Option<(i64, Option<String>)> = tx
+        .query_row(
+            "SELECT playCount, played FROM albums WHERE id = ?1",
+            [&i],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok();
+    let Some((count, played)) = old else {
+        return Ok(false);
+    };
+    let (ncount, nplayed) = (num(v, "playCount"), text(v, "played"));
+    if count == ncount && played == nplayed {
+        return Ok(false);
+    }
+    tx.execute(
+        "UPDATE albums SET playCount = ?2, played = ?3, userRating = ?4, starred = ?5 WHERE id = ?1",
+        params![i, ncount, nplayed, num(v, "userRating"), text(v, "starred")],
+    )?;
+    Ok(true)
+}
+
+/// Met à jour les compteurs des morceaux d'un album d'après `getAlbum`.
+pub fn update_track_counters(tx: &Transaction, songs: &[Value]) -> Result<()> {
+    let mut st = tx.prepare(
+        "UPDATE tracks SET playCount = ?2, played = ?3, userRating = ?4, starred = ?5 WHERE id = ?1",
+    )?;
+    for v in songs {
+        if let Some(i) = id(v) {
+            st.execute(params![
+                i,
+                num(v, "playCount"),
+                text(v, "played"),
+                num(v, "userRating"),
+                text(v, "starred")
+            ])?;
+        }
+    }
+    Ok(())
+}
+
+/// Table (et colonne de nom) d'un type de favori.
+fn star_table(kind: StarKind) -> (&'static str, &'static str) {
+    match kind {
+        StarKind::Track => ("tracks", "title"),
+        StarKind::Album => ("albums", "name"),
+        StarKind::Artist => ("artists", "name"),
+    }
+}
+
+/// Ce qu'on peut aimer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StarKind {
+    Track,
+    Album,
+    Artist,
+}
+
+impl StarKind {
+    /// Paramètre de `star.view` / `unstar.view`.
+    pub fn api_param(self) -> &'static str {
+        match self {
+            StarKind::Track => "id",
+            StarKind::Album => "albumId",
+            StarKind::Artist => "artistId",
+        }
+    }
+}
+
+/// Pose (`Some(date)`) ou retire (`None`) le favori dans la copie. `false` si l'élément est inconnu.
+pub fn set_starred(conn: &Connection, kind: StarKind, id: &str, at: Option<&str>) -> Result<bool> {
+    let (table, _) = star_table(kind);
+    let n = conn.execute(
+        &format!("UPDATE {table} SET starred = ?2 WHERE id = ?1"),
+        params![id, at],
+    )?;
+    Ok(n > 0)
+}
+
+/// État de favori local d'un élément ; `None` s'il est inconnu.
+pub fn is_starred(conn: &Connection, kind: StarKind, id: &str) -> Option<bool> {
+    let (table, _) = star_table(kind);
+    conn.query_row(
+        &format!("SELECT starred IS NOT NULL FROM {table} WHERE id = ?1"),
+        [id],
+        |r| r.get(0),
+    )
+    .ok()
+}
+
+/// Nom (titre) local d'un élément.
+pub fn name_of(conn: &Connection, kind: StarKind, id: &str) -> Option<String> {
+    let (table, col) = star_table(kind);
+    conn.query_row(
+        &format!("SELECT {col} FROM {table} WHERE id = ?1"),
+        [id],
+        |r| r.get(0),
+    )
+    .ok()
+}
+
+/// Favori d'un morceau d'après la copie, sans la créer (`None` : pas de copie ou morceau inconnu).
+pub fn track_starred(env: &Env, id: &str) -> Result<Option<bool>> {
+    let Some(conn) = open_existing(env)? else {
+        return Ok(None);
+    };
+    Ok(is_starred(&conn, StarKind::Track, id))
+}
+
+/// Durée locale d'un morceau, en secondes.
+pub fn track_duration(conn: &Connection, id: &str) -> Option<i64> {
+    conn.query_row("SELECT duration FROM tracks WHERE id = ?1", [id], |r| {
+        r.get(0)
+    })
+    .ok()
+}
+
+/// Ajoute `d_count` morceaux et `d_secs` secondes à une playlist de la copie.
+pub fn playlist_adjust(
+    conn: &Connection,
+    id: &str,
+    d_count: i64,
+    d_secs: i64,
+    at: &str,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE playlists SET songCount = MAX(0, songCount + ?2), duration = MAX(0, duration + ?3),
+           changed = ?4 WHERE id = ?1",
+        params![id, d_count, d_secs, at],
+    )?;
+    Ok(())
+}
+
+/// Insère une playlist créée sur le serveur.
+pub fn playlist_insert(conn: &Connection, v: &Value) -> Result<bool> {
+    let (Some(pid), Some(name)) = (id(v), text(v, "name")) else {
+        return Ok(false);
+    };
+    atomically(conn, || {
+        conn.execute("DELETE FROM playlists WHERE id = ?1", [&pid])?;
+        conn.execute("DELETE FROM fts_playlists WHERE id = ?1", [&pid])?;
+        conn.execute(
+            "INSERT INTO playlists(id, name, songCount, duration, changed, coverArt, owner)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                pid,
+                name,
+                num(v, "songCount"),
+                num(v, "duration"),
+                text(v, "changed"),
+                cover(v),
+                text(v, "owner")
+            ],
+        )?;
+        conn.execute(
+            "INSERT INTO fts_playlists(id, name) VALUES (?1, ?2)",
+            params![pid, name],
+        )?;
+        Ok(true)
+    })
+}
+
+pub fn playlist_rename(conn: &Connection, id: &str, name: &str, at: &str) -> Result<()> {
+    atomically(conn, || {
+        conn.execute(
+            "UPDATE playlists SET name = ?2, changed = ?3 WHERE id = ?1",
+            params![id, name, at],
+        )?;
+        conn.execute("DELETE FROM fts_playlists WHERE id = ?1", [id])?;
+        conn.execute(
+            "INSERT INTO fts_playlists(id, name) VALUES (?1, ?2)",
+            params![id, name],
+        )?;
+        Ok(())
+    })
+}
+
+/// The ids of the tracks of a playlist (`entry` objects of `getPlaylist`), in order.
+pub fn entry_ids(entries: &[Value]) -> Vec<String> {
+    entries.iter().filter_map(id).collect()
+}
+
+/// Runs `f` as one unit: its writes all land or none does, so a reader never sees half of them.
+/// A savepoint, so it also works inside a transaction.
+pub fn atomically<T>(conn: &Connection, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    conn.execute_batch("SAVEPOINT atomically")?;
+    match f() {
+        Ok(v) => {
+            conn.execute_batch("RELEASE atomically")?;
+            Ok(v)
+        }
+        Err(e) => {
+            // Rolled back, then released: a savepoint left open would hold the write lock.
+            let _ = conn.execute_batch("ROLLBACK TO atomically; RELEASE atomically");
+            Err(e)
+        }
+    }
+}
+
+/// The tracks of a playlist, in its order.
+pub fn replace_playlist_tracks(conn: &Connection, pid: &str, tracks: &[String]) -> Result<()> {
+    atomically(conn, || {
+        conn.execute("DELETE FROM playlist_tracks WHERE playlist = ?1", [pid])?;
+        let mut ins =
+            conn.prepare("INSERT INTO playlist_tracks(playlist, pos, track) VALUES (?1, ?2, ?3)")?;
+        for (pos, tid) in tracks.iter().enumerate() {
+            ins.execute(params![pid, pos as i64, tid])?;
+        }
+        Ok(())
+    })
+}
+
+/// Notes that the copy holds the tracks of a playlist as the server had them at `changed`: an
+/// empty playlist has no row in `playlist_tracks`, and would be read again at every sync.
+pub fn mark_playlist_synced(conn: &Connection, pid: &str, changed: Option<&str>) -> Result<()> {
+    conn.execute(
+        "INSERT INTO playlist_synced(playlist, changed) VALUES (?1, ?2)
+         ON CONFLICT(playlist) DO UPDATE SET changed = ?2",
+        params![pid, changed],
+    )?;
+    Ok(())
+}
+
+/// Whether the copy holds the tracks of the playlist (see `mark_playlist_synced`).
+pub fn playlist_is_synced(conn: &Connection, pid: &str) -> Result<bool> {
+    Ok(conn
+        .prepare("SELECT 1 FROM playlist_synced WHERE playlist = ?1")?
+        .exists([pid])?)
+}
+
+/// The track ids of a playlist the copy holds, in order (empty when it holds none).
+pub fn playlist_track_ids(conn: &Connection, pid: &str) -> Result<Vec<String>> {
+    let mut st =
+        conn.prepare("SELECT track FROM playlist_tracks WHERE playlist = ?1 ORDER BY pos")?;
+    let rows = st.query_map([pid], |r| r.get(0))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+pub fn playlist_delete(conn: &Connection, id: &str) -> Result<()> {
+    atomically(conn, || {
+        conn.execute("DELETE FROM playlist_tracks WHERE playlist = ?1", [id])?;
+        conn.execute("DELETE FROM playlist_synced WHERE playlist = ?1", [id])?;
+        conn.execute("DELETE FROM playlists WHERE id = ?1", [id])?;
+        conn.execute("DELETE FROM fts_playlists WHERE id = ?1", [id])?;
+        Ok(())
+    })
+}
+
+/// Effectifs de la copie.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Counts {
+    pub tracks: i64,
+    pub albums: i64,
+    pub artists: i64,
+    pub playlists: i64,
+}
+
+pub fn counts(conn: &Connection) -> Result<Counts> {
+    let n = |t: &str| -> Result<i64> {
+        Ok(conn.query_row(&format!("SELECT COUNT(*) FROM {t}"), [], |r| r.get(0))?)
+    };
+    Ok(Counts {
+        tracks: n("tracks")?,
+        albums: n("albums")?,
+        artists: n("artists")?,
+        playlists: n("playlists")?,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn morceaux_passes_notes_et_reportes() {
+        let d = tempfile::tempdir().unwrap();
+        let env = Env::with_home(d.path());
+        // Sans copie locale, rien n'est noté et rien n'est créé.
+        assert!(!record_skip(&env, "t1", 10).unwrap());
+        assert!(!db_path(&env).exists());
+
+        create(&db_path(&env)).unwrap();
+        assert!(record_skip(&env, "t1", 10).unwrap());
+        assert!(record_skip(&env, "t2", 20).unwrap());
+
+        // Une copie plus ancienne, sans la table, est complétée.
+        let old = d.path().join("ancienne.db");
+        Connection::open(&old)
+            .unwrap()
+            .execute_batch("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);")
+            .unwrap();
+        let env2 = Env::with_home(d.path().join("autre"));
+        std::fs::create_dir_all(cache_dir(&env2)).unwrap();
+        std::fs::copy(&old, db_path(&env2)).unwrap();
+        assert!(record_skip(&env2, "t9", 5).unwrap());
+
+        // Une synchronisation complète recrée le fichier : les passés suivent.
+        let fresh = d.path().join("neuve.db");
+        create(&fresh).unwrap();
+        carry_skips(&db_path(&env), &fresh).unwrap();
+        let conn = Connection::open(&fresh).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT count(*) FROM skips", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 2);
+        // Ancienne copie sans table : rien à reporter, sans erreur.
+        carry_skips(&old, &fresh).unwrap();
+        carry_skips(&d.path().join("absente.db"), &fresh).unwrap();
+    }
+
+    #[test]
+    fn an_album_keeps_the_date_it_was_added() {
+        let d = tempfile::tempdir().unwrap();
+        let mut conn = create(&d.path().join("l.db")).unwrap();
+        let tx = conn.transaction().unwrap();
+        insert_album(
+            &tx,
+            &serde_json::json!({"id":"al1","name":"A","created":"2026-09-01T10:00:00Z"}),
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        let created: Option<String> = conn
+            .query_row("SELECT created FROM albums WHERE id = 'al1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(created.as_deref(), Some("2026-09-01T10:00:00Z"));
+    }
+
+    fn credited(conn: &Connection) -> Vec<(String, String)> {
+        conn.prepare("SELECT track, artist FROM track_artists ORDER BY track, artist")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_track_keeps_every_artist_credited_on_it() {
+        let d = tempfile::tempdir().unwrap();
+        let mut conn = create(&d.path().join("l.db")).unwrap();
+        let tx = conn.transaction().unwrap();
+        let featuring = serde_json::json!({"id":"t1","title":"A","artist":"Ada Marlow feat. Lior Castell",
+            "artistId":"ar1","artists":[{"id":"ar1","name":"Ada Marlow"},{"id":"ar9","name":"Lior Castell"}]});
+        insert_track(&tx, &featuring).unwrap();
+        // the same track again (a page read twice): credited once
+        insert_track(&tx, &featuring).unwrap();
+        // a plain Subsonic server sends no `artists`
+        insert_track(
+            &tx,
+            &serde_json::json!({"id":"t2","title":"B","artistId":"ar1"}),
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        let want = [("t1", "ar1"), ("t1", "ar9")].map(|(t, a)| (t.to_string(), a.to_string()));
+        assert_eq!(credited(&conn), want);
+    }
+
+    fn credits_of(conn: &Connection, track: &str) -> Vec<String> {
+        conn.prepare("SELECT artist FROM track_artists WHERE track = ?1 ORDER BY pos")
+            .unwrap()
+            .query_map([track], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_track_keeps_its_artists_in_the_order_the_server_gives() {
+        let d = tempfile::tempdir().unwrap();
+        let mut conn = create(&d.path().join("l.db")).unwrap();
+        let tx = conn.transaction().unwrap();
+        insert_track(
+            &tx,
+            &serde_json::json!({"id":"t1","title":"A","artistId":"ar5","artists":[
+                {"id":"ar5","name":"Nova Reyes"},{"id":"ar1","name":"Lior Castell"},
+                {"id":"ar3","name":"Ada Marlow"}]}),
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        assert_eq!(credits_of(&conn, "t1"), ["ar5", "ar1", "ar3"]);
+    }
+
+    #[test]
+    fn a_copy_credited_without_the_order_gets_it_from_the_order_it_was_written_in() {
+        let d = tempfile::tempdir().unwrap();
+        let env = Env::with_home(d.path());
+        let old = create(&db_path(&env)).unwrap();
+        // as #83 made it: the artists of a track written one after the other, in the server's order
+        old.execute_batch(
+            "DROP TABLE track_artists;
+             CREATE TABLE track_artists (track TEXT NOT NULL, artist TEXT NOT NULL);
+             CREATE INDEX track_artists_artist ON track_artists(artist);
+             INSERT INTO meta(key, value) VALUES ('participants', '1');
+             INSERT INTO track_artists(track, artist) VALUES
+               ('t2', 'ar9'), ('t1', 'ar5'), ('t1', 'ar1'), ('t1', 'ar3'), ('t3', 'ar2'), ('t3', 'ar0');",
+        )
+        .unwrap();
+        drop(old);
+        let conn = open_existing(&env).unwrap().unwrap();
+        assert_eq!(credits_of(&conn, "t1"), ["ar5", "ar1", "ar3"]);
+        assert_eq!(credits_of(&conn, "t3"), ["ar2", "ar0"]);
+        assert_eq!(credits_of(&conn, "t2"), ["ar9"]);
+        upgrade(&conn).unwrap(); // twice is harmless
+        assert_eq!(credits_of(&conn, "t1"), ["ar5", "ar1", "ar3"]);
+        // nothing to read again: the next sync stays a light one
+        assert_eq!(get_meta(&conn, PARTICIPANTS).as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn an_older_copy_gets_the_table_of_the_artists_credited_on_each_track() {
+        let d = tempfile::tempdir().unwrap();
+        let env = Env::with_home(d.path());
+        let old = create(&db_path(&env)).unwrap();
+        old.execute_batch("DROP TABLE track_artists").unwrap();
+        drop(old);
+        let conn = open_existing(&env).unwrap().unwrap();
+        assert!(credited(&conn).is_empty());
+        upgrade(&conn).unwrap(); // twice is harmless
+    }
+
+    #[test]
+    fn an_older_copy_gets_the_added_date_and_the_playlist_tracks() {
+        let d = tempfile::tempdir().unwrap();
+        let conn = Connection::open(d.path().join("old.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE albums (id TEXT PRIMARY KEY, name TEXT NOT NULL);
+             INSERT INTO albums(id, name) VALUES ('al1', 'A');",
+        )
+        .unwrap();
+        upgrade(&conn).unwrap();
+        upgrade(&conn).unwrap(); // twice is harmless
+        let created: Option<String> = conn
+            .query_row("SELECT created FROM albums", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(created, None);
+        let n: i64 = conn
+            .query_row("SELECT count(*) FROM playlist_tracks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn an_older_copy_is_upgraded_when_opened() {
+        let d = tempfile::tempdir().unwrap();
+        let env = Env::with_home(d.path());
+        let old = create_before_browsing(&db_path(&env)).unwrap();
+        old.execute_batch("INSERT INTO albums(id, name) VALUES ('al1', 'A');")
+            .unwrap();
+        drop(old);
+
+        let conn = open_existing(&env).unwrap().unwrap();
+        let created: Option<String> = conn
+            .query_row("SELECT created FROM albums", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(created, None);
+        replace_playlist_tracks(&conn, "p1", &["t1".into()]).unwrap();
+        assert_eq!(playlist_track_ids(&conn, "p1").unwrap(), ["t1"]);
+        drop(conn);
+        // A copy already up to date opens as before, and keeps what it holds.
+        let conn = open_existing(&env).unwrap().unwrap();
+        assert_eq!(playlist_track_ids(&conn, "p1").unwrap(), ["t1"]);
+    }
+
+    #[test]
+    fn an_older_copy_opened_by_several_processes_at_once_is_upgraded_once() {
+        let d = tempfile::tempdir().unwrap();
+        let env = Env::with_home(d.path());
+        let old = create_before_browsing(&db_path(&env)).unwrap();
+        let has = |conn: &Connection| -> bool {
+            conn.query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name = 'track_artists'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+                > 0
+        };
+        assert!(!has(&old), "the copy to upgrade must lack the table");
+        drop(old);
+        let start = std::sync::Barrier::new(4);
+        std::thread::scope(|s| {
+            let runs: Vec<_> = (0..4)
+                .map(|_| {
+                    s.spawn(|| {
+                        start.wait();
+                        open_existing(&env).map(|c| c.is_some())
+                    })
+                })
+                .collect();
+            for r in runs {
+                assert!(r.join().unwrap().unwrap(), "a lost race must not fail");
+            }
+        });
+        assert!(has(&open_existing(&env).unwrap().unwrap()));
+    }
+
+    #[test]
+    fn a_failed_replacement_leaves_the_playlist_as_it_was() {
+        let d = tempfile::tempdir().unwrap();
+        // Not `create`: it switches the journal off to build a copy fast, and nothing rolls back.
+        let conn = Connection::open(d.path().join("l.db")).unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        replace_playlist_tracks(&conn, "p1", &["t1".into(), "t2".into()]).unwrap();
+        // The third track cannot be written: nobody may see the list half replaced.
+        conn.execute_batch(
+            "CREATE TRIGGER refuse BEFORE INSERT ON playlist_tracks WHEN NEW.track = 'boom'
+             BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+        )
+        .unwrap();
+        let tracks = ["t3".into(), "boom".into(), "t4".into()];
+        assert!(replace_playlist_tracks(&conn, "p1", &tracks).is_err());
+        assert_eq!(playlist_track_ids(&conn, "p1").unwrap(), ["t1", "t2"]);
+    }
+
+    #[test]
+    fn the_tracks_of_a_playlist_are_replaced_in_order() {
+        let d = tempfile::tempdir().unwrap();
+        let conn = create(&d.path().join("l.db")).unwrap();
+        let e = |id: &str| serde_json::json!({"id": id});
+        let ids = |v: &[Value]| entry_ids(v);
+        replace_playlist_tracks(&conn, "p1", &ids(&[e("t2"), e("t1"), e("t2")])).unwrap();
+        replace_playlist_tracks(&conn, "p2", &ids(&[e("t9")])).unwrap();
+        replace_playlist_tracks(
+            &conn,
+            "p1",
+            &ids(&[e("t3"), e("t1"), serde_json::json!({})]),
+        )
+        .unwrap();
+        let rows: Vec<(String, i64, String)> = conn
+            .prepare("SELECT playlist, pos, track FROM playlist_tracks ORDER BY playlist, pos")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        let want = [("p1", 0, "t3"), ("p1", 1, "t1"), ("p2", 0, "t9")]
+            .map(|(p, i, t)| (p.to_string(), i, t.to_string()));
+        assert_eq!(rows, want);
+    }
+}

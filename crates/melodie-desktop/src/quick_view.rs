@@ -1,0 +1,1173 @@
+//! The search palette: Ctrl+K opens it over the current place, the field focused; the results
+//! come grouped as the user types, the arrows move through them and Enter runs one. Before
+//! anything is typed it lists what was opened or played lately. The search is the search
+//! page's (`find::answer`), read away from the window's thread.
+
+use crate::albums::cover_box;
+use crate::app::{Shared, Started};
+use crate::catalog::Catalog;
+use crate::equaliser::{Equaliser, badge};
+use crate::motion;
+use crate::player::palette;
+use crate::search;
+use crate::widgets::search_field;
+use gpui_kit::assets::IconName;
+use gpui_kit::base::{h_flex, v_flex};
+use gpui_kit::component::Icon;
+use gpui_kit::component::input::{InputEvent, InputState};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
+use melodie_core::db;
+use melodie_core::env::Env;
+use melodie_core::search::{self as core, Genre};
+use melodie_desktop::covers::{Covers, Use};
+use melodie_desktop::find::{self, Latest};
+use melodie_desktop::keys::{self, PaletteClick};
+use melodie_desktop::launch::Job;
+use melodie_desktop::playing::{Mark, Playing};
+use melodie_desktop::quick::{self, Do, Group, How, Item, Recent, Section, Seen};
+use melodie_desktop::theme::{Palette, Settings};
+use std::sync::Arc;
+use std::time::Instant;
+
+const WIDTH: f32 = 640.;
+const ROW: f32 = 48.;
+/// The results scroll past this height.
+const LIST: f32 = 420.;
+
+/// What the palette shows under its field.
+#[derive(Clone)]
+enum Shown {
+    Rows(Arc<[Group]>),
+    /// Nothing found for this text.
+    Nothing(String),
+    NoCopy,
+    Failed,
+}
+
+pub struct QuickSearch {
+    shared: Entity<Shared>,
+    catalog: Entity<Catalog>,
+    env: Env,
+    pub input: Entity<InputState>,
+    field: Entity<Field>,
+    pub open: bool,
+    text: String,
+    /// The last text searched that was not empty: Escape empties the field but not this, so the
+    /// next opening still finds it.
+    last: String,
+    latest: Latest,
+    shown: Shown,
+    /// The row chosen, counted across the groups.
+    chosen: usize,
+    /// The genres of the copy, read with the recent list at each opening (a new copy may have
+    /// come); none until that answer is in.
+    genres: Option<Arc<[Genre]>>,
+    /// Numbers the openings: what an earlier one is still reading is not wanted.
+    openings: Latest,
+    recent: Recent,
+    /// A write of the recents is waiting for its moment.
+    waiting: bool,
+    scroll: ScrollHandle,
+    /// What had the focus before it opened: it gets it back.
+    before: Option<FocusHandle>,
+    _subs: Vec<Subscription>,
+}
+
+/// How long after a change the recents are written; the changes in between go in the same write.
+const SAVE_AFTER: std::time::Duration = std::time::Duration::from_secs(2);
+
+impl QuickSearch {
+    pub fn new(
+        shared: Entity<Shared>,
+        catalog: Entity<Catalog>,
+        env: Env,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Search tracks, albums, artists, playlists, genres")
+        });
+        let mut step = None;
+        let subs = vec![
+            cx.subscribe(&input, |this, input, ev: &InputEvent, cx| {
+                if matches!(ev, InputEvent::Change) {
+                    this.text = input.read(cx).value().to_string();
+                    if !this.text.trim().is_empty() {
+                        this.last = this.text.clone();
+                    }
+                    this.ask(None, cx)
+                }
+            }),
+            // every page opened is remembered, wherever it was opened from
+            cx.observe(&catalog, move |this, catalog, cx| {
+                let c = catalog.read(cx);
+                if step == Some(c.nav.step) {
+                    return;
+                }
+                step = Some(c.nav.step);
+                if let Some(seen) = Seen::of_place(c.here()) {
+                    this.note(seen, cx);
+                }
+            }),
+            // and what the user starts playing: not what the daemon goes on to play by itself
+            cx.subscribe(&shared, |this, _, Started(seen): &Started, cx| {
+                this.note(seen.clone(), cx)
+            }),
+            // the last changes are not lost to the delay
+            cx.on_app_quit(|this, _| {
+                this.flush();
+                async {}
+            }),
+        ];
+        let field = cx.new(|_| Field {
+            input: input.clone(),
+            shared: shared.clone(),
+        });
+        let saved = Recent::from_saved(Settings::load(&env).recent);
+        let mut this = Self {
+            shared,
+            catalog,
+            env,
+            input,
+            field,
+            open: false,
+            text: String::new(),
+            last: String::new(),
+            latest: Latest::default(),
+            shown: Shown::Rows(Arc::from([])),
+            chosen: 0,
+            genres: None,
+            openings: Latest::default(),
+            recent: saved,
+            waiting: false,
+            scroll: ScrollHandle::new(),
+            before: None,
+            _subs: subs,
+        };
+        this.drop_what_left(cx);
+        this
+    }
+
+    /// Remembers it; the list is kept for the next launch a moment later, when it changed.
+    fn note(&mut self, seen: Seen, cx: &mut Context<Self>) {
+        if self.recent.note(seen) {
+            self.keep(cx);
+        }
+    }
+
+    /// Has the list written `SAVE_AFTER` from now, unless a write is already waiting: a run of
+    /// page changes is one write. It happens on the window's thread, like the theme's and the
+    /// queue's, so that none of them races another.
+    fn keep(&mut self, cx: &mut Context<Self>) {
+        if self.waiting {
+            return;
+        }
+        self.waiting = true;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SAVE_AFTER).await;
+            let _ = this.update(cx, |this, _| this.flush());
+        })
+        .detach();
+    }
+
+    /// Writes the list now if a write is waiting (also when the window closes).
+    fn flush(&mut self) {
+        if std::mem::take(&mut self.waiting) {
+            self.write();
+        }
+    }
+
+    /// Writes the list with the window's other state. Silent when it fails: the list is a
+    /// convenience, and the window would have nothing to do about it.
+    fn write(&self) {
+        let list = self.recent.list().to_vec();
+        let _ = Settings::update(&self.env, |s| s.recent = list);
+    }
+
+    /// What the last launch left may have left the local copy since: read away from the window,
+    /// then dropped from the list (and from the file). Only what is named is dropped, so what
+    /// was noted meanwhile stays.
+    fn drop_what_left(&mut self, cx: &mut Context<Self>) {
+        let saved = self.recent.list().to_vec();
+        if saved.is_empty() {
+            return;
+        }
+        let env = self.env.clone();
+        let task = cx.background_spawn(async move {
+            let kept = quick::existing(&env, &saved);
+            saved
+                .into_iter()
+                .filter(|s| !kept.contains(s))
+                .collect::<Vec<_>>()
+        });
+        cx.spawn(async move |this, cx| {
+            let gone = task.await;
+            let _ = this.update(cx, |this, _| {
+                if this.recent.forget(&gone) {
+                    this.write()
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub fn has_focus(&self, window: &Window, cx: &App) -> bool {
+        self.input.read(cx).focus_handle(cx).is_focused(window)
+    }
+
+    pub fn toggle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.open {
+            self.close(window, cx)
+        } else {
+            self.show(window, cx)
+        }
+    }
+
+    /// Opens it on the last text searched, selected so that typing replaces it and Enter runs the
+    /// same search again; on what was seen lately when there is none. What the last opening left
+    /// is gone: Enter has nothing to run until this opening's own answer is in.
+    fn show(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open = true;
+        self.before = window.focused(cx);
+        self.genres = None;
+        self.shown = Shown::Rows(Arc::from([]));
+        self.chosen = 0;
+        self.text = self.last.clone();
+        let text = self.text.clone();
+        // no change event for this one
+        self.input.update(cx, |i, cx| {
+            i.set_value(text, window, cx);
+            i.focus(window, cx);
+            i.select_all(window, cx)
+        });
+        let opening = self.openings.ask();
+        self.ask(Some(opening), cx);
+        cx.notify();
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.text.is_empty()
+    }
+
+    /// Empties the field, as Escape does on the search page: the palette stays open on what was
+    /// seen lately. The last text searched is kept for the next opening.
+    pub fn clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.text.clear();
+        // no change event for this one
+        self.input.update(cx, |i, cx| i.set_value("", window, cx));
+        self.ask(None, cx);
+        cx.notify();
+    }
+
+    /// Closes it; the focus goes back where it was.
+    pub fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open = false;
+        // an answer still on its way is not wanted any more
+        self.latest.ask();
+        if let Some(before) = self.before.take() {
+            window.focus(&before, cx);
+        }
+        cx.notify();
+    }
+
+    /// Whether what is shown answers the text of the field, in a palette that is open.
+    fn ready(&self) -> bool {
+        self.open && self.latest.is_ready()
+    }
+
+    /// Reads the local copy for the text of the field, or what was seen lately when it is
+    /// empty, away from the window. An opening (`Some`: its number) reads the genres too, once.
+    fn ask(&mut self, opening: Option<u64>, cx: &mut Context<Self>) {
+        let text = self.text.clone();
+        let n = self.latest.ask();
+        let env = self.env.clone();
+        let seen = self.recent.list().to_vec();
+        let known = self.genres.clone().unwrap_or_else(|| Arc::from([]));
+        let started = Instant::now();
+        let task = cx.background_spawn(async move {
+            let fresh = opening.map(|_| load_genres(&env));
+            // an opening has cleared the genres: the text it opens on matches the ones it reads
+            let genres = fresh.as_deref().unwrap_or(&known);
+            let shown = read(&env, &text, &seen, genres);
+            (fresh, shown)
+        });
+        cx.spawn(async move |this, cx| {
+            let (genres, shown) = task.await;
+            let _ = this.update(cx, |this, cx| {
+                if let Some(opening) = opening {
+                    // an earlier opening's genres never replace this one's, whatever was typed
+                    // since
+                    if !this.openings.is_latest(opening) {
+                        return;
+                    }
+                    this.genres = genres;
+                    if !this.latest.is_latest(n) {
+                        // typed before the genres were in: ask again with them
+                        if this.open {
+                            this.ask(None, cx);
+                        }
+                        return;
+                    }
+                }
+                if !this.latest.answered(n) {
+                    return;
+                }
+                if let Shown::Rows(groups) = &shown {
+                    let ids = groups
+                        .iter()
+                        .flat_map(|g| &g.items)
+                        .filter_map(|i| match i {
+                            Item::Found(h) => h.cover.clone(),
+                            Item::Genre(_) => None,
+                        });
+                    let ids: Vec<String> = ids.collect();
+                    this.catalog
+                        .update(cx, |c, cx| c.want_covers(ids, Use::SMALL, true, cx));
+                }
+                this.shown = shown;
+                this.chosen = 0;
+                this.scroll.scroll_to_item(0);
+                if crate::timing::on() {
+                    crate::timing::note("palette", started.elapsed());
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn rows(&self) -> &[Group] {
+        match &self.shown {
+            Shown::Rows(groups) => groups,
+            _ => &[],
+        }
+    }
+
+    /// Moves the choice one row up or down.
+    pub fn step(&mut self, down: bool, cx: &mut Context<Self>) {
+        let len = quick::count(self.rows());
+        self.chosen = quick::step(self.chosen, len, down);
+        self.scroll
+            .scroll_to_item(child_of(self.rows(), self.chosen));
+        cx.notify();
+    }
+
+    /// Runs what `how` does to the row chosen, after closing. Nothing while it fades out, nor
+    /// while the rows shown are not yet the answer to the text.
+    pub fn run(&mut self, how: How, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.ready() {
+            return;
+        }
+        let Some(item) = quick::nth(self.rows(), self.chosen).cloned() else {
+            return;
+        };
+        let Some(what) = quick::what(&item, how) else {
+            return;
+        };
+        self.close(window, cx);
+        match (what, item) {
+            (Do::Hit(action), Item::Found(hit)) => {
+                search::act(action, &hit, &self.catalog, window, cx)
+            }
+            (Do::Mix, Item::Genre(g)) => self
+                .catalog
+                .update(cx, |c, cx| c.run(Job::MixGenre { name: g.name }, cx)),
+            (Do::QueueMix { next }, Item::Genre(g)) => self.catalog.update(cx, |c, cx| {
+                let mix = Box::new(Job::MixGenre { name: g.name });
+                c.run(Job::QueueMix { mix, next }, cx)
+            }),
+            _ => {}
+        }
+    }
+
+    /// A click on a row: its main action.
+    fn pick(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.ready() {
+            self.chosen = ix;
+            self.run(How::Main, window, cx)
+        }
+    }
+
+    fn choose(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if self.open && self.chosen != ix {
+            self.chosen = ix;
+            cx.notify();
+        }
+    }
+}
+
+/// Every genre of the copy with its track count; none when there is no copy, nor when it cannot
+/// be read (the search says so). Blocking.
+fn load_genres(env: &Env) -> Arc<[Genre]> {
+    let read = db::open_existing(env).and_then(|c| match c {
+        Some(c) => Ok(core::genres(&c)?.into()),
+        None => Ok(Arc::from([])),
+    });
+    read.unwrap_or_else(|_| Arc::from([]))
+}
+
+/// What the palette shows for `text`, the genres being those read at the opening. Blocking.
+fn read(env: &Env, text: &str, seen: &[Seen], genres: &[Genre]) -> Shown {
+    if text.trim().is_empty() {
+        return match quick::recent(env, seen) {
+            Ok(Some(items)) if items.is_empty() => Shown::Rows(Arc::from([])),
+            Ok(Some(items)) => Shown::Rows(Arc::from([Group {
+                section: Section::Recent,
+                items,
+            }])),
+            Ok(None) => Shown::NoCopy,
+            Err(_) => Shown::Failed,
+        };
+    }
+    match find::answer(env, text, None) {
+        Ok(Some(a)) => {
+            let matched = core::matching_genres(genres, text, quick::GENRES);
+            let groups = quick::groups(&a.groups, matched);
+            if groups.is_empty() {
+                Shown::Nothing(text.to_string())
+            } else {
+                Shown::Rows(groups.into())
+            }
+        }
+        Ok(None) => Shown::NoCopy,
+        Err(_) => Shown::Failed,
+    }
+}
+
+/// The child of the list a row is: each group has its title first.
+fn child_of(groups: &[Group], ix: usize) -> usize {
+    let mut before = 0;
+    let mut rows = 0;
+    for g in groups {
+        before += 1;
+        if ix < rows + g.items.len() {
+            return before + ix - rows;
+        }
+        rows += g.items.len();
+        before += g.items.len();
+    }
+    before
+}
+
+/// The field, a view of its own: its blinking caret redraws it alone.
+struct Field {
+    input: Entity<InputState>,
+    shared: Entity<Shared>,
+}
+
+impl Render for Field {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let pal = palette(&self.shared, window, cx);
+        search_field(&self.input, pal).appearance(false)
+    }
+}
+
+/// The line under a row's name; in the recent list, what it is first.
+fn about(item: &Item, section: Section) -> String {
+    match item {
+        Item::Genre(g) if g.tracks == 1 => "Genre · 1 track".into(),
+        Item::Genre(g) => format!("Genre · {} tracks", g.tracks),
+        Item::Found(h) if section == Section::Recent => {
+            let what = Section::Kind(h.kind).title().trim_end_matches('s');
+            format!("{what} · {}", find::about(h))
+        }
+        Item::Found(h) => find::about(h),
+    }
+}
+
+fn is_track(item: &Item) -> bool {
+    matches!(item, Item::Found(h) if h.kind == core::Kind::Track)
+}
+
+/// The side of the badge on the cover of the album playing.
+const BADGE: f32 = 16.;
+
+/// The colour of a result's name: the accent when it is the track playing. An album playing is
+/// told by the badge on its cover.
+fn name_color(item: &Item, mark: Option<Mark>, pal: Palette) -> Hsla {
+    if mark.is_some() && is_track(item) {
+        pal.accent
+    } else {
+        pal.fg
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn row(
+    this: &Entity<QuickSearch>,
+    ix: usize,
+    item: &Item,
+    section: Section,
+    chosen: bool,
+    covers: &Covers,
+    playing: &Playing,
+    pal: Palette,
+) -> AnyElement {
+    let mark = quick::mark(item, playing);
+    // what the row's own parts are called: the genres have no id, their name stands for it
+    let key = match item {
+        Item::Found(h) => h.id.clone(),
+        Item::Genre(g) => g.name.clone(),
+    };
+    let (name, picture) = match item {
+        Item::Found(h) => {
+            let round = if h.kind == core::Kind::Artist {
+                18.
+            } else {
+                5.
+            };
+            let path = h.cover.as_ref().and_then(|c| covers.get(c, 36.));
+            let cover = div()
+                .debug_selector(|| format!("quick-cover-{key}"))
+                .relative()
+                .flex_none()
+                .child(cover_box(path, 36., round, pal))
+                // the album playing: its cover wears the badge
+                .when_some(mark.filter(|_| h.kind == core::Kind::Album), |d, mark| {
+                    d.child(badge(format!("quick-eq-{key}"), mark, BADGE, pal.accent))
+                });
+            (h.name.clone(), cover)
+        }
+        Item::Genre(g) => (
+            g.name.clone(),
+            div()
+                .size(px(36.))
+                .flex_none()
+                .rounded(px(5.))
+                .bg(Hsla { a: 0.07, ..pal.fg })
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    Icon::new(IconName::Tag)
+                        .size(px(16.))
+                        .text_color(pal.secondary),
+                ),
+        ),
+    };
+    let (hover, click) = (this.clone(), this.clone());
+    h_flex()
+        .id(("quick-row", ix))
+        .debug_selector(|| format!("quick-row-{key}"))
+        .h(px(ROW))
+        .flex_none()
+        .w_full()
+        .px_2()
+        .gap_3()
+        .items_center()
+        .rounded_md()
+        .cursor_pointer()
+        .when(chosen, |d| d.bg(Hsla { a: 0.10, ..pal.fg }))
+        // the pointer moving chooses, not a row scrolled under a pointer at rest
+        .on_mouse_move(move |_, _, cx| hover.update(cx, |q, cx| q.choose(ix, cx)))
+        .on_click(move |_, window, cx| click.update(cx, |q, cx| q.pick(ix, window, cx)))
+        .child(picture)
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .child(
+                    div()
+                        .truncate()
+                        .text_sm()
+                        .text_color(name_color(item, mark, pal))
+                        .child(name),
+                )
+                .child(
+                    div()
+                        .truncate()
+                        .text_xs()
+                        .text_color(pal.secondary)
+                        .child(about(item, section)),
+                ),
+        )
+        // the track playing: the equaliser at the right end of its row
+        .when_some(mark.filter(|_| is_track(item)), |d, mark| {
+            d.child(div().pr_2().flex_none().child(Equaliser::new(
+                format!("quick-eq-{key}"),
+                mark,
+                pal.accent,
+            )))
+        })
+        .into_any_element()
+}
+
+fn hint(text: impl Into<SharedString>, pal: Palette) -> Div {
+    div()
+        .w_full()
+        .py_6()
+        .flex()
+        .justify_center()
+        .text_sm()
+        .text_color(pal.secondary)
+        .child(text.into())
+}
+
+/// A key and what it does, at the bottom.
+fn key_hint(key: &'static str, does: &'static str, pal: Palette) -> Div {
+    h_flex()
+        .gap_1p5()
+        .items_center()
+        .child(
+            div()
+                .px_1p5()
+                .rounded_sm()
+                .border_1()
+                .border_color(Hsla { a: 0.18, ..pal.fg })
+                .text_color(pal.fg)
+                .child(key),
+        )
+        .child(does)
+}
+
+impl Render for QuickSearch {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // exactly 0 on the first frame of an opening: still drawn then
+        let t = motion::flag("quick-open", self.open, motion::PANEL, window, cx);
+        if t == 0.0 && !self.open {
+            return div().into_any_element();
+        }
+        let pal = palette(&self.shared, window, cx);
+        let covers = Covers::new(self.catalog.read(cx).covers.clone(), window.scale_factor());
+        let this = cx.entity();
+        let playing = self.shared.read(cx).playing.clone();
+        let groups: Arc<[Group]> = match &self.shown {
+            Shown::Rows(g) => g.clone(),
+            _ => Arc::from([]),
+        };
+        let mut children: Vec<AnyElement> = Vec::new();
+        let mut ix = 0;
+        for g in groups.iter() {
+            children.push(
+                div()
+                    .px_2()
+                    .pt_3()
+                    .pb_1()
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(pal.secondary)
+                    .child(g.section.title().to_uppercase())
+                    .into_any_element(),
+            );
+            for item in &g.items {
+                let chosen = ix == self.chosen;
+                children.push(row(
+                    &this, ix, item, g.section, chosen, &covers, &playing, pal,
+                ));
+                ix += 1;
+            }
+        }
+        let body: AnyElement = match &self.shown {
+            Shown::Rows(_) if ix > 0 => v_flex()
+                .id("quick-rows")
+                .max_h(px(LIST))
+                .overflow_y_scroll()
+                .track_scroll(&self.scroll)
+                .px_2()
+                .pb_2()
+                .children(children)
+                .into_any_element(),
+            Shown::Rows(_) if self.text.trim().is_empty() && self.latest.is_ready() => {
+                hint("Type to search the library", pal).into_any_element()
+            }
+            Shown::Rows(_) => div().into_any_element(),
+            Shown::Nothing(text) => {
+                hint(format!("Nothing found for “{text}”"), pal).into_any_element()
+            }
+            Shown::NoCopy => hint("No local copy of the library yet", pal).into_any_element(),
+            Shown::Failed => hint("The library could not be read", pal).into_any_element(),
+        };
+        let keys = quick::hints(quick::nth(&groups, self.chosen));
+        let (close, back) = (this.clone(), this.clone());
+        let width = WIDTH.min(window.viewport_size().width.as_f32() - 32.);
+        div()
+            .id("quick-scrim")
+            .absolute()
+            .inset_0()
+            .occlude()
+            .bg(hsla(0., 0., 0., 0.4 * t))
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                close.update(cx, |q, cx| q.close(window, cx))
+            })
+            // a right click beside the card closes it, as a left click does, and opens no menu
+            // on what was behind
+            .on_mouse_down(MouseButton::Right, {
+                let close = this.clone();
+                move |_, window, cx| {
+                    if keys::palette_right_click(false) == PaletteClick::Close {
+                        close.update(cx, |q, cx| q.close(window, cx))
+                    }
+                }
+            })
+            // the layer keeps the pointer from the root, whose listener would close it
+            .on_mouse_down(
+                MouseButton::Navigate(NavigationDirection::Back),
+                move |_, window, cx| back.update(cx, |q, cx| q.close(window, cx)),
+            )
+            .flex()
+            .justify_center()
+            .items_start()
+            .child(
+                v_flex()
+                    .id("quick-card")
+                    .mt(px(72. + 12. * (1. - t)))
+                    .w(px(width))
+                    .h_auto()
+                    .max_h(px(LIST + 140.))
+                    .opacity(t)
+                    .rounded_xl()
+                    .bg(pal.surface)
+                    .border_1()
+                    .border_color(Hsla { a: 0.12, ..pal.fg })
+                    .shadow_xl()
+                    .overflow_hidden()
+                    // a click inside does not close it
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    // a right click inside does nothing: the rows have no menu
+                    .on_mouse_down(MouseButton::Right, |_, _, cx| {
+                        if keys::palette_right_click(true) == PaletteClick::Keep {
+                            cx.stop_propagation()
+                        }
+                    })
+                    .child(
+                        div()
+                            .debug_selector(|| "quick-field".into())
+                            .h(px(ROW))
+                            .px_3()
+                            .flex()
+                            .items_center()
+                            .child(div().w_full().child(self.field.clone())),
+                    )
+                    .child(div().h(px(1.)).bg(Hsla { a: 0.08, ..pal.fg }))
+                    .child(body)
+                    .child(
+                        h_flex()
+                            .px_4()
+                            .py_2()
+                            .gap_4()
+                            .border_t_1()
+                            .border_color(Hsla { a: 0.08, ..pal.fg })
+                            .text_xs()
+                            .text_color(pal.secondary)
+                            .children(keys.into_iter().map(|(k, d)| key_hint(k, d, pal))),
+                    ),
+            )
+            .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // not `super::*`: it would bring the `test` macro of GPUI along
+    use super::{QuickSearch, Shown};
+    use crate::app;
+    use crate::catalog::Catalog;
+    use gpui_kit::{AppContext as _, Entity, TestAppContext, VisualTestContext};
+    use melodie_core::db;
+    use melodie_core::env::Env;
+    use melodie_desktop::quick::{Section, Seen};
+    use melodie_desktop::theme::Settings;
+    use serde_json::json;
+
+    /// The real palette on a small local copy, in a window without a screen.
+    fn palette<'a>(
+        env: &Env,
+        app: &'a mut TestAppContext,
+    ) -> (Entity<QuickSearch>, &'a mut VisualTestContext) {
+        let env = env.clone();
+        let (quick, cx) = app.add_window_view(move |window, cx| {
+            gpui_kit::init(cx);
+            let (shared, _) = app::start(env.clone(), env.state_dir().join("no.sock"), window, cx);
+            let catalog = cx.new(|cx| Catalog::new(env.clone(), shared.clone(), cx));
+            QuickSearch::new(shared, catalog, env, window, cx)
+        });
+        (quick, cx)
+    }
+
+    fn library(env: &Env) {
+        let path = db::db_path(env);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut conn = db::create(&path).unwrap();
+        let tx = conn.transaction().unwrap();
+        db::insert_artist(&tx, &json!({"id":"ar1","name":"Nightfall","albumCount":1})).unwrap();
+        db::insert_album(
+            &tx,
+            &json!({"id":"al1","name":"Low Tide","artist":"Nightfall","artistId":"ar1"}),
+        )
+        .unwrap();
+        db::insert_track(&tx, &json!({"id":"t1","title":"Drift","artist":"Nightfall","album":"Elsewhere","albumId":"al1","genres":[{"name":"Ambient"}]})).unwrap();
+        db::insert_album(
+            &tx,
+            &json!({"id":"al2","name":"High Tide","artist":"Nightfall","artistId":"ar1"}),
+        )
+        .unwrap();
+        db::insert_track(&tx, &json!({"id":"t2","title":"Driftwood","artist":"Nightfall","album":"High Tide","albumId":"al2"})).unwrap();
+        tx.commit().unwrap();
+    }
+
+    fn toggle(quick: &Entity<QuickSearch>, cx: &mut VisualTestContext) {
+        quick.update_in(cx, |q, window, cx| q.toggle(window, cx));
+        cx.run_until_parked();
+    }
+
+    #[test]
+    fn reopening_shows_the_last_text_selected_and_its_results_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        library(&env);
+        let mut app = TestAppContext::single();
+        let (quick, cx) = palette(&env, &mut app);
+        toggle(&quick, cx);
+        cx.simulate_input("low");
+        cx.run_until_parked();
+        let rows = |q: &QuickSearch| match &q.shown {
+            Shown::Rows(g) => g.iter().map(|g| g.section).collect::<Vec<_>>(),
+            _ => Vec::new(),
+        };
+        assert_eq!(quick.read_with(cx, |q, _| rows(q)).len(), 1);
+        // closed, then opened again
+        toggle(&quick, cx);
+        assert!(!quick.read_with(cx, |q, _| q.open));
+        toggle(&quick, cx);
+        let (value, sections) = quick.read_with(cx, |q, cx| (q.input.read(cx).value(), rows(q)));
+        assert_eq!(value, "low", "the field has the last text");
+        assert_eq!(sections.len(), 1, "its results are back");
+        assert!(
+            !sections.contains(&Section::Recent),
+            "the results of the text, not the recent list"
+        );
+        assert!(
+            quick.read_with(cx, |q, _| q.ready()),
+            "Enter runs the same search again"
+        );
+        // selected: typing replaces it
+        cx.simulate_input("ti");
+        cx.run_until_parked();
+        assert_eq!(quick.read_with(cx, |q, cx| q.input.read(cx).value()), "ti");
+    }
+
+    #[test]
+    fn reopening_on_a_genre_name_still_shows_the_genres() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        library(&env);
+        let mut app = TestAppContext::single();
+        let (quick, cx) = palette(&env, &mut app);
+        toggle(&quick, cx);
+        cx.simulate_input("ambient");
+        cx.run_until_parked();
+        let genres = |q: &QuickSearch| match &q.shown {
+            Shown::Rows(g) => g.iter().any(|g| g.section == Section::Genres),
+            _ => false,
+        };
+        assert!(quick.read_with(cx, |q, _| genres(q)), "found when typed");
+        toggle(&quick, cx);
+        toggle(&quick, cx);
+        assert!(
+            quick.read_with(cx, |q, _| genres(q)),
+            "and again once reopened on the same text"
+        );
+    }
+
+    #[test]
+    fn the_recents_the_copy_no_longer_holds_are_dropped_from_the_file_at_the_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        library(&env);
+        std::fs::create_dir_all(env.state_dir()).unwrap();
+        std::fs::write(
+            Settings::path(&env),
+            "theme = \"base\"\nrecent = [{ album = \"gone\" }, { album = \"al1\" }]\n",
+        )
+        .unwrap();
+        let mut app = TestAppContext::single();
+        let (_quick, cx) = palette(&env, &mut app);
+        cx.run_until_parked();
+        let s = Settings::load(&env);
+        assert_eq!(
+            s.recent,
+            [Seen::Album("al1".into())],
+            "only the present one"
+        );
+        assert_eq!(s.theme, Some(melodie_desktop::theme::Choice::Base));
+    }
+
+    #[test]
+    fn what_the_palette_notes_is_written_a_few_seconds_after_the_last_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        library(&env);
+        let mut app = TestAppContext::single();
+        let (quick, cx) = palette(&env, &mut app);
+        quick.update(cx, |q, cx| q.note(Seen::Album("al1".into()), cx));
+        quick.update(cx, |q, cx| q.note(Seen::Artist("ar1".into()), cx));
+        cx.run_until_parked();
+        assert!(
+            Settings::load(&env).recent.is_empty(),
+            "not at every page change"
+        );
+        cx.executor().advance_clock(super::SAVE_AFTER);
+        cx.run_until_parked();
+        assert_eq!(
+            Settings::load(&env).recent,
+            [Seen::Artist("ar1".into()), Seen::Album("al1".into())],
+            "both, in one write"
+        );
+    }
+
+    #[test]
+    fn what_is_waiting_to_be_written_is_written_when_the_window_closes() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        library(&env);
+        let mut app = TestAppContext::single();
+        let (quick, cx) = palette(&env, &mut app);
+        quick.update(cx, |q, cx| q.note(Seen::Album("al1".into()), cx));
+        cx.run_until_parked();
+        assert!(Settings::load(&env).recent.is_empty());
+        // the window is gone with the shutdown: nothing more to do through it
+        app.update(|cx| cx.shutdown());
+        assert_eq!(Settings::load(&env).recent, [Seen::Album("al1".into())]);
+    }
+
+    #[test]
+    fn clearing_empties_the_field_and_shows_what_was_seen_lately() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        library(&env);
+        let mut app = TestAppContext::single();
+        let (quick, cx) = palette(&env, &mut app);
+        toggle(&quick, cx);
+        assert!(quick.read_with(cx, |q, _| q.is_empty()));
+        cx.simulate_input("low");
+        cx.run_until_parked();
+        assert!(!quick.read_with(cx, |q, _| q.is_empty()));
+        let sections = |q: &QuickSearch| match &q.shown {
+            Shown::Rows(g) => g.len(),
+            _ => 0,
+        };
+        assert_eq!(quick.read_with(cx, |q, _| sections(q)), 1, "the results");
+        quick.update_in(cx, |q, window, cx| q.clear(window, cx));
+        cx.run_until_parked();
+        let (value, empty, open, rows) = quick.read_with(cx, |q, cx| {
+            (q.input.read(cx).value(), q.is_empty(), q.open, sections(q))
+        });
+        assert_eq!(value, "", "the field is empty");
+        assert!(empty && open, "and it stays open");
+        assert_eq!(rows, 0, "the results of the text are gone");
+    }
+
+    #[test]
+    fn escape_twice_does_not_make_the_palette_forget_its_last_search() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        library(&env);
+        let mut app = TestAppContext::single();
+        let (quick, cx) = palette(&env, &mut app);
+        toggle(&quick, cx);
+        cx.simulate_input("low");
+        cx.run_until_parked();
+        // the first Escape empties the field, the second closes the palette
+        quick.update_in(cx, |q, window, cx| q.clear(window, cx));
+        cx.run_until_parked();
+        toggle(&quick, cx);
+        assert!(!quick.read_with(cx, |q, _| q.open));
+        toggle(&quick, cx);
+        let (value, sections) = quick.read_with(cx, |q, cx| {
+            let sections = match &q.shown {
+                Shown::Rows(g) => g.iter().map(|g| g.section).collect::<Vec<_>>(),
+                _ => Vec::new(),
+            };
+            (q.input.read(cx).value(), sections)
+        });
+        assert_eq!(value, "low", "the last text searched is back");
+        assert_eq!(sections.len(), 1, "with its results");
+        assert!(!sections.contains(&Section::Recent), "not the recent list");
+        assert!(quick.read_with(cx, |q, _| q.ready()), "Enter runs it again");
+        // selected: typing replaces it
+        cx.simulate_input("ti");
+        cx.run_until_parked();
+        assert_eq!(quick.read_with(cx, |q, cx| q.input.read(cx).value()), "ti");
+    }
+
+    /// The music playing is track `t1`, of the album `al1`, in the state `state`; none when
+    /// `None`.
+    fn play(
+        quick: &Entity<QuickSearch>,
+        state: Option<melodie_desktop::model::PlayState>,
+        cx: &mut VisualTestContext,
+    ) {
+        use melodie_core::proto::QueueEntry;
+        use melodie_desktop::model::Player;
+        use melodie_desktop::playing::Origin;
+        let player = state.map(|state| Player {
+            following: true,
+            state,
+            tracks: vec![QueueEntry {
+                entry: 1,
+                id: "t1".into(),
+                ..QueueEntry::default()
+            }]
+            .into(),
+            current: Some(0),
+            ..Player::default()
+        });
+        let shared = quick.read_with(cx, |q, _| q.shared.clone());
+        shared.update(cx, |s, _| {
+            s.playing.follow(&player.unwrap_or_default());
+            s.playing.wants_origin();
+            s.playing.set_origin(
+                "t1",
+                Some(Origin {
+                    album: Some("al1".into()),
+                    artist: Some("ar1".into()),
+                }),
+            );
+        });
+        quick.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+    }
+
+    fn search(quick: &Entity<QuickSearch>, text: &str, cx: &mut VisualTestContext) {
+        toggle(quick, cx);
+        cx.simulate_input(text);
+        cx.run_until_parked();
+    }
+
+    #[test]
+    fn the_track_playing_shows_the_equaliser_at_the_right_of_its_row() {
+        use melodie_desktop::model::PlayState;
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        library(&env);
+        let mut app = TestAppContext::single();
+        let (quick, cx) = palette(&env, &mut app);
+        play(&quick, Some(PlayState::Playing), cx);
+        search(&quick, "drift", cx);
+        let eq = cx.debug_bounds("quick-eq-t1").expect("the track playing");
+        let row = cx.debug_bounds("quick-row-t1").expect("its row");
+        assert!(
+            eq.right() <= row.right() && row.right() - eq.right() <= gpui_kit::px(16.),
+            "at the right end of the row: {eq:?} in {row:?}"
+        );
+        assert!(
+            cx.debug_bounds("quick-eq-t2").is_none(),
+            "another track with a name alike is not marked"
+        );
+        assert!(
+            cx.debug_bounds("quick-eq-t1-badge").is_none(),
+            "a badge is for a cover, not a track"
+        );
+        play(&quick, Some(PlayState::Paused), cx);
+        assert!(cx.debug_bounds("quick-eq-t1").is_some(), "still, but there");
+    }
+
+    #[test]
+    fn the_album_playing_shows_the_badge_on_the_corner_of_its_cover() {
+        use melodie_desktop::model::PlayState;
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        library(&env);
+        let mut app = TestAppContext::single();
+        let (quick, cx) = palette(&env, &mut app);
+        play(&quick, Some(PlayState::Playing), cx);
+        search(&quick, "tide", cx);
+        let badge = cx
+            .debug_bounds("quick-eq-al1-badge")
+            .expect("the album playing");
+        let cover = cx.debug_bounds("quick-cover-al1").expect("its cover");
+        let near = |a: gpui_kit::Pixels, b: gpui_kit::Pixels| (a - b).abs() <= gpui_kit::px(4.);
+        assert!(
+            near(badge.right(), cover.right()) && near(badge.bottom(), cover.bottom()),
+            "bottom-right corner: {badge:?} on {cover:?}"
+        );
+        assert!(badge.size.width < cover.size.width / 2.0, "small");
+        assert!(
+            cx.debug_bounds("quick-eq-al1").is_some(),
+            "holding the bars"
+        );
+        assert!(
+            cx.debug_bounds("quick-eq-al2-badge").is_none()
+                && cx.debug_bounds("quick-eq-al2").is_none(),
+            "another album is not marked"
+        );
+        assert!(
+            cx.debug_bounds("quick-eq-t1").is_none(),
+            "no track in the results"
+        );
+    }
+
+    #[test]
+    fn the_palette_marks_nothing_when_nothing_plays() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        library(&env);
+        let mut app = TestAppContext::single();
+        let (quick, cx) = palette(&env, &mut app);
+        play(&quick, None, cx);
+        for text in ["drift", "tide"] {
+            search(&quick, text, cx);
+            for selector in [
+                "quick-eq-t1",
+                "quick-eq-al1",
+                "quick-eq-al1-badge",
+                "quick-eq-t2",
+                "quick-eq-al2",
+                "quick-eq-al2-badge",
+            ] {
+                assert!(cx.debug_bounds(selector).is_none(), "{text}: {selector}");
+            }
+            toggle(&quick, cx);
+        }
+    }
+
+    #[test]
+    fn the_field_has_room_around_its_text_as_high_as_a_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        library(&env);
+        let mut app = TestAppContext::single();
+        let (quick, cx) = palette(&env, &mut app);
+        toggle(&quick, cx);
+        let field = cx.debug_bounds("quick-field").expect("the field");
+        assert_eq!(field.size.height, gpui_kit::px(super::ROW));
+    }
+
+    #[test]
+    fn the_title_of_the_track_playing_is_in_the_accent_colour_and_an_album_keeps_its_own() {
+        use melodie_core::search::{Hit, Kind};
+        use melodie_desktop::playing::Mark;
+        use melodie_desktop::quick::Item;
+        use melodie_desktop::theme::Palette;
+        let hit = |kind| {
+            Item::Found(Hit {
+                kind,
+                id: "x".into(),
+                name: "x".into(),
+                artist: String::new(),
+                album: String::new(),
+                year: 0,
+                count: 0,
+                duration: 0,
+                cover: None,
+                starred: false,
+                album_id: None,
+                artist_id: None,
+            })
+        };
+        let pal = Palette::base(None, true);
+        let (track, album) = (hit(Kind::Track), hit(Kind::Album));
+        assert_eq!(
+            super::name_color(&track, Some(Mark::Playing), pal),
+            pal.accent
+        );
+        assert_eq!(
+            super::name_color(&track, Some(Mark::Paused), pal),
+            pal.accent
+        );
+        assert_eq!(super::name_color(&track, None, pal), pal.fg);
+        assert_eq!(super::name_color(&album, Some(Mark::Playing), pal), pal.fg);
+    }
+}

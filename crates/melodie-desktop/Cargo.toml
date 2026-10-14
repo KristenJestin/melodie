@@ -1,0 +1,34 @@
+[package]
+name = "melodie-desktop"
+description = "The window of Mélodie: the library, the player and the queue, one more client of the daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = ["gpui-fast"]
+# GPUI Fast behind gpui-kit (docs/gui-toolkit.md); without it, upstream GPUI from the same source.
+gpui-fast = ["gpui-kit/gpui-fast"]
+# Frame statistics for measuring the window (`MELODIE_DESKTOP_FRAME_STATS`); off in the program people run.
+frame-stats = ["gpui-kit/profiler"]
+
+[dependencies]
+anyhow = "1"
+futures = "0.3"
+gpui-kit = "=0.7.3"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+libc = "0.2"
+melodie-core = { path = "../melodie-core" }
+notify = "8"
+rusqlite = "0.37"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+[dev-dependencies]
+# The window's own tests: a window without a screen (`TestAppContext`) to click in.
+gpui-kit = { version = "=0.7.3", features = ["test-support"] }
+# The fake local server, to make a first copy that is cut off.
+melodie-core = { path = "../melodie-core", features = ["fake"] }
+tempfile = "3"

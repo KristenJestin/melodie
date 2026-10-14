@@ -24,8 +24,8 @@ repository and lives here on its own.
 - **A window** (to come) is one more client of the same daemon and the same local copy:
   closing it never stops the music.
 
-Mélodie is used alone. The maintainer's desktop integrates it (launcher entries, the player
-card, keys) from its own repository; nothing of that desktop lives here.
+Mélodie is used alone. The maintainer's desktop integration (launcher entries, the player
+card, keys) lives in its own repository; nothing of it lives here.
 
 ## Commands
 
@@ -79,8 +79,8 @@ git config core.hooksPath .githooks     # once per clone: the commit-msg and pre
 
 - Rust 2024, `cargo fmt`, `cargo clippy -- -D warnings` clean.
 - Code, identifiers, comments, docs, issues and commits are in English. The code brought over
-  from the desktop repository has French comments and messages: translate what you touch, not
-  the rest.
+  from the maintainer's desktop repository has French comments and messages: translate what you
+  touch, not the rest.
 - No tokio, no libdbus: D-Bus and the Secret Service go through `zbus` (pure Rust).
 - A comment says why, not what.
 
@@ -149,9 +149,40 @@ git config core.hooksPath .githooks     # once per clone: the commit-msg and pre
   refactor, test, docs, chore, build, ci, perf. `tools/commit-message.sh` is the judge (the
   `commit-msg` hook and CI run it).
 - Scopes: `library`, `api`, `sync`, `search`, `mix`, `playlists`, `daemon`, `cli`, `migrate`,
-  `gui`, `repo`, `ci`.
+  `desktop`, `repo`, `ci`.
 - **Pull requests are merged by squash only.** The title is a plain Angular subject. The
   description is written in the first person as the maintainer and ends with `Closes #<n>`.
+  The one exception is the release: `dev` into `main` is merged with a **merge commit**, by the
+  maintainer (see "Releases").
+
+## Releases
+
+Nobody edits a version: `Cargo.toml` stays at `0.0.0` and the version comes from what was merged.
+
+- **A release** is made by merging `dev` into `main`, with the **"Create a merge commit"**
+  button (never a squash, which would hide the subjects semantic-release reads). That needs the
+  repository setting `allow_merge_commit`, which the maintainer turns on together with two
+  rulesets: squash only into `dev`, merge commit only into `main`. The pull request is titled
+  `chore(repo): release` (a `chore` needs no `Closes #n`). `release.yml` runs on `main`:
+  semantic-release reads the Angular subjects the merge brings and tags `vX.Y.Z` with its notes
+  (`feat` moves the minor, `fix` the patch, a breaking change also the minor: Mélodie is in `0.x`
+  and `1.0` is the maintainer's decision). With no release yet it counts from a `v0.0.0` tag
+  it puts on the first commit before it runs, so the first release is `v0.1.0`; semantic-release
+  pushes its tags, so `v0.0.0` is published with that first release, harmlessly (it
+  is not a release). Then the job
+  `build` builds the tag with `MELODIE_VERSION` and attaches
+  `melodie-<version>-linux-x86_64.tar.gz` and its `.sha256` to the release.
+- **A beta** (`vX.Y.Z-beta.N`, a pre-release) is published by `beta.yml` at every push to `dev`:
+  the patch after the last release, numbered by the run. Only the newest exists.
+- The programs report it with `--version`; a build without `MELODIE_VERSION` says `0.0.0-dev`.
+- The archive holds `melodie`, `melodie-desktop` and `install.sh` (`tools/package.sh` makes it,
+  `dist/install.sh` is the script). The only secret is the run's `GITHUB_TOKEN`; nothing the
+  pipeline does writes a commit. `package.json` and its lockfile only pin semantic-release.
+- The system libraries to build are listed once, in `tools/install-build-libraries.sh`: `ci.yml`
+  and the two release workflows call it.
+- `commit-messages` does not check the commits of a release (a pull request into `main`, or a push
+  to `main`): they were judged as pull requests, and the squash added ` (#n)` to their subjects.
+  The title of the release pull request is still checked.
 
 ## Security and privacy
 

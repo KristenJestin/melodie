@@ -1,0 +1,227 @@
+//! The pictures of the queue's rows, looked up away from the render path: finding a thumbnail
+//! checks files, and a list redraws on every frame of a scroll or a fade.
+
+use melodie_core::cover::{Disk, Tier};
+use melodie_core::env::Env;
+use melodie_core::proto::QueueEntry;
+use std::collections::HashMap;
+use std::ops::Range;
+use std::path::PathBuf;
+
+/// The picture of each entry that has one, by entry number.
+pub type Thumbs = HashMap<u64, PathBuf>;
+
+/// The thumbnail of each track if it is on disk, else the cover the daemon gave. Does file I/O:
+/// never call it while drawing.
+pub fn resolve(env: &Env, tracks: &[QueueEntry]) -> Thumbs {
+    tracks
+        .iter()
+        .filter_map(|t| {
+            // the smallest file not smaller than a thumbnail: any tier the window fetched serves
+            let local = t
+                .cover_id
+                .as_deref()
+                .and_then(|id| Disk::read(env, id).pick(Tier::Thumb).cloned());
+            local
+                .or_else(|| t.cover.clone().map(PathBuf::from))
+                .map(|p| (t.entry, p))
+        })
+        .collect()
+}
+
+/// The cover ids the rows of the queue show, once each.
+pub fn wanted(tracks: &[QueueEntry]) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    for id in tracks.iter().filter_map(|t| t.cover_id.as_ref()) {
+        if !ids.contains(id) {
+            ids.push(id.clone());
+        }
+    }
+    ids
+}
+
+/// The cover ids of the rows of the queue on screen, once each: asked before anything that
+/// waits, the way the grids ask theirs. `uniform_list` (gpui-fast 0.1.7) also renders its first
+/// row alone to measure it, at every layout, wherever the list is scrolled: that row asks
+/// nothing (the rows shown from the top ask it with the others).
+pub fn shown(tracks: &[QueueEntry], rows: Range<usize>) -> Vec<String> {
+    if rows == (0..1) && tracks.len() > 1 {
+        return Vec::new();
+    }
+    let end = rows.end.min(tracks.len());
+    wanted(&tracks[rows.start.min(end)..end])
+}
+
+/// The file the player and the bottom bar show for a track: the daemon's cover, else the
+/// thumbnail already on disk while the daemon is still fetching its own.
+pub fn big(track: &QueueEntry, thumbs: &Thumbs) -> Option<String> {
+    track.cover.clone().or_else(|| {
+        thumbs
+            .get(&track.entry)
+            .map(|p| p.to_string_lossy().into_owned())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use melodie_core::cover;
+
+    fn track(entry: u64, cover_id: Option<&str>, cover: Option<&str>) -> QueueEntry {
+        QueueEntry {
+            entry,
+            id: format!("t{entry}"),
+            cover_id: cover_id.map(Into::into),
+            cover: cover.map(Into::into),
+            ..QueueEntry::default()
+        }
+    }
+
+    #[test]
+    fn a_thumbnail_on_disk_wins_over_the_daemons_cover() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        let thumb = cover::thumb_path(&env, "c1");
+        std::fs::create_dir_all(thumb.parent().unwrap()).unwrap();
+        std::fs::write(&thumb, "").unwrap();
+        let thumbs = resolve(
+            &env,
+            &[
+                track(1, Some("c1"), Some("/tmp/full.img")),
+                track(2, Some("c2"), Some("/tmp/c2.img")),
+                track(3, Some("c3"), None),
+                track(4, None, None),
+            ],
+        );
+        assert_eq!(thumbs.get(&1), Some(&thumb));
+        assert_eq!(
+            thumbs.get(&2),
+            Some(&PathBuf::from("/tmp/c2.img")),
+            "no thumbnail yet: the daemon's cover"
+        );
+        assert_eq!(thumbs.get(&3), None, "no picture at all: the glyph");
+        assert_eq!(thumbs.get(&4), None);
+    }
+
+    #[test]
+    fn a_row_tier_file_serves_the_queue_when_there_is_no_thumbnail() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        let row = cover::tier_path(&env, "c1", Tier::Row);
+        std::fs::create_dir_all(row.parent().unwrap()).unwrap();
+        std::fs::write(&row, "").unwrap();
+        let thumbs = resolve(&env, &[track(1, Some("c1"), Some("/tmp/full.img"))]);
+        assert_eq!(
+            thumbs.get(&1),
+            Some(&row),
+            "the window's own file, before the daemon's"
+        );
+    }
+
+    #[test]
+    fn the_server_default_image_keeps_the_glyph() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        let thumb = cover::thumb_path(&env, "c1");
+        std::fs::create_dir_all(thumb.parent().unwrap()).unwrap();
+        std::fs::write(format!("{}.none", thumb.display()), "").unwrap();
+        assert!(resolve(&env, &[track(1, Some("c1"), None)]).is_empty());
+    }
+
+    /// The rows are drawn on every frame of a scroll or a fade: the file checks belong to
+    /// `resolve`, run when the queue arrives. A guard on the source, as drawing cannot be
+    /// observed without a window.
+    #[test]
+    fn the_queue_rows_do_not_touch_the_disk_while_drawing() {
+        let rows = include_str!("queue.rs");
+        for call in ["cover::local", "is_file", "std::fs", "exists()"] {
+            assert!(
+                !rows.contains(call),
+                "queue.rs calls {call} on the render path"
+            );
+        }
+    }
+
+    #[test]
+    fn the_rows_of_the_queue_ask_for_their_covers_once_each() {
+        let tracks = [
+            track(1, Some("c1"), None),
+            track(2, Some("c2"), Some("/tmp/c2.img")),
+            track(3, Some("c1"), None),
+            track(4, None, None),
+        ];
+        assert_eq!(wanted(&tracks), ["c1", "c2"]);
+    }
+
+    /// The covers missing at first launch are fetched, and the rows show them when they land,
+    /// the way the grids do: the same queue of ids, the same lookup.
+    #[test]
+    fn the_rows_of_the_queue_get_their_covers_when_they_land() {
+        use crate::covers::{Fetch, Queue, round};
+        use melodie_core::cover::Want;
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        let tracks = [
+            track(1, Some("c1"), None),
+            track(2, Some("c2"), None),
+            track(3, Some("c1"), None),
+        ];
+        assert!(resolve(&env, &tracks).is_empty(), "the glyph at first");
+        let mut queue = Queue::default();
+        let new = queue.see(
+            wanted(&tracks)
+                .into_iter()
+                .map(|id| Want::new(id, Tier::Thumb)),
+            std::time::Instant::now(),
+        );
+        queue.missing(new);
+        let batch = queue.start().unwrap();
+        let r = round(&env, &batch, |wants| {
+            for w in wants {
+                let thumb = cover::thumb_path(&env, &w.id);
+                std::fs::create_dir_all(thumb.parent().unwrap()).unwrap();
+                std::fs::write(thumb, "").unwrap();
+            }
+            Fetch::Done
+        });
+        queue.finish(&batch, &r, std::time::Instant::now());
+        let thumbs = resolve(&env, &tracks);
+        assert_eq!(thumbs.len(), 3, "every row has its picture, no restart");
+        assert_eq!(thumbs[&1], cover::thumb_path(&env, "c1"));
+        assert_eq!(thumbs[&2], cover::thumb_path(&env, "c2"));
+    }
+
+    /// Issue #84: the covers of a short queue played after a long one waited behind everything
+    /// asked before; the rows on screen now ask theirs first.
+    #[test]
+    fn the_rows_on_screen_ask_for_their_covers_first() {
+        let tracks: Vec<QueueEntry> = (0..100)
+            .map(|i| track(i, Some(&format!("c{}", i / 2)), None))
+            .collect();
+        assert_eq!(shown(&tracks, 40..45), ["c20", "c21", "c22"]);
+        assert_eq!(shown(&tracks, 98..120), ["c49"], "a range past the end");
+        assert!(shown(&tracks, 0..0).is_empty());
+    }
+
+    /// Review of #84: `uniform_list` renders its first row alone to measure it, before the rows
+    /// it shows; taken for the rows on screen, row 0's cover jumped ahead at every frame.
+    #[test]
+    fn the_row_the_list_measures_asks_for_nothing() {
+        let tracks: Vec<QueueEntry> = (0..100)
+            .map(|i| track(i, Some(&format!("c{i}")), None))
+            .collect();
+        assert!(shown(&tracks, 0..1).is_empty(), "measured, maybe not shown");
+        assert_eq!(shown(&tracks, 0..2), ["c0", "c1"]);
+        assert_eq!(shown(&tracks[..1], 0..1), ["c0"], "a queue of one row");
+    }
+
+    #[test]
+    fn the_player_shows_the_thumbnail_until_the_daemons_cover_is_there() {
+        let thumbs: Thumbs = [(1, PathBuf::from("/t/c1.img"))].into();
+        let with = track(1, Some("c1"), Some("/d/c1.img"));
+        assert_eq!(big(&with, &thumbs).as_deref(), Some("/d/c1.img"));
+        let without = track(1, Some("c1"), None);
+        assert_eq!(big(&without, &thumbs).as_deref(), Some("/t/c1.img"));
+        assert_eq!(big(&track(2, Some("c2"), None), &thumbs), None);
+    }
+}
