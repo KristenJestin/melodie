@@ -36,6 +36,25 @@ fn section_title(text: &'static str, pal: Palette) -> Div {
         .child(text)
 }
 
+/// How many of the tracks an artist appears on are drawn: the page stays light for one credited
+/// on hundreds (Play, Shuffle and the mix still use them all).
+const APPEARANCES_SHOWN: usize = 100;
+
+/// The line under the appearances drawn, saying how many are left out.
+fn and_more(total: usize) -> Option<String> {
+    (total > APPEARANCES_SHOWN).then(|| format!("and {} more", total - APPEARANCES_SHOWN))
+}
+
+/// A quiet line under a page's header, for what it lacks.
+fn quiet_line(text: impl Into<SharedString>, pal: Palette) -> Div {
+    div()
+        .px(px(PAD))
+        .pt_6()
+        .text_sm()
+        .text_color(pal.secondary)
+        .child(text.into())
+}
+
 /// Albums in rows of covers, at most `rows` rows.
 fn album_rows(
     albums: &[Album],
@@ -559,12 +578,22 @@ impl Render for PageView {
                     let (shown, cols) = (Shown::new(appears.clone(), None), cols(Table::Tracks));
                     let marks = playing.marks(&list, &shown.tracks);
                     d.child(section_title("Appears on", pal))
-                        .children((0..shown.len()).filter_map(|ix| {
+                        .children((0..shown.len().min(APPEARANCES_SHOWN)).filter_map(|ix| {
                             let (_, t) = shown.row(ix)?;
                             let hover = row_hover("appears-track", ix, window, cx);
                             let row = RowCtx::of(&selection, &list, &shown, ix, hover, &marks);
-                            Some(track_row("appears-track", ix, t, &cols, pal, catalog, row))
+                            Some(
+                                track_row("appears-track", ix, t, &cols, pal, catalog, row)
+                                    .debug_selector(|| format!("appears-track-{ix}")),
+                            )
                         }))
+                        .when_some(and_more(shown.len()), |d, more| {
+                            d.child(
+                                quiet_line(more, pal)
+                                    .pt_3()
+                                    .debug_selector(|| "appears-more".into()),
+                            )
+                        })
                 })
                 .into_any_element(),
         };
@@ -702,5 +731,84 @@ impl Render for SelectionBar {
                     .on_click(move |_, _, cx| clear.update(cx, |c, cx| c.unselect(cx))),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // not `super::*`: it would bring the `test` macro of GPUI along
+    use super::{APPEARANCES_SHOWN, PageView, and_more};
+    use crate::catalog::Catalog;
+    use gpui_kit::{AppContext as _, TestAppContext, VisualTestContext};
+    use melodie_core::db;
+    use melodie_core::env::Env;
+    use melodie_desktop::browse::Place;
+
+    /// `ar9` featured on `featured` tracks of `ar1`; `ar8` credited on nothing.
+    fn copy(env: &Env, featured: usize) {
+        let conn = db::create(&db::db_path(env)).unwrap();
+        conn.execute_batch(
+            "INSERT INTO artists(id, name, albumCount) VALUES ('ar1', 'Ada Marlow', 1),
+               ('ar9', 'Lior Castell', 0), ('ar8', 'Nova Reyes', 0);
+             INSERT INTO albums(id, name, artistId) VALUES ('al1', 'Lanterns', 'ar1');",
+        )
+        .unwrap();
+        for n in 0..featured {
+            conn.execute(
+                "INSERT INTO tracks(id, title, artistId, albumId, track)
+                 VALUES (?1, ?1, 'ar1', 'al1', ?2)",
+                (format!("t{n:03}"), n as i64),
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO track_artists(track, artist) VALUES (?1, 'ar9')",
+                [format!("t{n:03}")],
+            )
+            .unwrap();
+        }
+    }
+
+    /// The page of the artist `id`, drawn without a screen: which of the elements the tests look
+    /// for are there.
+    fn drawn(featured: usize, id: &str, found: &[&'static str]) -> Vec<bool> {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        copy(&env, featured);
+        let mut app = TestAppContext::single();
+        let (shared, catalog) = app.update(|cx| {
+            let shared = crate::app::for_tests(env.clone(), cx);
+            let catalog = cx.new(|cx| Catalog::new(env.clone(), shared.clone(), cx));
+            (shared, catalog)
+        });
+        catalog.update(&mut app, |c, cx| c.start_at(Place::Artist(id.into()), cx));
+        app.run_until_parked();
+        let (_, cx): (_, &mut VisualTestContext) =
+            app.add_window_view(|_, _| PageView::new(shared.clone(), catalog.clone()));
+        cx.run_until_parked();
+        found
+            .iter()
+            .map(|selector| cx.debug_bounds(selector).is_some())
+            .collect()
+    }
+
+    #[test]
+    fn at_most_a_hundred_appearances_are_drawn_and_the_rest_is_counted() {
+        assert_eq!(APPEARANCES_SHOWN, 100);
+        let rows = ["appears-track-0", "appears-track-99", "appears-track-100"];
+        let found = [rows.as_slice(), &["appears-more"]].concat();
+        assert_eq!(
+            drawn(APPEARANCES_SHOWN + 50, "ar9", &found),
+            [true, true, false, true]
+        );
+        // a list within the cap says nothing more
+        assert_eq!(
+            drawn(APPEARANCES_SHOWN, "ar9", &found),
+            [true, true, false, false]
+        );
+        assert_eq!(
+            and_more(APPEARANCES_SHOWN + 50).as_deref(),
+            Some("and 50 more")
+        );
+        assert_eq!(and_more(APPEARANCES_SHOWN), None);
     }
 }
