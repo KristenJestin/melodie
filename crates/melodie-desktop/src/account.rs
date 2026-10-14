@@ -917,16 +917,26 @@ mod tests {
         use std::os::fd::AsRawFd as _;
         let d = tempfile::tempdir().unwrap();
         let path = d.path().join("sync.lock");
+        // the other tests start processes: one forked while a lock is open holds it until it
+        // runs its program, so what is let go may still be held a moment
+        let soon = |ok: &dyn Fn() -> bool| {
+            (0..100).any(|_| {
+                let done = ok();
+                if !done {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                done
+            })
+        };
         assert!(!sync_running_at(&path));
         let f = std::fs::File::create(&path).unwrap();
-        assert!(!sync_running_at(&path));
-        assert_eq!(
-            unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
-            0
-        );
+        assert!(soon(&|| !sync_running_at(&path)));
+        assert!(soon(&|| unsafe {
+            libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0
+        }));
         assert!(sync_running_at(&path));
         drop(f);
-        assert!(!sync_running_at(&path));
+        assert!(soon(&|| !sync_running_at(&path)));
     }
 
     #[test]
