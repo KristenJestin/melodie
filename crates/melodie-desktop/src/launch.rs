@@ -282,6 +282,23 @@ impl Job {
 }
 
 impl Job {
+    /// It changes what plays or the queue: these run one after the other, in the order asked, so
+    /// the last click wins.
+    pub fn plays(&self) -> bool {
+        matches!(
+            self,
+            Self::PlayMix
+                | Self::Rediscover
+                | Self::Play { .. }
+                | Self::Queue { .. }
+                | Self::PlayTracks { .. }
+                | Self::QueueTracks { .. }
+                | Self::Mix { .. }
+                | Self::MixGenre { .. }
+                | Self::QueueMix(_)
+        )
+    }
+
     /// What `melodie` reads on its standard input: the ids of several tracks, one per line.
     pub fn stdin(&self) -> Option<String> {
         match self {

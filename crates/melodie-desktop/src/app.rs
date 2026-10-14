@@ -113,7 +113,13 @@ pub struct Shared {
     _watch: Option<notify::RecommendedWatcher>,
     /// The playlist jobs running, and those waiting behind them.
     playlist_jobs: Lanes<(Job, Done)>,
+    /// The jobs that change what plays, one lane (`PLAYER`): a quicker job started later would
+    /// otherwise be overtaken by an earlier, slower one.
+    play_jobs: Lanes<Job>,
 }
+
+/// The lane of `Shared::play_jobs`.
+const PLAYER: &str = "player";
 
 /// Something the user started playing from the window.
 pub struct Started(pub Seen);
@@ -162,7 +168,7 @@ impl Shared {
 
     /// Play or pause; with nothing current, the queue from its start, or with no daemon the
     /// personal mix.
-    pub fn play_or_pause(&self, cx: &mut Context<Self>) {
+    pub fn play_or_pause(&mut self, cx: &mut Context<Self>) {
         match (
             self.player.following,
             self.player.current,
@@ -184,10 +190,21 @@ impl Shared {
     }
 
     /// Runs `melodie` for what needs the server; its first error line is said in the window.
-    pub fn run(&self, job: Job, cx: &mut Context<Self>) {
+    pub fn run(&mut self, job: Job, cx: &mut Context<Self>) {
         if let Some(seen) = Seen::of_job(&job) {
             cx.emit(Started(seen));
         }
+        if !job.plays() {
+            return self.spawn_run(job, cx);
+        }
+        if let Some(job) = self.play_jobs.start(PLAYER, job) {
+            self.spawn_run(job, cx);
+        }
+    }
+
+    /// Runs `job` now; when it is done, the next job that changes what plays, if it is one.
+    fn spawn_run(&self, job: Job, cx: &mut Context<Self>) {
+        let lane = job.plays();
         let program = self.program.clone();
         let what = match &job {
             Job::PlayMix => "Could not start your mix",
@@ -243,12 +260,19 @@ impl Shared {
         });
         cx.spawn(async move |this, cx| {
             let msg = match task.await {
-                Ok(None) => return,
-                Ok(Some(said)) => said,
-                Err(Some(why)) if !why.is_empty() => format!("{what}: {why}"),
-                Err(_) => what.to_string(),
+                Ok(None) => None,
+                Ok(Some(said)) => Some(said),
+                Err(Some(why)) if !why.is_empty() => Some(format!("{what}: {why}")),
+                Err(_) => Some(what.to_string()),
             };
-            let _ = this.update(cx, |s, cx| s.fail(msg, cx));
+            let _ = this.update(cx, |s, cx| {
+                if let Some(msg) = msg {
+                    s.fail(msg, cx);
+                }
+                if lane && let Some(next) = s.play_jobs.done(PLAYER) {
+                    s.spawn_run(next, cx);
+                }
+            });
         })
         .detach();
     }
@@ -534,6 +558,7 @@ pub fn bare(env: Env, program: PathBuf, cx: &mut App) -> Entity<Shared> {
         program,
         _watch: None,
         playlist_jobs: Lanes::default(),
+        play_jobs: Lanes::default(),
     })
 }
 
@@ -603,6 +628,7 @@ pub fn start(
         program: launch::program(std::env::current_exe().ok().as_deref()),
         _watch: None,
         playlist_jobs: Lanes::default(),
+        play_jobs: Lanes::default(),
     });
     apply_component_theme(shared.read(cx).target_palette(), cx);
     shared.update(cx, |s, cx| s.follow_cover(cx));
@@ -665,4 +691,47 @@ pub fn start(
         .detach();
     }
     (shared, clock)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{bare, fake_melodie, ran};
+    use gpui_kit::{TestAppContext, TestDispatcher};
+    use melodie_core::env::Env;
+    use melodie_desktop::launch::Job;
+    use melodie_desktop::launch::Kind;
+
+    #[test]
+    fn the_plays_run_one_after_the_other_in_the_order_clicked() {
+        // the test executor runs the tasks ready in an order drawn from its seed
+        for seed in 0..8 {
+            let dir = tempfile::tempdir().unwrap();
+            let program = fake_melodie(dir.path());
+            let env = Env::with_home(dir.path().join("home"));
+            let mut app = TestAppContext::build(TestDispatcher::new(seed), None);
+            let shared = app.update(|cx| bare(env, program.clone(), cx));
+            shared.update(&mut app, |s, cx| {
+                let play = |id: &str| Job::Play {
+                    kind: Kind::Album,
+                    id: id.into(),
+                    shuffle: false,
+                };
+                s.run(play("first"), cx);
+                s.run(
+                    Job::QueueTracks {
+                        ids: vec!["second".into()],
+                        next: true,
+                    },
+                    cx,
+                );
+                s.run(play("third"), cx);
+            });
+            app.run_until_parked();
+            assert_eq!(
+                ran(&program),
+                "play album -- first\nqueue track --next -\nsecond\nplay album -- third\n",
+                "seed {seed}: the last click wins"
+            );
+        }
+    }
 }
