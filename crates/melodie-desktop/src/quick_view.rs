@@ -484,9 +484,14 @@ fn is_track(item: &Item) -> bool {
 /// The side of the badge on the cover of the album playing.
 const BADGE: f32 = 16.;
 
-/// The colour of a result's name: the accent when it is the music playing.
-fn name_color(mark: Option<Mark>, pal: Palette) -> Hsla {
-    if mark.is_some() { pal.accent } else { pal.fg }
+/// The colour of a result's name: the accent when it is the track playing. An album playing is
+/// told by the badge on its cover.
+fn name_color(item: &Item, mark: Option<Mark>, pal: Palette) -> Hsla {
+    if mark.is_some() && is_track(item) {
+        pal.accent
+    } else {
+        pal.fg
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -567,7 +572,7 @@ fn row(
                     div()
                         .truncate()
                         .text_sm()
-                        .text_color(name_color(mark, pal))
+                        .text_color(name_color(item, mark, pal))
                         .child(name),
                 )
                 .child(
@@ -1131,12 +1136,38 @@ mod tests {
     }
 
     #[test]
-    fn the_title_of_the_music_playing_is_in_the_accent_colour() {
+    fn the_title_of_the_track_playing_is_in_the_accent_colour_and_an_album_keeps_its_own() {
+        use melodie_core::search::{Hit, Kind};
         use melodie_desktop::playing::Mark;
+        use melodie_desktop::quick::Item;
         use melodie_desktop::theme::Palette;
+        let hit = |kind| {
+            Item::Found(Hit {
+                kind,
+                id: "x".into(),
+                name: "x".into(),
+                artist: String::new(),
+                album: String::new(),
+                year: 0,
+                count: 0,
+                duration: 0,
+                cover: None,
+                starred: false,
+                album_id: None,
+                artist_id: None,
+            })
+        };
         let pal = Palette::base(None, true);
-        assert_eq!(super::name_color(Some(Mark::Playing), pal), pal.accent);
-        assert_eq!(super::name_color(Some(Mark::Paused), pal), pal.accent);
-        assert_eq!(super::name_color(None, pal), pal.fg);
+        let (track, album) = (hit(Kind::Track), hit(Kind::Album));
+        assert_eq!(
+            super::name_color(&track, Some(Mark::Playing), pal),
+            pal.accent
+        );
+        assert_eq!(
+            super::name_color(&track, Some(Mark::Paused), pal),
+            pal.accent
+        );
+        assert_eq!(super::name_color(&track, None, pal), pal.fg);
+        assert_eq!(super::name_color(&album, Some(Mark::Playing), pal), pal.fg);
     }
 }
