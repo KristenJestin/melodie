@@ -5,6 +5,7 @@ use crate::app::Shared;
 use crate::catalog::Catalog;
 use crate::context_menu::Menued as _;
 use crate::dialogs::{self, Dialog};
+use crate::equaliser::Equaliser;
 use crate::motion;
 use crate::player::palette;
 use crate::widgets::{IconButton, follow_pointer, pointer};
@@ -16,6 +17,7 @@ use gpui_kit::*;
 use melodie_desktop::browse::Place;
 use melodie_desktop::covers::{Cover, Covers};
 use melodie_desktop::menu::{Item, Spot};
+use melodie_desktop::playing::Mark;
 use melodie_desktop::playlists::{self, PICTURE};
 use melodie_desktop::theme::{Palette, mix};
 
@@ -55,6 +57,8 @@ struct Entry {
     pal: Palette,
     to: Place,
     catalog: Entity<Catalog>,
+    /// The music playing was started from this playlist.
+    mark: Option<Mark>,
 }
 
 impl RenderOnce for Entry {
@@ -62,6 +66,7 @@ impl RenderOnce for Entry {
         let (ptr, h, d) = pointer(&self.id, true, window, cx);
         let s = motion::flag((self.id.clone(), "on"), self.on, motion::HOVER, window, cx);
         let pal = self.pal;
+        let mark_id = (self.id.clone(), "equaliser");
         let fg = mix(pal.secondary, pal.fg, s.max(h));
         let (catalog, to) = (self.catalog, self.to);
         follow_pointer(div().id(self.id), ptr)
@@ -100,10 +105,13 @@ impl RenderOnce for Entry {
                         .min_w_0()
                         .truncate()
                         .text_sm()
-                        .text_color(fg)
+                        .text_color(if self.mark.is_some() { pal.accent } else { fg })
                         .when(self.on, |d| d.font_weight(FontWeight::SEMIBOLD))
                         .child(self.label),
                 )
+            })
+            .when_some(self.mark.filter(|_| !self.compact), |d, mark| {
+                d.child(Equaliser::new(mark_id, mark, pal.accent))
             })
     }
 }
@@ -120,9 +128,9 @@ impl Render for Sidebar {
                 Covers::new(c.covers.clone(), window.scale_factor()),
             )
         };
-        let (queue_open, settings_open) = {
+        let (queue_open, settings_open, playing) = {
             let s = self.shared.read(cx);
-            (s.queue_open, s.settings_open)
+            (s.queue_open, s.settings_open, s.playing.clone())
         };
         let entry = |id: &'static str, icon, label: &'static str, to: Place| Entry {
             id: id.into(),
@@ -134,6 +142,7 @@ impl Render for Sidebar {
             pal,
             to,
             catalog: self.catalog.clone(),
+            mark: None,
         };
         let (queue, gear) = (self.shared.clone(), self.shared.clone());
         v_flex()
@@ -224,6 +233,7 @@ impl Render for Sidebar {
                                 pal,
                                 to: Place::Playlist(p.id.clone()),
                                 catalog: self.catalog.clone(),
+                                mark: playing.playlist(&p.id),
                             })
                     })),
             )

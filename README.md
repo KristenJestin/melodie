@@ -126,6 +126,20 @@ Screenshots and a recording of the animations, made with invented data, are in
   current one marked, the next ones. A click plays a track; drag a track onto another to move it
   there; the cross on a row removes it; the button at the top removes what comes after the
   current track.
+- **What plays, wherever it is listed.** In every track table (an album, a playlist, the artist's
+  top tracks, the library, the search) the row of the current track has its title in the accent
+  colour and a small equaliser in the `#` column (before the title in the tables that have no
+  `#`): it moves while the music plays and stands still when it is paused or stopped, and it is
+  apart from the picked and the hovered looks. A playlist holding the same track twice marks the
+  occurrence the queue is at when the window started the playlist, in its order or from one of
+  its rows (the window keeps which row each entry was sent from), and every occurrence otherwise
+  (the queue was shuffled, or started elsewhere). The
+  card or row of the album and of the artist of the current track (the albums, the artist page,
+  the home, the search) has its name in the accent colour and the same equaliser, and so has a
+  playlist (the home, the sidebar, the search) while the queue is the one the window started
+  from it: a play of the playlist, or a double click on one of its rows. The album and the artist
+  are read from the local copy, once for each track that begins, away from the window's thread.
+  The queue's own marking of its current row is unchanged.
 - **The player bar**, at the bottom of every place but the player: on the left the cover, the
   title (opens the album) and the artist (opens the artist), and the heart; in the middle
   previous, play/pause and next, and under them the position bar to drag, with the elapsed and

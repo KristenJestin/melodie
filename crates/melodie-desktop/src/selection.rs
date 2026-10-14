@@ -165,7 +165,7 @@ impl Selection {
         shown: &Shown,
         ix: usize,
         click: Click,
-    ) -> Option<Job> {
+    ) -> Option<Played> {
         match click {
             Click::Play if self.alone(list, ix) => play_from(shown, ix),
             Click::Play => {
@@ -193,7 +193,7 @@ impl Selection {
     }
 
     /// What Enter plays: the list from the first row picked, in the order shown.
-    pub fn play_picked(&self, list: &Place) -> Option<Job> {
+    pub fn play_picked(&self, list: &Place) -> Option<Played> {
         let shown = self.shown(list)?;
         play_from(shown, *self.picked.first()?)
     }
@@ -219,10 +219,18 @@ impl Selection {
 const PLAYED: usize = 1000;
 const BEFORE: usize = 100;
 
+/// A play of rows of a list: the job, and the list's own rank of each row it sends, in the order
+/// sent (which occurrence of a track listed twice the queue is at).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Played {
+    pub job: Job,
+    pub ranks: Vec<usize>,
+}
+
 /// The list in the order shown around the row `ix`: up to `BEFORE` rows above it, for Previous,
 /// and the rest of `PLAYED` from it on. A whole library would make a queue nobody scrolls and a
 /// long wait for the first sound.
-fn play_from(shown: &Shown, ix: usize) -> Option<Job> {
+fn play_from(shown: &Shown, ix: usize) -> Option<Played> {
     if ix >= shown.len() {
         return None;
     }
@@ -231,9 +239,14 @@ fn play_from(shown: &Shown, ix: usize) -> Option<Job> {
     let ids = (first..end)
         .map(|i| shown.row(i).map(|(_, t)| t.id.clone()))
         .collect::<Option<Vec<_>>>()?;
-    Some(Job::PlayTracks {
-        ids,
-        from: ix - first,
+    Some(Played {
+        job: Job::PlayTracks {
+            ids,
+            from: ix - first,
+        },
+        ranks: (first..end)
+            .filter_map(|i| shown.row(i).map(|(rank, _)| rank))
+            .collect(),
     })
 }
 
@@ -360,10 +373,14 @@ mod tests {
         )
     }
 
-    fn play_from(ids: &[&str], from: usize) -> Option<Job> {
-        Some(Job::PlayTracks {
-            ids: ids.iter().map(|s| s.to_string()).collect(),
-            from,
+    /// A play of the sorted rows `ids`, which are the list's own rows `ranks`.
+    fn play_from(ids: &[&str], ranks: &[usize], from: usize) -> Option<Played> {
+        Some(Played {
+            job: Job::PlayTracks {
+                ids: ids.iter().map(|s| s.to_string()).collect(),
+                from,
+            },
+            ranks: ranks.to_vec(),
         })
     }
 
@@ -377,7 +394,7 @@ mod tests {
         );
         assert_eq!(
             s.left_click(&here(), &shown, 1, Click::of(false, false, 2)),
-            play_from(&["c", "b", "a"], 1),
+            play_from(&["c", "b", "a"], &[2, 1, 0], 1),
             "the whole list in the order shown, from this row"
         );
     }
@@ -388,7 +405,10 @@ mod tests {
         let clicks: Vec<_> = (1..=3)
             .map(|n| s.left_click(&here(), &shown, 2, Click::of(false, false, n)))
             .collect();
-        assert_eq!(clicks, [None, play_from(&["c", "b", "a"], 2), None]);
+        assert_eq!(
+            clicks,
+            [None, play_from(&["c", "b", "a"], &[2, 1, 0], 2), None]
+        );
         assert_eq!(s.ranks(&here()), [2]);
     }
 
@@ -486,7 +506,10 @@ mod tests {
         assert_eq!(s.play_picked(&here()), None);
         s.click(&here(), &shown, 2, How::Toggle);
         s.click(&here(), &shown, 1, How::Toggle);
-        assert_eq!(s.play_picked(&here()), play_from(&["c", "b", "a"], 1));
+        assert_eq!(
+            s.play_picked(&here()),
+            play_from(&["c", "b", "a"], &[2, 1, 0], 1)
+        );
         assert_eq!(s.play_picked(&Place::Tracks), None);
     }
 
@@ -513,7 +536,14 @@ mod tests {
             None,
         );
         let sent = |ix| match super::play_from(&shown, ix) {
-            Some(Job::PlayTracks { ids, from }) => {
+            Some(Played {
+                job: Job::PlayTracks { ids, from },
+                ranks,
+            }) => {
+                assert_eq!(
+                    ranks,
+                    (ix - from..ix - from + ids.len()).collect::<Vec<_>>()
+                );
                 (ids.len(), from, ids[0].clone(), ids[from].clone())
             }
             other => panic!("{other:?}"),

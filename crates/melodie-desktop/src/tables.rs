@@ -8,6 +8,7 @@ use crate::app::Shared;
 use crate::catalog::Catalog;
 use crate::context_menu::{self, Menued as _};
 use crate::dialogs::{self, Dialog};
+use crate::equaliser::{Equaliser, name_line};
 use crate::player::palette;
 use crate::tips::Tipped as _;
 use crate::widgets::{Hover, Revealed as _, hover, title_with_aside};
@@ -22,6 +23,7 @@ use melodie_desktop::covers::Covers;
 use melodie_desktop::figures::{Figures as _, clock_text};
 use melodie_desktop::launch::{Adding, Job, Kind};
 use melodie_desktop::menu::{Item, Spot};
+use melodie_desktop::playing::{Mark, Marks};
 use melodie_desktop::selection::{Click, Selection};
 use melodie_desktop::table::{self, Col, ColSort, Cols, Shown, Table, Width};
 use melodie_desktop::theme::Palette;
@@ -162,6 +164,8 @@ pub struct RowCtx {
     /// The list is shown sorted: its rows are not dragged.
     pub sorted: bool,
     pub selected: bool,
+    /// The row is the music playing now (or paused on): its title in the accent and an equaliser.
+    pub mark: Option<Mark>,
     /// The list the row is shown in, which a click picks in.
     pub shown: Shown,
     /// The playlist the row is in, when the user may edit it: remove the row, drag it elsewhere.
@@ -171,12 +175,21 @@ pub struct RowCtx {
 }
 
 impl RowCtx {
-    /// The row shown at `ix` of `shown`, the list at `here`, picked or not.
-    pub fn of(selection: &Selection, here: &Place, shown: &Shown, ix: usize, hover: Hover) -> Self {
+    /// The row shown at `ix` of `shown`, the list at `here`, picked or not, playing or not.
+    pub fn of(
+        selection: &Selection,
+        here: &Place,
+        shown: &Shown,
+        ix: usize,
+        hover: Hover,
+        marks: &Marks,
+    ) -> Self {
+        let row = shown.row(ix);
         Self {
-            rank: shown.row(ix).map_or(ix, |(rank, _)| rank),
+            rank: row.map_or(ix, |(rank, _)| rank),
             sorted: shown.sort.is_some(),
             selected: selection.has(here, ix),
+            mark: row.and_then(|(rank, t)| marks.of(&t.id, rank)),
             shown: shown.clone(),
             playlist: None,
             hover,
@@ -275,7 +288,8 @@ pub fn track_row(
         }
     };
     let (select, shown) = (catalog.clone(), row.shown.clone());
-    let (accent, selected) = (pal.accent, row.selected);
+    let (accent, selected, mark) = (pal.accent, row.selected, row.mark);
+    let numbered = cols.contains(&Col::Number);
     let look = row.hover.look;
     let (menued, menu_shown, menu_playlist) =
         (catalog.clone(), row.shown.clone(), row.playlist.clone());
@@ -315,8 +329,23 @@ pub fn track_row(
                 .children(cols.iter().map(|&col| {
                     let c = col_cell(col).text_color(pal.secondary);
                     match col {
-                        Col::Number => c.tabular().text_xs().child((rank + 1).to_string()),
-                        Col::Title => c.truncate().text_color(pal.fg).child(t.title.clone()),
+                        // the equaliser takes the place of the rank, still when paused
+                        Col::Number => match mark {
+                            Some(m) => c.child(Equaliser::new(key("equaliser"), m, accent)),
+                            None => c.tabular().text_xs().child((rank + 1).to_string()),
+                        },
+                        Col::Title => match mark {
+                            // no rank column in this table: the equaliser goes before the title
+                            Some(m) if !numbered => c
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .text_color(accent)
+                                .child(Equaliser::new(key("equaliser"), m, accent))
+                                .child(div().min_w_0().truncate().child(t.title.clone())),
+                            Some(_) => c.truncate().text_color(accent).child(t.title.clone()),
+                            None => c.truncate().text_color(pal.fg).child(t.title.clone()),
+                        },
                         Col::Artist => c.child(link(
                             key("artist"),
                             t.artist.clone(),
@@ -486,18 +515,25 @@ impl Render for TrackList {
         });
         let body = match &shown {
             None => empty_state(empty, "", pal).into_any_element(),
-            Some(shown) => track_rows(
-                "track-row",
-                shown.clone(),
-                cols,
-                pal,
-                &self.catalog,
-                (Place::Tracks, selection),
-                None,
-            )
-            .track_scroll(&self.scroll)
-            .flex_1()
-            .into_any_element(),
+            Some(shown) => {
+                let marks = self
+                    .shared
+                    .read(cx)
+                    .playing
+                    .marks(&Place::Tracks, &shown.tracks);
+                track_rows(
+                    "track-row",
+                    shown.clone(),
+                    cols,
+                    pal,
+                    &self.catalog,
+                    (Place::Tracks, selection, marks),
+                    None,
+                )
+                .track_scroll(&self.scroll)
+                .flex_1()
+                .into_any_element()
+            }
         };
         v_flex()
             .size_full()
@@ -507,7 +543,7 @@ impl Render for TrackList {
     }
 }
 
-/// The rows of a track table in a virtual list. They can be picked; in a playlist of the user's
+/// The rows of a track table in a virtual list, `marks` saying which is playing. They can be picked; in a playlist of the user's
 /// (`playlist`: its id and name) they can be removed, and dragged while the view is not sorted.
 pub fn track_rows(
     id: &'static str,
@@ -515,7 +551,7 @@ pub fn track_rows(
     cols: Arc<Cols>,
     pal: Palette,
     catalog: &Entity<Catalog>,
-    (here, selection): (Place, Selection),
+    (here, selection, marks): (Place, Selection, Marks),
     playlist: Option<(String, String)>,
 ) -> UniformList {
     let catalog = catalog.clone();
@@ -526,7 +562,7 @@ pub fn track_rows(
                 let hover = row_hover(id, ix, window, cx);
                 let row = RowCtx {
                     playlist: playlist.clone(),
-                    ..RowCtx::of(&selection, &here, &shown, ix, hover)
+                    ..RowCtx::of(&selection, &here, &shown, ix, hover, &marks)
                 };
                 Some(track_row(id, ix, t, &cols, pal, &catalog, row))
             })
@@ -602,12 +638,14 @@ fn artist_header(sort: Sort<ArtistBy>, pal: Palette, catalog: Entity<Catalog>) -
         .map(|d| col("ah-tracks", "TRACKS", ArtistBy::Tracks, true, 1., d))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn artist_row(
     ix: usize,
     a: &Artist,
     covers: &Covers,
     pal: Palette,
     catalog: &Entity<Catalog>,
+    mark: Option<Mark>,
     window: &mut Window,
     cx: &mut App,
 ) -> Stateful<Div> {
@@ -656,12 +694,13 @@ fn artist_row(
                             .map(|b| div().absolute().top(px(6.)).left(px(6.)).child(b)),
                         ),
                 )
-                .child(
-                    cell(None, 4.)
-                        .truncate()
-                        .text_color(pal.fg)
-                        .child(a.name.clone()),
-                )
+                .child(name_line(
+                    cell(None, 4.).text_color(pal.fg),
+                    ElementId::Name(format!("artist-row-equaliser-{ix}").into()),
+                    a.name.clone(),
+                    mark,
+                    pal.accent,
+                ))
                 .child(
                     cell(None, 1.)
                         .text_color(pal.secondary)
@@ -699,9 +738,13 @@ impl Render for ArtistList {
             Some(list) => {
                 let list = list.clone();
                 let catalog = self.catalog.clone();
+                let playing = self.shared.read(cx).playing.clone();
                 uniform_list("artist-rows", list.len(), move |range, window, cx| {
                     range
-                        .map(|ix| artist_row(ix, &list[ix], &covers, pal, &catalog, window, cx))
+                        .map(|ix| {
+                            let mark = playing.artist(&list[ix].id);
+                            artist_row(ix, &list[ix], &covers, pal, &catalog, mark, window, cx)
+                        })
                         .collect()
                 })
                 .track_scroll(&self.scroll)
@@ -738,7 +781,10 @@ mod tests {
     };
     use melodie_core::env::Env;
     use melodie_core::library::Track;
+    use melodie_core::proto::QueueEntry;
     use melodie_desktop::menu::Item;
+    use melodie_desktop::model::{PlayState, Player};
+    use melodie_desktop::playing::Playing;
     use melodie_desktop::selection::{Click, How};
     use melodie_desktop::table::Shown;
     use melodie_desktop::table::{Cols, Table};
@@ -908,6 +954,7 @@ mod tests {
     struct Tracks {
         catalog: Entity<Catalog>,
         shown: Shown,
+        playing: Playing,
     }
 
     impl Render for Tracks {
@@ -918,12 +965,13 @@ mod tests {
             };
             let cols = Table::Album.cols(1200.);
             let pal = Palette::base(None, true);
+            let marks = self.playing.marks(&here, &self.shown.tracks);
             div()
                 .size_full()
                 .children((0..self.shown.len()).filter_map(|ix| {
                     let (_, t) = self.shown.row(ix)?;
                     let hover = row_hover("t", ix, window, cx);
-                    let row = RowCtx::of(&selection, &here, &self.shown, ix, hover);
+                    let row = RowCtx::of(&selection, &here, &self.shown, ix, hover, &marks);
                     Some(track_row("t", ix, t, &cols, pal, &self.catalog, row))
                 }))
         }
@@ -952,6 +1000,7 @@ mod tests {
             Tracks {
                 catalog,
                 shown: Shown::new(tracks, None),
+                playing: Playing::default(),
             }
         });
         cx.run_until_parked();
@@ -994,5 +1043,72 @@ mod tests {
                 titles: vec!["Title 1".into(), "Title 2".into()],
             })
         );
+    }
+
+    /// A player holding the tracks `t0` to `t2`, at `current`.
+    fn player_at(current: Option<usize>, state: PlayState) -> Player {
+        Player {
+            following: true,
+            state,
+            tracks: (0..3u64)
+                .map(|i| QueueEntry {
+                    entry: i + 1,
+                    id: format!("t{i}"),
+                    ..QueueEntry::default()
+                })
+                .collect(),
+            current,
+            ..Player::default()
+        }
+    }
+
+    #[test]
+    fn the_equaliser_is_in_the_playing_row_and_follows_the_player() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = crate::app::fake_melodie(dir.path());
+        let env = Env::with_home(dir.path().join("home"));
+        let mut app = TestAppContext::single();
+        let (view, cx): (Entity<Tracks>, _) = app.add_window_view(|_, cx| {
+            let shared = crate::app::bare(env.clone(), program.clone(), cx);
+            let catalog = cx.new(|cx| Catalog::new(env.clone(), shared, cx));
+            let tracks: Arc<[Track]> = (0..3)
+                .map(|i| Track {
+                    id: format!("t{i}"),
+                    title: format!("Title {i}"),
+                    ..Track::default()
+                })
+                .collect();
+            Tracks {
+                catalog,
+                shown: Shown::new(tracks, None),
+                playing: Playing::default(),
+            }
+        });
+        let marked = |cx: &mut VisualTestContext| {
+            (0..3)
+                .filter(|i| match i {
+                    0 => cx.debug_bounds("t-equaliser-0").is_some(),
+                    1 => cx.debug_bounds("t-equaliser-1").is_some(),
+                    _ => cx.debug_bounds("t-equaliser-2").is_some(),
+                })
+                .collect::<Vec<_>>()
+        };
+        let follow = |cx: &mut VisualTestContext, p: Player| {
+            view.update(cx, |v, cx| {
+                v.playing.follow(&p);
+                cx.notify();
+            });
+            cx.run_until_parked();
+        };
+        cx.run_until_parked();
+        assert_eq!(marked(cx), Vec::<i32>::new(), "nothing plays");
+        follow(cx, player_at(Some(1), PlayState::Playing));
+        assert_eq!(marked(cx), [1], "the row of the current track");
+        follow(cx, player_at(Some(1), PlayState::Paused));
+        assert_eq!(marked(cx), [1], "still there when paused");
+        follow(cx, player_at(Some(2), PlayState::Playing));
+        assert_eq!(marked(cx), [2], "and on the next track at once");
+        follow(cx, Player::default());
+        assert_eq!(marked(cx), Vec::<i32>::new(), "gone with the player");
     }
 }

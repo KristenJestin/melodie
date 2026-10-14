@@ -6,6 +6,7 @@ use crate::albums::{GAP, PAD, album_cell, artist_play, content_width, cover_box,
 use crate::app::Shared;
 use crate::catalog::Catalog;
 use crate::context_menu::Menued as _;
+use crate::equaliser::name_line;
 use crate::motion;
 use crate::pages::plural;
 use crate::player::palette;
@@ -21,6 +22,7 @@ use melodie_desktop::covers::{Cover, Covers};
 use melodie_desktop::home::{self, Highlight, Kind, Mix, Row, SeeAll, Why};
 use melodie_desktop::launch::{Job, Kind as Of};
 use melodie_desktop::menu::{Item, Spot};
+use melodie_desktop::playing::Mark;
 use melodie_desktop::theme::{Palette, Tint, mix};
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -199,6 +201,7 @@ fn artist_cell(
     covers: &Covers,
     pal: Palette,
     catalog: &Entity<Catalog>,
+    mark: Option<Mark>,
     window: &mut Window,
     cx: &mut App,
 ) -> Stateful<Div> {
@@ -247,17 +250,20 @@ fn artist_cell(
                     .map(|b| div().absolute().right(px(10.)).bottom(px(10.)).child(b)),
                 ),
         )
-        .child(
+        .child(name_line(
             div()
                 .pt_1()
                 .w_full()
                 .text_center()
+                .justify_center()
                 .text_sm()
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(pal.fg)
-                .truncate()
-                .child(a.name.clone()),
-        )
+                .text_color(pal.fg),
+            ElementId::Name(format!("home-artist-equaliser-{}", a.id).into()),
+            a.name.clone(),
+            mark,
+            pal.accent,
+        ))
         .child(
             div()
                 .text_xs()
@@ -271,6 +277,7 @@ fn playlist_cell(
     covers: &Covers,
     pal: Palette,
     catalog: &Entity<Catalog>,
+    mark: Option<Mark>,
     window: &mut Window,
     cx: &mut App,
 ) -> Stateful<Div> {
@@ -301,15 +308,17 @@ fn playlist_cell(
             )
             .opacity(look.under()),
         )
-        .child(
+        .child(name_line(
             div()
                 .pt_1()
                 .text_sm()
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(pal.fg)
-                .truncate()
-                .child(p.name.clone()),
-        )
+                .text_color(pal.fg),
+            ElementId::Name(format!("home-playlist-equaliser-{}", p.id).into()),
+            p.name.clone(),
+            mark,
+            pal.accent,
+        ))
         .child(
             div()
                 .text_xs()
@@ -505,6 +514,7 @@ impl Render for RowView {
             return div();
         };
         let catalog = &self.catalog;
+        let playing = self.shared.read(cx).playing.clone();
         let me = cx.entity_id();
 
         let Some(s) = view.sections.iter().find(|s| s.kind == self.kind) else {
@@ -520,11 +530,17 @@ impl Render for RowView {
         let items: Vec<AnyElement> = match &s.row {
             Row::Albums(v) => v
                 .iter()
-                .map(|a| album_cell(a, &covers, SQUARE, pal, catalog).into_any_element())
+                .map(|a| {
+                    album_cell(a, &covers, SQUARE, pal, catalog, playing.album(&a.id))
+                        .into_any_element()
+                })
                 .collect(),
             Row::Artists(v) => v
                 .iter()
-                .map(|a| artist_cell(a, &covers, pal, catalog, window, cx).into_any_element())
+                .map(|a| {
+                    let mark = playing.artist(&a.id);
+                    artist_cell(a, &covers, pal, catalog, mark, window, cx).into_any_element()
+                })
                 .collect(),
             Row::Mixes(v) => v
                 .iter()
@@ -532,7 +548,10 @@ impl Render for RowView {
                 .collect(),
             Row::Playlists(v) => v
                 .iter()
-                .map(|p| playlist_cell(p, &covers, pal, catalog, window, cx).into_any_element())
+                .map(|p| {
+                    let mark = playing.playlist(&p.id);
+                    playlist_cell(p, &covers, pal, catalog, mark, window, cx).into_any_element()
+                })
                 .collect(),
         };
         v_flex().child(section_header(kind, pal, catalog)).child(

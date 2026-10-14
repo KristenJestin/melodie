@@ -337,6 +337,8 @@ mod tests {
             ("playbar.rs", include_str!("playbar.rs")),
             ("search.rs", include_str!("search.rs")),
             ("dialogs.rs", include_str!("dialogs.rs")),
+            ("equaliser.rs", include_str!("equaliser.rs")),
+            ("home_page.rs", include_str!("home_page.rs")),
         ];
         for (file, src) in views {
             for call in [
@@ -348,6 +350,7 @@ mod tests {
                 "exists()",
                 "db::",
                 "lib::",
+                "read_origin",
             ] {
                 assert!(
                     !src.contains(call),

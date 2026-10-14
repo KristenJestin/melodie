@@ -7,6 +7,7 @@ mod catalog;
 mod context_menu;
 mod cover_cache;
 mod dialogs;
+mod equaliser;
 mod home_page;
 mod motion;
 mod pages;
@@ -286,8 +287,10 @@ impl Root {
             Act::OpenMenu => context_menu::open_on_picked(&self.catalog, window, cx),
             Act::PlayPicked => {
                 let c = self.catalog.read(cx);
-                if let Some(job) = c.selection.play_picked(c.here()) {
-                    self.shared.update(cx, |s, cx| s.run(job, cx));
+                if let Some(played) = c.selection.play_picked(c.here()) {
+                    let here = c.here().clone();
+                    self.shared
+                        .update(cx, |s, cx| s.play_from(&here, played, cx));
                 }
             }
             Act::CloseDialog => self.views.dialogs.update(cx, |d, cx| d.close(cx)),

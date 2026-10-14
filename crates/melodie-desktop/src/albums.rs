@@ -4,6 +4,7 @@
 use crate::app::Shared;
 use crate::catalog::{Catalog, Empty};
 use crate::context_menu::Menued as _;
+use crate::equaliser::name_line;
 use crate::motion;
 use crate::player::palette;
 use crate::sidebar;
@@ -20,6 +21,7 @@ use melodie_desktop::covers::{Cover, Covers, Use};
 use melodie_desktop::launch::{Job, Kind};
 use melodie_desktop::layout;
 use melodie_desktop::menu::{Item, Spot};
+use melodie_desktop::playing::Mark;
 use melodie_desktop::reveal;
 use melodie_desktop::theme::Palette;
 use std::cell::Cell;
@@ -99,8 +101,10 @@ pub fn album_cell(
     side: f32,
     pal: Palette,
     catalog: &Entity<Catalog>,
+    mark: Option<Mark>,
 ) -> AlbumCell {
     AlbumCell {
+        mark,
         id: album.id.clone(),
         name: album.name.clone(),
         artist: album.artist.clone(),
@@ -116,6 +120,8 @@ pub fn album_cell(
 /// window, and its callers have none to hand over.
 #[derive(IntoElement)]
 pub struct AlbumCell {
+    /// The music playing is from this album.
+    mark: Option<Mark>,
     id: String,
     name: String,
     artist: String,
@@ -129,6 +135,7 @@ pub struct AlbumCell {
 impl RenderOnce for AlbumCell {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let Self {
+            mark,
             id,
             name,
             artist,
@@ -195,15 +202,17 @@ impl RenderOnce for AlbumCell {
                         ),
                     ),
             )
-            .child(
+            .child(name_line(
                 div()
                     .pt_1()
                     .text_sm()
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(pal.fg)
-                    .truncate()
-                    .child(name),
-            )
+                    .text_color(pal.fg),
+                ElementId::Name(format!("album-equaliser-{id}").into()),
+                name,
+                mark,
+                pal.accent,
+            ))
             .child(
                 div()
                     .text_xs()
@@ -395,6 +404,7 @@ impl Render for AlbumGrid {
                 let rows = list.len().div_ceil(cols);
                 let catalog = self.catalog.clone();
                 let asked = self.asked.clone();
+                let playing = self.shared.read(cx).playing.clone();
                 uniform_list("album-rows", rows, move |range, _, cx| {
                     // the library came at thumbnail size; the rows shown want their own, before
                     // anything that waits. Asked later: nothing here reads a file.
@@ -421,11 +431,10 @@ impl Render for AlbumGrid {
                                 .px(px(PAD))
                                 .pb(px(GAP))
                                 .gap(px(GAP))
-                                .children(
-                                    list[start..end]
-                                        .iter()
-                                        .map(|a| album_cell(a, &covers, side, pal, &catalog)),
-                                )
+                                .children(list[start..end].iter().map(|a| {
+                                    let mark = playing.album(&a.id);
+                                    album_cell(a, &covers, side, pal, &catalog, mark)
+                                }))
                         })
                         .collect()
                 })
@@ -435,5 +444,89 @@ impl Render for AlbumGrid {
             }
         };
         v_flex().size_full().child(header).child(body)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // not `super::*`: it would bring the `test` macro of GPUI along
+    use super::album_cell;
+    use crate::catalog::Catalog;
+    use gpui_kit::{
+        AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, Styled as _,
+        TestAppContext, Window, div,
+    };
+    use melodie_core::env::Env;
+    use melodie_core::library::Album;
+    use melodie_desktop::covers::Covers;
+    use melodie_desktop::playing::Mark;
+    use melodie_desktop::theme::Palette;
+
+    struct Cell {
+        catalog: Entity<Catalog>,
+        mark: Option<Mark>,
+    }
+
+    impl Render for Cell {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let album = Album {
+                id: "al1".into(),
+                name: "Album 1".into(),
+                artist: "Nightfall".into(),
+                ..Album::default()
+            };
+            let covers = Covers::new(self.catalog.read(cx).covers.clone(), 1.);
+            let pal = Palette::base(None, true);
+            div().size_full().child(album_cell(
+                &album,
+                &covers,
+                160.,
+                pal,
+                &self.catalog,
+                self.mark,
+            ))
+        }
+    }
+
+    #[test]
+    fn the_card_of_the_album_playing_says_so_and_stops_when_it_does_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = crate::app::fake_melodie(dir.path());
+        let env = Env::with_home(dir.path().join("home"));
+        let mut app = TestAppContext::single();
+        let (view, cx) = app.add_window_view(|_, cx| {
+            let shared = crate::app::bare(env.clone(), program.clone(), cx);
+            Cell {
+                catalog: cx.new(|cx| Catalog::new(env.clone(), shared, cx)),
+                mark: None,
+            }
+        });
+        let shown =
+            |cx: &mut gpui_kit::VisualTestContext| cx.debug_bounds("album-equaliser-al1").is_some();
+        let mark = |cx: &mut gpui_kit::VisualTestContext, m: Option<Mark>| {
+            view.update(cx, |v, cx| {
+                v.mark = m;
+                cx.notify();
+            });
+            cx.run_until_parked();
+        };
+        let line = |cx: &mut gpui_kit::VisualTestContext| {
+            cx.debug_bounds("album-equaliser-al1-line").map(|b| b.size)
+        };
+        cx.run_until_parked();
+        assert!(!shown(cx), "another album plays");
+        let plain = line(cx).expect("the name line");
+        mark(cx, Some(Mark::Playing));
+        assert!(shown(cx));
+        assert_eq!(
+            line(cx),
+            Some(plain),
+            "the equaliser moves nothing under it"
+        );
+        mark(cx, Some(Mark::Paused));
+        assert!(shown(cx), "still, but there");
+        assert_eq!(line(cx), Some(plain));
+        mark(cx, None);
+        assert!(!shown(cx));
     }
 }

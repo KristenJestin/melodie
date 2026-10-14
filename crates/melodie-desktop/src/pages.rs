@@ -19,6 +19,7 @@ use melodie_desktop::browse::{self, Place};
 use melodie_desktop::covers::Covers;
 use melodie_desktop::figures::Figures as _;
 use melodie_desktop::launch::{Adding, Job, Kind};
+use melodie_desktop::playing::Playing;
 use melodie_desktop::selection::Selection;
 use melodie_desktop::table::{ColSort, Cols, Shown, Table};
 use melodie_desktop::theme::Palette;
@@ -43,6 +44,7 @@ fn album_rows(
     width: f32,
     pal: Palette,
     catalog: &Entity<Catalog>,
+    playing: &Playing,
 ) -> Div {
     let cols = browse::columns(width, MIN_CELL, GAP);
     let side = ((width - GAP * (cols - 1) as f32) / cols as f32).floor();
@@ -53,7 +55,7 @@ fn album_rows(
             .map(|row| {
                 h_flex().gap(px(GAP)).children(
                     row.iter()
-                        .map(|a| album_cell(a, covers, side, pal, catalog)),
+                        .map(|a| album_cell(a, covers, side, pal, catalog, playing.album(&a.id))),
                 )
             })
             .collect::<Vec<_>>(),
@@ -267,13 +269,14 @@ fn track_list(
     pal: Palette,
     scroll: &UniformListScrollHandle,
     catalog: &Entity<Catalog>,
-    (here, selection): (Place, Selection),
+    (here, selection, playing): (Place, Selection, Playing),
     playlist: Option<(String, String)>,
 ) -> Div {
     let sort = {
         let (catalog, here) = (catalog.clone(), here.clone());
         move |s, cx: &mut App| catalog.update(cx, |c, cx| c.sort_tracks(here.clone(), s, cx))
     };
+    let marks = playing.marks(&here, &shown.tracks);
     v_flex()
         .flex_1()
         .min_h_0()
@@ -291,7 +294,7 @@ fn track_list(
                 Arc::new(cols),
                 pal,
                 catalog,
-                (here, selection),
+                (here, selection, marks),
                 playlist,
             )
             .track_scroll(scroll)
@@ -335,6 +338,7 @@ impl Render for PageView {
                 .unwrap_or_else(|| Shown::new(Arc::from([]), None))
         };
         let catalog = &self.catalog;
+        let playing = self.shared.read(cx).playing.clone();
         let back = {
             let catalog = catalog.clone();
             h_flex()
@@ -418,7 +422,7 @@ impl Render for PageView {
                         pal,
                         &self.tracks,
                         catalog,
-                        (here.clone(), selection.clone()),
+                        (here.clone(), selection.clone(), playing.clone()),
                         None,
                     ))
                     .into_any_element()
@@ -463,7 +467,7 @@ impl Render for PageView {
                         pal,
                         &self.tracks,
                         catalog,
-                        (here.clone(), selection.clone()),
+                        (here.clone(), selection.clone(), playing.clone()),
                         own.then(|| (playlist.id.clone(), playlist.name.clone())),
                     ))
                     .into_any_element()
@@ -493,6 +497,7 @@ impl Render for PageView {
                 ))
                 .when(!top.is_empty(), |d| {
                     let (shown, cols) = (shown(), cols(Table::TopTracks));
+                    let marks = playing.marks(&here, &shown.tracks);
                     let sort = {
                         let (catalog, here) = (catalog.clone(), here.clone());
                         move |s, cx: &mut App| {
@@ -504,7 +509,7 @@ impl Render for PageView {
                         .children((0..shown.len()).filter_map(|ix| {
                             let (_, t) = shown.row(ix)?;
                             let hover = row_hover("top-track", ix, window, cx);
-                            let row = RowCtx::of(&selection, &here, &shown, ix, hover);
+                            let row = RowCtx::of(&selection, &here, &shown, ix, hover, &marks);
                             Some(track_row("top-track", ix, t, &cols, pal, catalog, row))
                         }))
                 })
@@ -516,6 +521,7 @@ impl Render for PageView {
                         width,
                         pal,
                         catalog,
+                        &playing,
                     ))
                 })
                 .into_any_element(),
