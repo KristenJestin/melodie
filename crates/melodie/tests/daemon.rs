@@ -2221,7 +2221,19 @@ const MALFORMED: [&str; 9] = [
 fn wait_for_the_first_copy(sb: &Sandbox) {
     let db = sb.home().join(".cache/melodie/library.db");
     let end = Instant::now() + Duration::from_secs(20);
-    while !db.exists() {
+    // the first copy is made in place: the file is there from its start, `synced_at` at its end
+    let complete = || {
+        rusqlite::Connection::open(&db)
+            .and_then(|c| {
+                c.query_row(
+                    "SELECT count(*) FROM meta WHERE key = 'synced_at'",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )
+            })
+            .is_ok_and(|n| n == 1)
+    };
+    while !db.exists() || !complete() {
         assert!(Instant::now() < end, "no local copy was made");
         std::thread::sleep(Duration::from_millis(50));
     }
