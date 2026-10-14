@@ -232,8 +232,7 @@ impl Catalog {
             }
         };
         let shown = Shown::new(tracks, self.sorts.get(place));
-        // a list read again (a copy finished): its rows picked would name other tracks
-        self.selection.clear_where(|p| p == place);
+        self.selection.read_again(place, &shown);
         self.views.insert(place.clone(), shown);
     }
 
@@ -556,7 +555,7 @@ impl Catalog {
             move |this, list, _| {
                 if this.sorts.get(&Place::Tracks) == sort {
                     let shown = Shown::read_sorted(list.into(), sort);
-                    this.selection.clear_where(|p| *p == Place::Tracks);
+                    this.selection.read_again(&Place::Tracks, &shown);
                     this.views.insert(Place::Tracks, shown);
                 }
             },

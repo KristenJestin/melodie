@@ -96,6 +96,21 @@ impl Selection {
         }
     }
 
+    /// `list` was read again as `shown`: its rows stay picked while it holds the same tracks in
+    /// the same order (a page read again while a first copy comes in), else other tracks would
+    /// be at their ranks.
+    pub fn read_again(&mut self, list: &Place, shown: &Shown) {
+        if self.of.as_ref() != Some(list) {
+            return;
+        }
+        match &self.shown {
+            Some(old) if old.len() == shown.len() && ids(old).eq(ids(shown)) => {
+                self.shown = Some(shown.clone())
+            }
+            _ => self.clear(),
+        }
+    }
+
     fn of(&self, list: &Place) -> Option<&BTreeSet<usize>> {
         (self.of.as_ref() == Some(list)).then_some(&self.picked)
     }
@@ -220,6 +235,11 @@ fn play_from(shown: &Shown, ix: usize) -> Option<Job> {
         ids,
         from: ix - first,
     })
+}
+
+/// The ids of a list, in the order shown.
+fn ids(shown: &Shown) -> impl Iterator<Item = &str> {
+    (0..shown.len()).filter_map(|i| shown.row(i).map(|(_, t)| t.id.as_str()))
 }
 
 #[cfg(test)]
@@ -468,6 +488,22 @@ mod tests {
         s.click(&here(), &shown, 1, How::Toggle);
         assert_eq!(s.play_picked(&here()), play_from(&["c", "b", "a"], 1));
         assert_eq!(s.play_picked(&Place::Tracks), None);
+    }
+
+    #[test]
+    fn a_list_read_again_keeps_its_rows_picked_while_its_tracks_are_the_same() {
+        let mut s = Selection::default();
+        s.click(&here(), &rows(), 3, How::Only);
+        s.read_again(&here(), &rows());
+        assert_eq!(s.ranks(&here()), [3], "the same tracks, in the same order");
+        let other = Shown::new((0..8).map(|i| track(&format!("u{i}"), "")).collect(), None);
+        s.read_again(&Place::Tracks, &other);
+        assert_eq!(s.ranks(&here()), [3], "another list");
+        s.read_again(&here(), &other);
+        assert!(
+            s.ranks(&here()).is_empty(),
+            "other tracks at the same ranks"
+        );
     }
 
     #[test]
