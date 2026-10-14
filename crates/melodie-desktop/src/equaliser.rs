@@ -110,11 +110,16 @@ pub fn name_line(
         Some(mark) => line
             .text_color(accent)
             .flex()
-            .items_center()
+            .items_start()
             .gap_2()
             // squeezed like the plain line when the card is short, not pushing its neighbours
             .overflow_hidden()
-            .child(Equaliser::new(id.clone(), mark, accent))
+            // on the middle of the first line of a `text_sm`, which the text starts at the top of
+            .child(
+                div()
+                    .mt(px(4.))
+                    .child(Equaliser::new(id.clone(), mark, accent)),
+            )
             .child(div().min_w_0().truncate().child(name.into())),
     }
 }
