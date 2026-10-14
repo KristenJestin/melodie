@@ -2865,7 +2865,16 @@ fn a_start_past_the_end_changes_nothing_on_a_live_queue() {
     .unwrap();
     let r = sb.request(json!({"cmd": "play", "tracks": [t.clone(), t], "start": 2}));
     assert_eq!(r["ok"], false, "{r}");
-    assert_eq!(sb.queue_list(), before);
+    // What a play could change; a cover still downloading fills `cover` in its own time.
+    let entries = |q: &Value| {
+        let tracks = q["tracks"].as_array().unwrap();
+        let tracks: Vec<_> = tracks
+            .iter()
+            .map(|t| (t["entry"].clone(), t["id"].clone()))
+            .collect();
+        (q["current"].clone(), tracks)
+    };
+    assert_eq!(entries(&sb.queue_list()), entries(&before));
     assert_eq!(sb.now()["id"], "t1");
 }
 
