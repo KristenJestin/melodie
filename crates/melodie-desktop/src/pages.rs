@@ -499,20 +499,13 @@ impl Render for PageView {
                             catalog.update(cx, |c, cx| c.sort_tracks(here.clone(), s, cx))
                         }
                     };
-                    let sorted = shown.sort.is_some();
                     d.child(section_title("Top tracks", pal))
                         .child(track_header(&cols, false, shown.sort, pal, sort))
                         .children((0..shown.len()).filter_map(|ix| {
-                            let (rank, t) = shown.row(ix)?;
-                            Some(track_row(
-                                "top-track",
-                                ix,
-                                t,
-                                &cols,
-                                pal,
-                                catalog,
-                                RowCtx::plain(rank, sorted, row_hover("top-track", ix, window, cx)),
-                            ))
+                            let (_, t) = shown.row(ix)?;
+                            let hover = row_hover("top-track", ix, window, cx);
+                            let row = RowCtx::of(&selection, &here, &shown, ix, hover);
+                            Some(track_row("top-track", ix, t, &cols, pal, catalog, row))
                         }))
                 })
                 .when(!albums.is_empty(), |d| {

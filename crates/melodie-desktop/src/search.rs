@@ -181,6 +181,8 @@ impl SearchView {
                         this.want_covers(&a, cx);
                         this.answer = Some(Arc::new(a));
                         this.tables = tables;
+                        // the rows picked were rows of the tables replaced
+                        this.catalog.update(cx, |c, cx| c.unselect(cx));
                         // sorted meanwhile
                         this.resort(cx);
                         this.empty = Empty::Loading;
@@ -209,7 +211,10 @@ impl SearchView {
     }
 
     fn sort(&mut self, place: Place, sort: Option<ColSort>, cx: &mut Context<Self>) {
-        self.catalog.update(cx, |c, _| c.sorts.set(place, sort));
+        self.catalog.update(cx, |c, cx| {
+            c.sorts.set(place, sort);
+            c.unselect(cx)
+        });
         self.resort(cx);
         cx.notify();
     }
@@ -448,6 +453,7 @@ impl Render for SearchView {
                 c.nav.can_go_back(),
             )
         };
+        let selection = self.catalog.read(cx).selection.clone();
         let text = self.text.clone();
         let catalog = &self.catalog;
         let field = h_flex()
@@ -478,8 +484,7 @@ impl Render for SearchView {
             (Place::Found(Kind::Track), Some(a)) => match self.tables.get(&here).cloned() {
                 None => div().into_any_element(),
                 Some(shown) => {
-                    let c = catalog.clone();
-                    let sorted = shown.sort.is_some();
+                    let (c, at) = (catalog.clone(), here.clone());
                     let header = self.header(here.clone(), &cols, pal, cx);
                     let rows = cols.clone();
                     v_flex()
@@ -490,9 +495,9 @@ impl Render for SearchView {
                             uniform_list("search-all", shown.len(), move |range, window, cx| {
                                 range
                                     .filter_map(|ix| {
-                                        let (rank, t) = shown.row(ix)?;
+                                        let (_, t) = shown.row(ix)?;
                                         let hover = row_hover("search-all", ix, window, cx);
-                                        let row = RowCtx::plain(rank, sorted, hover);
+                                        let row = RowCtx::of(&selection, &at, &shown, ix, hover);
                                         Some(track_row("search-all", ix, t, &rows, pal, &c, row))
                                     })
                                     .collect()
@@ -591,16 +596,14 @@ impl Render for SearchView {
                         )
                         .map(|d| match tracks.filter(|_| g.kind == search::Kind::Track) {
                             // the tracks are a track table, as everywhere
-                            Some(shown) => {
-                                let sorted = shown.sort.is_some();
-                                d.child(self.header(Place::Search, &cols, pal, cx))
-                                    .children((0..shown.len()).filter_map(|ix| {
-                                        let (rank, t) = shown.row(ix)?;
-                                        let hover = row_hover(list, ix, window, cx);
-                                        let row = RowCtx::plain(rank, sorted, hover);
-                                        Some(track_row(list, ix, t, &cols, pal, catalog, row))
-                                    }))
-                            }
+                            Some(shown) => d
+                                .child(self.header(Place::Search, &cols, pal, cx))
+                                .children((0..shown.len()).filter_map(|ix| {
+                                    let (_, t) = shown.row(ix)?;
+                                    let hover = row_hover(list, ix, window, cx);
+                                    let row = RowCtx::of(&selection, &here, shown, ix, hover);
+                                    Some(track_row(list, ix, t, &cols, pal, catalog, row))
+                                })),
                             None => d.children(g.hits.iter().enumerate().map(|(ix, h)| {
                                 let hover = row_hover(list, ix, window, cx);
                                 result_row(list, ix, h, &covers, pal, catalog, hover)

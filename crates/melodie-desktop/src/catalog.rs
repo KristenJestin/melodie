@@ -257,10 +257,10 @@ impl Catalog {
         }
     }
 
-    /// A Ctrl+click or a Shift+click on row `ix` of the current list.
-    pub fn select(&mut self, ix: usize, how: How, cx: &mut Context<Self>) {
+    /// A click on row `ix` of `shown`, the list at the current place.
+    pub fn select(&mut self, shown: &Shown, ix: usize, how: How, cx: &mut Context<Self>) {
         let here = self.here().clone();
-        self.selection.click(&here, ix, how);
+        self.selection.click(&here, shown, ix, how);
         cx.notify();
     }
 
