@@ -272,6 +272,9 @@ fn beta_version(tags: &[&str], run_number: &str) -> Output {
             .args(args)
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
             .current_dir(repo.path()))
     };
     git(&["init", "-q"]);
@@ -281,6 +284,9 @@ fn beta_version(tags: &[&str], run_number: &str) -> Output {
     }
     Command::new(root().join("tools/beta-version.sh"))
         .arg(run_number)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .current_dir(repo.path())
         .output()
         .unwrap()
