@@ -6,7 +6,9 @@
 
 use crate::browse::Place;
 use crate::model::{PlayState, Player};
-use melodie_core::library::Track;
+use melodie_core::db;
+use melodie_core::env::Env;
+use melodie_core::library::{self, Track};
 
 /// How a row shows that its music is the current one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +33,16 @@ impl Origin {
             artist: track.artist_id.clone(),
         }
     }
+}
+
+/// The album and the artist of the track `id` in the local copy. Does file I/O: never call it
+/// while drawing. `None` without a copy, or when the copy lacks the track.
+pub fn read_origin(env: &Env, id: &str) -> Option<Origin> {
+    let conn = db::open_existing(env).ok().flatten()?;
+    library::track(&conn, id)
+        .ok()
+        .flatten()
+        .map(|t| Origin::of(&t))
 }
 
 /// The playlist the window started the queue from, tied to that queue by the numbers of its
@@ -195,11 +207,14 @@ impl Playing {
 
 #[cfg(test)]
 mod tests {
-    use super::{Mark, Origin, Playing};
+    use super::{Mark, Origin, Playing, read_origin};
     use crate::browse::Place;
     use crate::model::{PlayState, Player};
+    use melodie_core::db;
+    use melodie_core::env::Env;
     use melodie_core::library::Track;
     use melodie_core::proto::QueueEntry;
+    use serde_json::json;
 
     fn track(id: &str) -> Track {
         Track {
@@ -494,5 +509,33 @@ mod tests {
         p.follow(&player(q, Some(1), PlayState::Playing));
         assert_eq!(p.album("al1"), PLAYING);
         assert_eq!(p.wants_origin(), None);
+    }
+
+    #[test]
+    fn the_origin_is_read_from_the_local_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::with_home(dir.path());
+        // no copy yet: nothing to say
+        assert_eq!(read_origin(&env, "t1"), None);
+        let path = db::db_path(&env);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut conn = db::create(&path).unwrap();
+        let tx = conn.transaction().unwrap();
+        db::insert_artist(&tx, &json!({"id":"ar1","name":"Nightfall","albumCount":1})).unwrap();
+        db::insert_album(
+            &tx,
+            &json!({"id":"al1","name":"Album 1","artist":"Nightfall","artistId":"ar1"}),
+        )
+        .unwrap();
+        db::insert_track(&tx, &json!({"id":"t1","title":"Low Tide","artist":"Nightfall","artistId":"ar1","album":"Album 1","albumId":"al1"})).unwrap();
+        tx.commit().unwrap();
+        assert_eq!(
+            read_origin(&env, "t1"),
+            Some(Origin {
+                album: Some("al1".into()),
+                artist: Some("ar1".into())
+            })
+        );
+        assert_eq!(read_origin(&env, "gone"), None, "a track the copy lacks");
     }
 }

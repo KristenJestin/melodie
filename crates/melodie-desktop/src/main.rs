@@ -287,7 +287,8 @@ impl Root {
             Act::PlayPicked => {
                 let c = self.catalog.read(cx);
                 if let Some(job) = c.selection.play_picked(c.here()) {
-                    self.shared.update(cx, |s, cx| s.run(job, cx));
+                    let here = c.here().clone();
+                    self.shared.update(cx, |s, cx| s.play_from(&here, job, cx));
                 }
             }
             Act::CloseDialog => self.views.dialogs.update(cx, |d, cx| d.close(cx)),

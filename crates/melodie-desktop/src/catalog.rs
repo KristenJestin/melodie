@@ -274,7 +274,7 @@ impl Catalog {
     pub fn left_click(&mut self, shown: &Shown, ix: usize, click: Click, cx: &mut Context<Self>) {
         let here = self.here().clone();
         if let Some(job) = self.selection.left_click(&here, shown, ix, click) {
-            self.run(job, cx);
+            self.shared.update(cx, |s, cx| s.play_from(&here, job, cx));
         }
         cx.notify();
     }
