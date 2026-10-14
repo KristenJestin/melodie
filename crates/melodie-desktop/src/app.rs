@@ -491,6 +491,37 @@ pub fn is_dark(a: WindowAppearance) -> bool {
     matches!(a, WindowAppearance::Dark | WindowAppearance::VibrantDark)
 }
 
+/// The state of a window without a screen nor a daemon, for the window's own tests.
+#[cfg(test)]
+pub fn for_tests(env: Env, cx: &mut App) -> Entity<Shared> {
+    let covers = cx.new(|_| CoverCache::new(env.clone(), 1.));
+    let waves = cx.new(|_| WaveCache::new(env.clone()));
+    cx.new(|_| Shared {
+        player: Player::default(),
+        art: Art::default(),
+        thumbs: Arc::default(),
+        thumbs_of: None,
+        thumbs_gen: 0,
+        covers,
+        waves,
+        theme: ThemeState {
+            omarchy: Omarchy::system(&env),
+            stored: None,
+            detected: false,
+            palette: None,
+        },
+        dark: true,
+        queue_open: false,
+        settings_open: false,
+        failure: None,
+        failures: 0,
+        socket: env.state_dir().join("no-daemon.sock"),
+        env,
+        _watch: None,
+        playlist_jobs: Lanes::default(),
+    })
+}
+
 /// Builds the state and starts following the daemon and the theme.
 pub fn start(
     env: Env,

@@ -250,6 +250,8 @@ impl Catalog {
 
     /// Reads the local copy again after a new one came: the playlists and the current place.
     pub fn reload(&mut self, cx: &mut Context<Self>) {
+        // the picked ranks belong to the list being replaced: rows may come in before them
+        self.selection.clear();
         self.load_playlists(cx);
         self.refresh(cx);
     }
@@ -623,5 +625,34 @@ impl Catalog {
     /// Runs `melodie` for an action; what it says is said in the window.
     pub fn run(&self, job: launch::Job, cx: &mut App) {
         self.shared.update(cx, |s, cx| s.run(job, cx));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // not `super::*`: it would bring the `test` macro of GPUI along
+    use super::Catalog;
+    use gpui_kit::{AppContext as _, TestAppContext};
+    use melodie_core::env::Env;
+    use melodie_desktop::browse::Place;
+    use melodie_desktop::selection::How;
+
+    #[test]
+    fn a_new_step_of_the_copy_clears_the_selection_its_rows_may_shift() {
+        let mut app = TestAppContext::single();
+        let d = tempfile::tempdir().unwrap();
+        let env = Env::with_home(d.path());
+        let catalog = app.update(|cx| {
+            let shared = crate::app::for_tests(env.clone(), cx);
+            cx.new(|cx| Catalog::new(env, shared, cx))
+        });
+        app.run_until_parked();
+        catalog.update(&mut app, |c, cx| {
+            c.selection.click(&Place::Tracks, 2, How::Toggle);
+            c.selection.click(&Place::Tracks, 5, How::Range);
+            assert_eq!(c.selection.count(&Place::Tracks), 4);
+            c.reload(cx);
+            assert_eq!(c.selection.count(&Place::Tracks), 0);
+        });
     }
 }
