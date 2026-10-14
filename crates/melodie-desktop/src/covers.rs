@@ -381,6 +381,11 @@ impl Queue {
             .filter(|w| !round.missing.contains(w))
             .collect();
         self.forget(|w| gone.contains(w));
+        for w in &gone {
+            self.tries.remove(*w);
+            self.given_up.remove(*w);
+            self.retry_at.remove(*w);
+        }
         match round.fetch {
             None => {}
             // nothing was done: the covers keep their tries
@@ -704,6 +709,34 @@ mod tests {
         assert_eq!(waits[1], RETRY_AFTER * 2);
         assert!(waits.windows(2).all(|w| w[0] <= w[1]), "{waits:?}");
         assert_eq!(*waits.last().unwrap(), RETRY_MAX, "but not for ever");
+    }
+
+    /// A cover that arrives starts afresh: given up once long ago, it does not wait twice as
+    /// long the next time the server fails on it.
+    #[test]
+    fn a_cover_that_arrives_is_no_longer_given_up() {
+        let (_d, env) = env();
+        let mut q = Queue::default();
+        let t0 = Instant::now();
+        let row = |q: &mut Queue, at: Instant| q.ask(vec!["c1".into()], Use::SMALL, 1.0, at, false);
+        let new = row(&mut q, t0);
+        q.missing(new);
+        drain_at(&env, &mut q, t0, |_| Fetch::Done);
+        let t1 = t0 + RETRY_AFTER;
+        let again = row(&mut q, t1);
+        q.missing(again);
+        let (_, found) = drain_at(&env, &mut q, t1, |wants| {
+            wants.iter().for_each(|w| put_want(&env, w));
+            Fetch::Done
+        });
+        assert!(found.contains_key("c1"));
+        assert!(q.given_up.is_empty() && q.retry_at.is_empty());
+
+        // the file goes (the cache was cleared) and the server fails on it again
+        std::fs::remove_file(cover::thumb_path(&env, "c1")).unwrap();
+        q.missing(at(&["c1"], Tier::Thumb));
+        drain_at(&env, &mut q, t1, |_| Fetch::Done);
+        assert_eq!(q.retry_at[&Want::new("c1", Tier::Thumb)], t1 + RETRY_AFTER);
     }
 
     #[test]
