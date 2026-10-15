@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/brand/png/social-preview.png" alt="Mélodie: a search typed in a terminal, found in the local copy and played by the daemon, beside the card of the track playing" width="100%">
+<img src="assets/brand/png/social-preview.png" alt="Mélodie: the waveform of the track playing, above a shelf of invented albums with the one playing marked" width="100%">
 
 [![Latest release](https://img.shields.io/github/v/release/KristenJestin/melodie)](https://github.com/KristenJestin/melodie/releases/latest)
 [![CI of dev](https://github.com/KristenJestin/melodie/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/KristenJestin/melodie/actions/workflows/ci.yml?query=branch%3Adev)

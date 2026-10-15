@@ -9,7 +9,7 @@ SVGs of this folder are the one source of the drawing; every other file is gener
 | `mark.svg` | the mark alone, for a dark background (the default) |
 | `mark-on-light.svg` | the mark alone, for a light background |
 | `icon.svg` | the icon: the mark on a dark rounded square; the desktop entry's icon (`dist/melodie.svg`) |
-| `social-preview.svg` | the social preview of the repository and the banner of the README: the mark, the name, the tagline, and a search typed in a terminal beside the card of the track playing, drawn (no capture, invented data) |
+| `social-preview.svg` | the social preview of the repository and the banner of the README: the mark, the name, the tagline, and the waveform of the track playing above a shelf of albums, drawn (no capture, invented albums) |
 
 The colours: pink `#fb749f` on dark (`#c42c63` on light), cream `#ece5d8`, the dark of the icon
 `#14120f`, and the plum black `#181216` of the social preview.
