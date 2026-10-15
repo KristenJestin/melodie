@@ -2497,6 +2497,23 @@ fn like_answers_while_a_write_holds_the_copy_past_two_seconds() {
 }
 
 #[test]
+fn the_daemon_moves_on_quickly_while_a_write_holds_the_copy() {
+    let sb = Sandbox::new(true);
+    addressable_library(&sb);
+    sb.ok(&["sync"]);
+    sb.ok(&["play", "album", "al1"]);
+    wait_until(5, "t1 playing", || sb.now()["id"] == "t1");
+    let writer = hold_copy(&sb);
+    let start = Instant::now();
+    // An early `next` writes a skip, and the next track reads its favourite: both in the copy.
+    sb.ok(&["next"]);
+    wait_until(5, "t2 playing", || sb.now()["id"] == "t2");
+    let took = start.elapsed();
+    writer.execute_batch("COMMIT").unwrap();
+    assert!(took < Duration::from_secs(15), "{took:?}");
+}
+
+#[test]
 fn an_unknown_id_is_one_launcher_entry_in_json() {
     let sb = Sandbox::new(true);
     addressable_library(&sb);

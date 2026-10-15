@@ -84,10 +84,9 @@ pub fn create_before_browsing(path: &std::path::Path) -> Result<Connection> {
 /// la copie date d'avant son apparition. Ne crée pas la base : sans copie
 /// locale, rien n'est noté (`false`).
 pub fn record_skip(env: &Env, track_id: &str, at: u64) -> Result<bool> {
-    let Some(conn) = open_existing(env)? else {
+    let Some(conn) = open_existing_waiting(env, BRIEF)? else {
         return Ok(false);
     };
-    conn.busy_timeout(std::time::Duration::from_secs(2))?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS skips (id TEXT NOT NULL, at INTEGER NOT NULL);
          CREATE INDEX IF NOT EXISTS skips_at ON skips(at);",
@@ -210,14 +209,24 @@ pub fn upgrade(conn: &Connection) -> Result<()> {
 /// waits, so a long wait never deadlocks.
 pub const BUSY: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// The wait of a thread that serves others (the daemon's engine, which answers the socket and
+/// MPRIS): what it reads or writes in the copy is skipped when a sync holds it, rather than
+/// waited for.
+pub const BRIEF: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Ouvre la copie existante, mise à niveau si elle date d'avant ; `None` si elle n'existe pas.
 pub fn open_existing(env: &Env) -> Result<Option<Connection>> {
+    open_existing_waiting(env, BUSY)
+}
+
+/// `open_existing`, waiting `wait` for a lock (see `BRIEF`).
+pub fn open_existing_waiting(env: &Env, wait: std::time::Duration) -> Result<Option<Connection>> {
     let p = db_path(env);
     if !p.is_file() {
         return Ok(None);
     }
     let conn = Connection::open(&p).with_context(|| format!("ouverture de {}", p.display()))?;
-    conn.busy_timeout(BUSY)?;
+    conn.busy_timeout(wait)?;
     upgrade(&conn)?;
     Ok(Some(conn))
 }
@@ -561,7 +570,7 @@ pub fn name_of(conn: &Connection, kind: StarKind, id: &str) -> Option<String> {
 
 /// Favori d'un morceau d'après la copie, sans la créer (`None` : pas de copie ou morceau inconnu).
 pub fn track_starred(env: &Env, id: &str) -> Result<Option<bool>> {
-    let Some(conn) = open_existing(env)? else {
+    let Some(conn) = open_existing_waiting(env, BRIEF)? else {
         return Ok(None);
     };
     Ok(is_starred(&conn, StarKind::Track, id))

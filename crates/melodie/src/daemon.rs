@@ -1180,7 +1180,7 @@ impl Engine {
 
     /// Au démarrage : synchronise si la copie manque ou a plus de 15 minutes.
     fn sync_at_start(&self) {
-        let age = db::open_existing(&self.env)
+        let age = db::open_existing_waiting(&self.env, db::BRIEF)
             .ok()
             .flatten()
             .map(|c| autosync::age_secs(&c));
