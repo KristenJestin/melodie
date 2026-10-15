@@ -232,8 +232,15 @@ pub const ROUND_LIMIT: Duration = Duration::from_secs(180);
 /// `<program> cover-fetch` with the covers on its standard input; waits for it, `limit` at most.
 /// Blocking: run it away from the window.
 pub fn fetch(program: &Path, wants: &[Want], limit: Duration) -> Fetch {
+    let lines: Vec<String> = wants.iter().map(Want::line).collect();
+    run(program, "cover-fetch", &lines, limit)
+}
+
+/// `<program> <command>` with `lines` on its standard input; waits for it, `limit` at most and
+/// kills it past that. Blocking: run it away from the window. Shared with the waveforms.
+pub fn run(program: &Path, command: &str, lines: &[String], limit: Duration) -> Fetch {
     let child = std::process::Command::new(program)
-        .arg("cover-fetch")
+        .arg(command)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -242,7 +249,6 @@ pub fn fetch(program: &Path, wants: &[Want], limit: Duration) -> Fetch {
         return Fetch::Failed;
     };
     if let Some(mut stdin) = child.stdin.take() {
-        let lines: Vec<String> = wants.iter().map(Want::line).collect();
         let _ = stdin.write_all(lines.join("\n").as_bytes());
     }
     let end = Instant::now() + limit;
