@@ -396,6 +396,17 @@ fn lecture_complete_mpris_scrobble_skip_et_fin() {
         .get_property("Identity")
         .unwrap();
         assert_eq!(ident, "Mélodie");
+        // The window's app id: a desktop finds the app (and its icon) from it.
+        let entry: String = Proxy::new(
+            conn.as_ref().unwrap(),
+            format!("org.mpris.MediaPlayer2.{}", sb.bus_name),
+            "/org/mpris/MediaPlayer2",
+            "org.mpris.MediaPlayer2",
+        )
+        .unwrap()
+        .get_property("DesktopEntry")
+        .unwrap();
+        assert_eq!(entry, "melodie");
         let vol: f64 = p.get_property("Volume").unwrap();
         assert!((vol - 1.0).abs() < 1e-9, "volume par défaut : {vol}");
         p.set_property("Volume", 0.8f64).unwrap();
