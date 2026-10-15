@@ -183,6 +183,13 @@ fn install_puts_the_desktop_entry_where_desktops_look_for_it() {
     assert!(text.contains("\nExec=melodie-desktop\n"), "{text}");
     assert!(text.contains("\nName=Mélodie\n"), "{text}");
     assert!(text.contains("\nStartupWMClass=melodie\n"), "{text}");
+    // What lets a launcher show the icon and find the player by typing "music".
+    assert!(text.contains("\nIcon=melodie\n"), "{text}");
+    assert!(text.contains("\nGenericName=Music player\n"), "{text}");
+    assert!(
+        text.contains("\nKeywords=music;musique;navidrome;melodie;\n"),
+        "{text}"
+    );
     assert!(
         String::from_utf8(output.stdout)
             .unwrap()
