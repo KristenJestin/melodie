@@ -689,14 +689,22 @@ pub fn instant(lib: &Library, source: &Source, size: usize, rng: &mut Rng) -> Ve
     // Peu de candidats par les genres : on complète (même artiste, puis mix personnel)
     // jusqu'à la taille demandée.
     let mut complete_with_personal = false;
+    // The main artists' tracks, drawn only once the credited ones of an artist who has none of
+    // their own are all in (they would otherwise drown them).
+    let mut main_artists: Vec<usize> = Vec::new();
     if count_ok(&pool) < MIN_INSTANT_POOL {
         complete_with_personal = true;
         // Compléter avec les morceaux du même artiste.
         let artists: HashSet<u32> = src_tracks.iter().map(|&i| lib.tracks[i].artist).collect();
+        let guest_only = matches!(source, Source::Artist(_, None));
         for (i, t) in lib.tracks.iter().enumerate() {
             if !in_pool[i] && artists.contains(&t.artist) {
                 in_pool[i] = true;
-                pool.push(i);
+                if guest_only {
+                    main_artists.push(i);
+                } else {
+                    pool.push(i);
+                }
             }
         }
     }
@@ -707,6 +715,21 @@ pub fn instant(lib: &Library, source: &Source, size: usize, rng: &mut Rng) -> Ve
     };
     let need = size.saturating_sub(draw.taken.len());
     let mut chosen = select(lib, &pool, &draw, need, rng);
+    if chosen.len() < need && !main_artists.is_empty() {
+        let mut taken = draw.taken.clone();
+        taken.extend(chosen.iter().copied());
+        let more = select(
+            lib,
+            &main_artists,
+            &Draw {
+                boost_artist: None,
+                taken,
+            },
+            need - chosen.len(),
+            rng,
+        );
+        chosen.extend(more);
+    }
     if complete_with_personal && chosen.len() < need {
         // Puis par le mix personnel, hors de ce qui est déjà pris.
         let mut taken = draw.taken.clone();
