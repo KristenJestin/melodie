@@ -833,7 +833,8 @@ mod tests {
     }
 
     /// A `melodie` whose `sync` runs until `stop` is there, as a first copy runs for minutes; it
-    /// writes `end` in `calls` as it exits.
+    /// writes `end` in `calls` as it exits. It also ends once `dir` is gone (the test ended
+    /// without `stop`) and after 30 s at most, so no test leaves it running.
     fn long_run(dir: &Path) -> (PathBuf, PathBuf) {
         let calls = dir.join("calls");
         let program = dir.join("melodie");
@@ -842,9 +843,12 @@ mod tests {
             &program,
             format!(
                 "#!/bin/sh\necho \"$@\" >> '{c}'\n[ \"$1\" = sync ] || exit 0\n\
-                 while [ ! -e '{s}' ]; do sleep 0.02; done\necho end >> '{c}'\n",
+                 n=0\nwhile [ ! -e '{s}' ] && [ -d '{d}' ] && [ $n -lt 1500 ]; do\n\
+                 sleep 0.02; n=$((n + 1))\ndone\n\
+                 if [ -e '{s}' ]; then echo end >> '{c}'; fi\n",
                 c = calls.display(),
-                s = stop.display()
+                s = stop.display(),
+                d = dir.display()
             ),
         )
         .unwrap();
@@ -1137,5 +1141,27 @@ mod tests {
             look(&mut app, Duration::from_secs(1));
         }
         settle(&mut app, |_| calls(&said) == ["sync"]);
+    }
+
+    #[test]
+    fn a_fake_sync_ends_once_its_folder_is_gone_without_a_stop_file() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("run");
+        std::fs::create_dir(&dir).unwrap();
+        let (program, _) = long_run(&dir);
+        let mut sync = std::process::Command::new(&program)
+            .arg("sync")
+            .spawn()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        std::fs::remove_dir_all(&dir).unwrap();
+        let started = std::time::Instant::now();
+        while sync.try_wait().unwrap().is_none() {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "the fake sync outlives its folder"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 }
