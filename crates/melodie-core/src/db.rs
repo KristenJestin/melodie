@@ -84,10 +84,9 @@ pub fn create_before_browsing(path: &std::path::Path) -> Result<Connection> {
 /// la copie date d'avant son apparition. Ne crée pas la base : sans copie
 /// locale, rien n'est noté (`false`).
 pub fn record_skip(env: &Env, track_id: &str, at: u64) -> Result<bool> {
-    let Some(conn) = open_existing(env)? else {
+    let Some(conn) = open_existing_waiting(env, BRIEF)? else {
         return Ok(false);
     };
-    conn.busy_timeout(std::time::Duration::from_secs(2))?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS skips (id TEXT NOT NULL, at INTEGER NOT NULL);
          CREATE INDEX IF NOT EXISTS skips_at ON skips(at);",
@@ -203,14 +202,32 @@ pub fn upgrade(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// How long a process waits for another one's lock on the copy, readers and the sync alike. The
+/// copy keeps the rollback journal (a sync replaces the file by a rename, which WAL does not
+/// survive), so a reader waits out every commit of a sync: under load a commit outlasts 2 s, and a
+/// read failing then is a command failing because a sync writes. A long wait cannot deadlock: a
+/// connection that already reads and wants to write is refused at once (`SQLITE_BUSY`, no wait),
+/// so two processes never wait on each other.
+pub const BUSY: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The wait of a thread that serves others (the daemon's engine, which answers the socket and
+/// MPRIS): what it reads or writes in the copy is skipped when a sync holds it, rather than
+/// waited for.
+pub const BRIEF: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Ouvre la copie existante, mise à niveau si elle date d'avant ; `None` si elle n'existe pas.
 pub fn open_existing(env: &Env) -> Result<Option<Connection>> {
+    open_existing_waiting(env, BUSY)
+}
+
+/// `open_existing`, waiting `wait` for a lock (see `BRIEF`).
+pub fn open_existing_waiting(env: &Env, wait: std::time::Duration) -> Result<Option<Connection>> {
     let p = db_path(env);
     if !p.is_file() {
         return Ok(None);
     }
     let conn = Connection::open(&p).with_context(|| format!("ouverture de {}", p.display()))?;
-    conn.busy_timeout(std::time::Duration::from_secs(2))?;
+    conn.busy_timeout(wait)?;
     upgrade(&conn)?;
     Ok(Some(conn))
 }
@@ -554,7 +571,7 @@ pub fn name_of(conn: &Connection, kind: StarKind, id: &str) -> Option<String> {
 
 /// Favori d'un morceau d'après la copie, sans la créer (`None` : pas de copie ou morceau inconnu).
 pub fn track_starred(env: &Env, id: &str) -> Result<Option<bool>> {
-    let Some(conn) = open_existing(env)? else {
+    let Some(conn) = open_existing_waiting(env, BRIEF)? else {
         return Ok(None);
     };
     Ok(is_starred(&conn, StarKind::Track, id))

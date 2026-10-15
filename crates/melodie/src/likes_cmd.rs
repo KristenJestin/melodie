@@ -5,7 +5,7 @@ use crate::notify;
 use melodie_core::db::{self, StarKind};
 use melodie_core::env::Env;
 use melodie_core::likes::{Mode, Target, apply, glyph, message};
-use melodie_core::state::{self, Failure};
+use melodie_core::state;
 use melodie_core::time::now_secs;
 use std::process::ExitCode;
 
@@ -25,10 +25,6 @@ fn try_run(env: &Env, target: Target, mode: Mode) -> Result<(), Oops> {
     state::quick_check(env)?;
     let client = state::open_client(env)?;
     let conn = db::open_existing(env)?;
-    if let Some(c) = &conn {
-        c.busy_timeout(std::time::Duration::from_secs(2))
-            .map_err(Failure::from)?;
-    }
     let (kind, id, title, was) = match (&target, &current) {
         (Target::Current, Some(n)) => (StarKind::Track, n.id.clone(), n.title.clone(), n.starred),
         (Target::Item(k, id), _) => {
