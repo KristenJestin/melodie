@@ -149,6 +149,13 @@ impl Root {
         "Mélodie".to_string()
     }
 
+    // The window's app id (and the name of `melodie.desktop`), so that a desktop can tell which
+    // application a playing Mélodie belongs to.
+    #[zbus(property)]
+    fn desktop_entry(&self) -> String {
+        "melodie".to_string()
+    }
+
     #[zbus(property)]
     fn supported_uri_schemes(&self) -> Vec<String> {
         vec![address::SCHEME.to_string()]
