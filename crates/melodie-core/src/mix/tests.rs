@@ -978,3 +978,36 @@ fn an_artist_mix_is_seeded_from_their_own_tracks_and_every_appearance() {
     assert_eq!(v, [3, 57, 100, 150]);
     assert_eq!(boost, Some(lib.artists["ar90"]));
 }
+
+#[test]
+fn the_mix_of_a_guest_only_artist_takes_the_tracks_they_are_credited_on_before_the_main_artists() {
+    // The guest is credited on 3 Jazz tracks of artist 0 and 3 of artist 1, who each have a
+    // hundred more in Rock. The Jazz pool is under the minimum: it is completed with the main
+    // artists, whose Rock tracks must come after the credited ones.
+    let jazz = |artist, album| Spec {
+        genre: "Jazz",
+        ..spec(artist, album)
+    };
+    let mut specs: Vec<Spec> = (0..3).map(|i| jazz(0, i)).collect();
+    specs.extend((0..3).map(|i| jazz(1, 10 + i)));
+    specs.extend((0..100).map(|i| spec(0, 20 + i / 10)));
+    specs.extend((0..100).map(|i| spec(1, 40 + i / 10)));
+    specs.extend((2..42).flat_map(|a| (0..5).map(move |t| spec(a, 100 + a * 2 + t / 3))));
+    let lib = build(&specs);
+    let credited: Vec<usize> = (0..6).collect();
+    for seed in 0..20 {
+        let mix = instant(
+            &lib,
+            &Source::Artist(credited.clone(), None),
+            30,
+            &mut Rng::new(seed),
+        );
+        assert_eq!(mix.len(), 30);
+        no_dups(&mix);
+        for i in &credited {
+            assert!(mix.contains(i), "seed {seed}: credited track {i} missing");
+        }
+        let main_only = |i: &usize| matches!(lib.tracks[*i].artist, 0 | 1) && *i >= 6;
+        assert!(mix.iter().any(main_only), "then the main artists fill up");
+    }
+}
