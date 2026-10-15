@@ -205,8 +205,9 @@ pub fn upgrade(conn: &Connection) -> Result<()> {
 /// How long a process waits for another one's lock on the copy, readers and the sync alike. The
 /// copy keeps the rollback journal (a sync replaces the file by a rename, which WAL does not
 /// survive), so a reader waits out every commit of a sync: under load a commit outlasts 2 s, and a
-/// read failing then is a command failing because a sync writes. Nothing holds a lock while it
-/// waits, so a long wait never deadlocks.
+/// read failing then is a command failing because a sync writes. A long wait cannot deadlock: a
+/// connection that already reads and wants to write is refused at once (`SQLITE_BUSY`, no wait),
+/// so two processes never wait on each other.
 pub const BUSY: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// The wait of a thread that serves others (the daemon's engine, which answers the socket and
