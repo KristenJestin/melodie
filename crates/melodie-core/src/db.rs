@@ -203,6 +203,13 @@ pub fn upgrade(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// How long a process waits for another one's lock on the copy, readers and the sync alike. The
+/// copy keeps the rollback journal (a sync replaces the file by a rename, which WAL does not
+/// survive), so a reader waits out every commit of a sync: under load a commit outlasts 2 s, and a
+/// read failing then is a command failing because a sync writes. Nothing holds a lock while it
+/// waits, so a long wait never deadlocks.
+pub const BUSY: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Ouvre la copie existante, mise à niveau si elle date d'avant ; `None` si elle n'existe pas.
 pub fn open_existing(env: &Env) -> Result<Option<Connection>> {
     let p = db_path(env);
@@ -210,7 +217,7 @@ pub fn open_existing(env: &Env) -> Result<Option<Connection>> {
         return Ok(None);
     }
     let conn = Connection::open(&p).with_context(|| format!("ouverture de {}", p.display()))?;
-    conn.busy_timeout(std::time::Duration::from_secs(2))?;
+    conn.busy_timeout(BUSY)?;
     upgrade(&conn)?;
     Ok(Some(conn))
 }

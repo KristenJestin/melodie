@@ -2446,6 +2446,27 @@ fn an_unknown_id_never_changes_the_connection_the_daemon_keeps() {
 }
 
 #[test]
+fn play_track_answers_while_a_write_holds_the_copy_past_two_seconds() {
+    let sb = Sandbox::new(true);
+    sb.ok(&["sync"]);
+    let writer = rusqlite::Connection::open(sb.db()).unwrap();
+    // EXCLUSIVE: the lock a sync takes to commit, which no reader gets past.
+    writer
+        .execute_batch("BEGIN EXCLUSIVE; INSERT INTO meta(key, value) VALUES ('held', '1');")
+        .unwrap();
+    let args = &["play", "track", "nope"][..];
+    let child = sb
+        .cmd(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_secs(3));
+    writer.execute_batch("COMMIT").unwrap();
+    assert_not_found(&child.wait_with_output().unwrap(), "track nope", args);
+}
+
+#[test]
 fn an_unknown_id_is_one_launcher_entry_in_json() {
     let sb = Sandbox::new(true);
     addressable_library(&sb);

@@ -244,9 +244,6 @@ const COPY_SCAN: &str = "copy_scan";
 const COPY_SERVER: &str = "copy_server";
 const COPY_USER: &str = "copy_user";
 
-/// How long the copy waits for the readers (the window reads it again while it fills).
-const BUSY: std::time::Duration = std::time::Duration::from_secs(30);
-
 /// Starts a first copy: an empty copy that says it is not finished, put in place at once (made
 /// aside then renamed, so that no reader ever sees half a schema).
 fn start_first(client: &Client, target: &Path) -> Result<Connection, Failure> {
@@ -263,7 +260,7 @@ fn start_first(client: &Client, target: &Path) -> Result<Connection, Failure> {
     std::fs::rename(&tmp, target)
         .map_err(|e| anyhow::anyhow!("putting {} in place: {e}", target.display()))?;
     let conn = Connection::open(target)?;
-    conn.busy_timeout(BUSY)?;
+    conn.busy_timeout(db::BUSY)?;
     Ok(conn)
 }
 
@@ -299,10 +296,7 @@ fn made_for(conn: &Connection, client: &Client) -> bool {
 fn first(env: &Env, client: &Client, partial: Option<Connection>) -> Result<Report, Failure> {
     let resumed = partial.and_then(|c| Some((resume_point(&c, client)?, c)));
     let ((start, offset), mut conn) = match resumed {
-        Some((at, c)) => {
-            c.busy_timeout(BUSY)?;
-            (at, c)
-        }
+        Some((at, c)) => (at, c),
         None => ((0, 0), start_first(client, &db::db_path(env))?),
     };
     for (i, (kind, label, insert)) in KINDS.into_iter().enumerate().skip(start) {
@@ -378,7 +372,6 @@ pub fn run(env: &Env, client: &Client, force_full: bool) -> Result<Report, Failu
         Ok(Some(c)) => c,
         Err(e) => return Err(e.into()),
     };
-    conn.busy_timeout(BUSY)?;
     // a copy older than the credited artists reads every track again, to know them
     if !made_for(&conn, client) || db::get_meta(&conn, db::PARTICIPANTS).is_none() {
         drop(conn);
