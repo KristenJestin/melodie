@@ -1,6 +1,7 @@
 #!/bin/sh
 # Installs Mélodie from the folder of its release archive: `melodie` and `melodie-desktop` go into
-# ${PREFIX:-$HOME/.local}/bin. It stops the running player first (`melodie quit`), so that the
+# ${PREFIX:-$HOME/.local}/bin, and `melodie.desktop` into ${PREFIX:-$HOME/.local}/share/applications
+# (the launchers' entry for the window, which MPRIS's DesktopEntry points to). It stops the running player first (`melodie quit`), so that the
 # next `melodie play` starts the new one. It never asks for root, and never touches your
 # configuration, your local copy of the library or your keyring entry.
 #
@@ -11,10 +12,12 @@ set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 prefix=${PREFIX:-${HOME:?HOME is not set: say where to install with PREFIX}/.local}
 bin=$prefix/bin
+applications=$prefix/share/applications
 
 for program in melodie melodie-desktop; do
   [ -x "$here/$program" ] || { echo "install.sh: $here/$program is missing" >&2; exit 1; }
 done
+[ -f "$here/melodie.desktop" ] || { echo "install.sh: $here/melodie.desktop is missing" >&2; exit 1; }
 
 # The older player, if there is one, is the one that understands the daemon it started. `quit`
 # exits 1 when nothing ran; any other failure (an older `melodie` without `quit`, a missing
@@ -37,6 +40,15 @@ for program in melodie melodie-desktop; do
   mv -f "$bin/.$program.new" "$bin/$program"
   echo "Installed $bin/$program"
 done
+
+mkdir -p "$applications"
+install -m 644 "$here/melodie.desktop" "$applications/.melodie.desktop.new"
+mv -f "$applications/.melodie.desktop.new" "$applications/melodie.desktop"
+echo "Installed $applications/melodie.desktop"
+# Only a cache for desktops that read it: never required, and its failure does not fail the install.
+if command -v update-desktop-database >/dev/null 2>&1; then
+  update-desktop-database "$applications" >/dev/null 2>&1 || true
+fi
 
 case ":${PATH:-}:" in
   *":$bin:"*) ;;

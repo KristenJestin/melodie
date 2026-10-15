@@ -9,8 +9,8 @@ Agents read `AGENTS.md`. Work in progress: see the issues.
 ## Install
 
 No build needed: a release is an archive of the Releases page of this repository,
-`melodie-<version>-linux-x86_64.tar.gz` with its `.sha256`, holding `melodie`, `melodie-desktop`
-and `install.sh`. It is built on Ubuntu 24.04 for Linux x86_64 and needs glibc 2.39 or newer.
+`melodie-<version>-linux-x86_64.tar.gz` with its `.sha256`, holding `melodie`, `melodie-desktop`,
+`melodie.desktop` and `install.sh`. It is built on Ubuntu 24.04 for Linux x86_64 and needs glibc 2.39 or newer.
 
 - **A release** (`vX.Y.Z`) is made when `dev` is merged into `main`.
 - **The beta** (`vX.Y.Z-beta.N`, marked pre-release) is made at every push to `dev`, and only the
@@ -34,12 +34,15 @@ cd melodie-*-linux-x86_64
 Without `gh`, download the two files from the Releases page in a browser and run the same commands
 from `sha256sum` on. `install.sh` copies the two programs into `~/.local/bin` (or `$PREFIX/bin`),
 after `melodie quit` if a player was running, so that the next `melodie play` starts the new one.
-It never asks for root and never touches your configuration, your local copy of the library or your
+It also installs the desktop entry `melodie.desktop` (it launches `melodie-desktop`, so that the
+window is found by launchers, and by desktops from MPRIS's `DesktopEntry`) into
+`~/.local/share/applications` (or `$PREFIX/share/applications`), creating the folder if needed, and
+refreshes the desktop database when `update-desktop-database` exists. It never asks for root and never touches your configuration, your local copy of the library or your
 keyring entry. `~/.local/bin` must be in your `PATH`. `melodie --version` and
 `melodie-desktop --version` tell which version is installed.
 
 To update, do the same with the newer archive. To remove Mélodie: `melodie quit`, then delete the
-two programs from `~/.local/bin`; `~/.config/melodie`, `~/.cache/melodie`, `~/.local/state/melodie`
+two programs from `~/.local/bin` and `melodie.desktop` from `~/.local/share/applications`; `~/.config/melodie`, `~/.cache/melodie`, `~/.local/state/melodie`
 and the keyring entry (`service=melodie`) are yours to delete or keep.
 
 ## Build and layout
@@ -474,7 +477,10 @@ exposed), and keeps the queue in step with mpv's playlist. The daemon does not l
   request per line (`{"cmd":"next"}`), one JSON answer per line (`{"ok":true}` or
   `{"ok":false,"error":"…"}`; `now` adds the `now` object). The queue requests and the event
   stream (`{"cmd":"watch"}`) are described in [docs/events.md](docs/events.md).
-- MPRIS 2: `org.mpris.MediaPlayer2.melodie`, identity "Mélodie", no DesktopEntry. Metadata:
+- MPRIS 2: `org.mpris.MediaPlayer2.melodie`, identity "Mélodie", `DesktopEntry` `melodie` (the
+  installed `melodie.desktop`, whose `StartupWMClass` is the window's app id). `CanRaise` stays false
+  and `Raise` does nothing: the window has no single-instance handling yet, so raising it would open
+  a second one. Metadata:
   `mpris:trackid` (`/org/melodie/track/<n>`), `mpris:length`, `xesam:title`, `xesam:artist`,
   `xesam:album`, `xesam:albumArtist`, `mpris:artUrl` (local cover), `xesam:comment`,
   `melodie:starred` (boolean, the track is a favourite) and `melodie:quality` (quality, for example
