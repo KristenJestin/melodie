@@ -2466,6 +2466,36 @@ fn play_track_answers_while_a_write_holds_the_copy_past_two_seconds() {
     assert_not_found(&child.wait_with_output().unwrap(), "track nope", args);
 }
 
+/// Holds the lock a sync takes to commit, which no reader gets past, until `COMMIT`.
+fn hold_copy(sb: &Sandbox) -> rusqlite::Connection {
+    let writer = rusqlite::Connection::open(sb.db()).unwrap();
+    writer
+        .execute_batch("BEGIN EXCLUSIVE; INSERT INTO meta(key, value) VALUES ('held', '1');")
+        .unwrap();
+    writer
+}
+
+#[test]
+fn like_answers_while_a_write_holds_the_copy_past_two_seconds() {
+    let sb = Sandbox::new(true);
+    sb.ok(&["sync"]);
+    let writer = hold_copy(&sb);
+    let child = sb
+        .cmd(&["like", "track", "t2"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_secs(3));
+    writer.execute_batch("COMMIT").unwrap();
+    let o = child.wait_with_output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(db_value::<bool>(
+        &sb,
+        "SELECT starred IS NOT NULL FROM tracks WHERE id = 't2'"
+    ));
+}
+
 #[test]
 fn an_unknown_id_is_one_launcher_entry_in_json() {
     let sb = Sandbox::new(true);
