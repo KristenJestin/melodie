@@ -3,13 +3,11 @@
 //! touches the server nor the audio.
 
 use gpui_kit::*;
-use melodie_core::cover::LOCKED_EXIT;
 use melodie_core::env::Env;
 use melodie_core::waveform::Ask;
 use melodie_desktop::covers::{Fetch, LOCK_WAIT};
 use melodie_desktop::launch;
 use melodie_desktop::wave::{self, Levels, Waves};
-use std::io::Write as _;
 
 pub struct WaveCache {
     env: Env,
@@ -63,26 +61,9 @@ impl WaveCache {
     }
 }
 
-/// `melodie waveform-fetch` with the tracks on its standard input; waits for it. Blocking: run it
-/// away from the window.
+/// `melodie waveform-fetch` with the tracks on its standard input. Blocking: run it away from the
+/// window.
 fn fetch_waves(asks: &[Ask]) -> Fetch {
     let program = launch::program(std::env::current_exe().ok().as_deref());
-    let child = std::process::Command::new(program)
-        .arg("waveform-fetch")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
-    let Ok(mut child) = child else {
-        return Fetch::Failed;
-    };
-    if let Some(mut stdin) = child.stdin.take() {
-        let lines: Vec<String> = asks.iter().map(Ask::line).collect();
-        let _ = stdin.write_all(lines.join("\n").as_bytes());
-    }
-    match child.wait().map(|s| s.code()) {
-        Ok(Some(0)) => Fetch::Done,
-        Ok(Some(code)) if code == i32::from(LOCKED_EXIT) => Fetch::Locked,
-        _ => Fetch::Failed,
-    }
+    wave::fetch(&program, asks, wave::FETCH_LIMIT)
 }
