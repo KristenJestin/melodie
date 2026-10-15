@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640">
+<rect width="1280" height="640" fill="#181216"/>
+<svg x="332" y="34" width="150" height="150" viewBox="20 20 160 160"><g transform="translate(21.9 21.7) scale(0.8678)"><path d="M44 150 V 94 C 44 60, 100 60, 100 94 V 150 M100 94 C 100 60, 156 60, 156 94 V 150" stroke-width="20" stroke-linecap="round" stroke-linejoin="round" fill="none" stroke="#fb749f"/><ellipse cx="34" cy="154" rx="18" ry="13" transform="rotate(-20 34 154)" fill="#ece5d8"/><ellipse cx="146" cy="154" rx="18" ry="13" transform="rotate(-20 146 154)" fill="#ece5d8"/><path d="M98 38 L 130 8" stroke-width="16" stroke-linecap="round" fill="none" stroke="#ece5d8"/></g></svg>
+<text x="502" y="150" font-family="Young Serif" font-size="112" fill="#ece5d8">Mélodie</text>
+<text x="640" y="236" text-anchor="middle" font-family="Open Sauce Sans" font-size="25" fill="#ab9fa1">A music player for Navidrome on Linux, with a daemon that keeps playing.</text>
+<rect x="96" y="290" width="1088" height="400" rx="18" fill="#201a1d" stroke="#33292d" stroke-width="2"/>
+<line x1="97" y1="334" x2="1183" y2="334" stroke="#33292d" stroke-width="2"/>
+<circle cx="124" cy="312" r="6" fill="#3d3237"/>
+<circle cx="146" cy="312" r="6" fill="#3d3237"/>
+<circle cx="168" cy="312" r="6" fill="#3d3237"/>
+<text x="640" y="318" text-anchor="middle" font-family="JetBrains Mono" font-size="15" fill="#867a7d">a terminal, and the player behind it</text>
+<text x="128" y="376" font-family="Open Sauce Sans" font-weight="500" font-size="15" fill="#867a7d">YOU</text>
+<rect x="128" y="388" width="636" height="44" rx="12" fill="#2c2327"/>
+<text x="146" y="417" font-family="JetBrains Mono" font-size="19" xml:space="preserve"><tspan fill="#867a7d">$ </tspan><tspan fill="#ece5d8">melodie search nuit bla</tspan></text>
+<text x="128" y="466" font-family="Open Sauce Sans" font-weight="500" font-size="15" fill="#867a7d">MÉLODIE</text>
+<g font-family="JetBrains Mono" font-size="17" xml:space="preserve">
+<text x="128" y="500"><tspan fill="#fb749f">search</tspan><tspan fill="#ece5d8"> "nuit bla"</tspan></text>
+<text x="760" y="500" text-anchor="end" fill="#867a7d">3 ms, local copy</text>
+<text x="128" y="534"><tspan fill="#fb749f">play</tspan><tspan fill="#ece5d8"> album "Nuits blanches"</tspan></text>
+<text x="760" y="534" text-anchor="end" fill="#fb749f">playing</text>
+<text x="128" y="568"><tspan fill="#fb749f">mix</tspan><tspan fill="#ece5d8"> album, 40 tracks</tspan></text>
+<text x="760" y="568" text-anchor="end" fill="#fb749f">queued</text>
+</g>
+<text x="128" y="612" font-family="Open Sauce Sans" font-size="19" fill="#ab9fa1">Found in the local copy, played by the daemon.</text>
+<rect x="808" y="362" width="344" height="300" rx="14" fill="#181216" stroke="#33292d" stroke-width="2"/>
+<text x="836" y="398" font-family="Open Sauce Sans" font-weight="600" font-size="14" letter-spacing="1.5" fill="#fb749f">NOW PLAYING</text>
+<defs><linearGradient id="c" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3a1d4a"/><stop offset="1" stop-color="#f0796a"/></linearGradient><clipPath id="cc"><rect x="836" y="414" width="76" height="76" rx="8"/></clipPath></defs>
+<g clip-path="url(#cc)"><rect x="836" y="414" width="76" height="76" fill="url(#c)"/><circle cx="890" cy="440" r="20" fill="#ffd1a6" opacity="0.9"/><path d="M836 478 Q 860 456 884 474 T 912 466 V 490 H 836 Z" fill="#1d1024" opacity="0.85"/></g>
+<text x="928" y="444" font-family="Young Serif" font-size="27" fill="#ece5d8">Lueur</text>
+<text x="928" y="470" font-family="Open Sauce Sans" font-size="17" fill="#ab9fa1">Les Météores</text>
+<text x="928" y="491" font-family="Open Sauce Sans" font-size="13" fill="#867a7d">FLAC, 24 bit / 96 kHz</text>
+<rect x="836.8" y="551.6" width="4.4" height="8.8" rx="2.2" fill="#fb749f"/>
+<rect x="842.8" y="552.6" width="4.4" height="6.8" rx="2.2" fill="#fb749f"/>
+<rect x="848.8" y="547.9" width="4.4" height="16.2" rx="2.2" fill="#fb749f"/>
+<rect x="854.8" y="552.8" width="4.4" height="6.4" rx="2.2" fill="#fb749f"/>
+<rect x="860.8" y="548.0" width="4.4" height="16.0" rx="2.2" fill="#fb749f"/>
+<rect x="866.8" y="549.4" width="4.4" height="13.3" rx="2.2" fill="#fb749f"/>
+<rect x="872.8" y="552.4" width="4.4" height="7.1" rx="2.2" fill="#fb749f"/>
+<rect x="878.8" y="547.2" width="4.4" height="17.6" rx="2.2" fill="#fb749f"/>
+<rect x="884.8" y="552.4" width="4.4" height="7.2" rx="2.2" fill="#fb749f"/>
+<rect x="890.8" y="547.5" width="4.4" height="17.1" rx="2.2" fill="#fb749f"/>
+<rect x="896.8" y="551.8" width="4.4" height="8.5" rx="2.2" fill="#fb749f"/>
+<rect x="902.8" y="551.4" width="4.4" height="9.2" rx="2.2" fill="#fb749f"/>
+<rect x="908.8" y="546.9" width="4.4" height="18.3" rx="2.2" fill="#fb749f"/>
+<rect x="914.8" y="541.2" width="4.4" height="29.5" rx="2.2" fill="#fb749f"/>
+<rect x="920.8" y="550.6" width="4.4" height="10.7" rx="2.2" fill="#fb749f"/>
+<rect x="926.8" y="549.1" width="4.4" height="13.7" rx="2.2" fill="#fb749f"/>
+<rect x="932.8" y="543.3" width="4.4" height="25.4" rx="2.2" fill="#fb749f"/>
+<rect x="938.8" y="538.5" width="4.4" height="35.0" rx="2.2" fill="#fb749f"/>
+<rect x="944.8" y="543.7" width="4.4" height="24.6" rx="2.2" fill="#fb749f"/>
+<rect x="950.8" y="546.3" width="4.4" height="19.5" rx="2.2" fill="#fb749f"/>
+<rect x="956.8" y="537.6" width="4.4" height="36.8" rx="2.2" fill="#3d3237"/>
+<rect x="962.8" y="551.3" width="4.4" height="9.3" rx="2.2" fill="#3d3237"/>
+<rect x="968.8" y="539.2" width="4.4" height="33.6" rx="2.2" fill="#3d3237"/>
+<rect x="974.8" y="547.7" width="4.4" height="16.7" rx="2.2" fill="#3d3237"/>
+<rect x="980.8" y="549.8" width="4.4" height="12.3" rx="2.2" fill="#3d3237"/>
+<rect x="986.8" y="550.2" width="4.4" height="11.5" rx="2.2" fill="#3d3237"/>
+<rect x="992.8" y="547.4" width="4.4" height="17.2" rx="2.2" fill="#3d3237"/>
+<rect x="998.8" y="539.9" width="4.4" height="32.2" rx="2.2" fill="#3d3237"/>
+<rect x="1004.8" y="549.4" width="4.4" height="13.2" rx="2.2" fill="#3d3237"/>
+<rect x="1010.8" y="543.5" width="4.4" height="24.9" rx="2.2" fill="#3d3237"/>
+<rect x="1016.8" y="542.8" width="4.4" height="26.4" rx="2.2" fill="#3d3237"/>
+<rect x="1022.8" y="546.8" width="4.4" height="18.4" rx="2.2" fill="#3d3237"/>
+<rect x="1028.8" y="544.4" width="4.4" height="23.1" rx="2.2" fill="#3d3237"/>
+<rect x="1034.8" y="551.4" width="4.4" height="9.2" rx="2.2" fill="#3d3237"/>
+<rect x="1040.8" y="551.5" width="4.4" height="9.0" rx="2.2" fill="#3d3237"/>
+<rect x="1046.8" y="549.6" width="4.4" height="12.8" rx="2.2" fill="#3d3237"/>
+<rect x="1052.8" y="543.5" width="4.4" height="25.0" rx="2.2" fill="#3d3237"/>
+<rect x="1058.8" y="547.0" width="4.4" height="17.9" rx="2.2" fill="#3d3237"/>
+<rect x="1064.8" y="548.7" width="4.4" height="14.6" rx="2.2" fill="#3d3237"/>
+<rect x="1070.8" y="545.6" width="4.4" height="20.8" rx="2.2" fill="#3d3237"/>
+<rect x="1076.8" y="547.5" width="4.4" height="17.0" rx="2.2" fill="#3d3237"/>
+<rect x="1082.8" y="549.5" width="4.4" height="12.9" rx="2.2" fill="#3d3237"/>
+<rect x="1088.8" y="544.4" width="4.4" height="23.2" rx="2.2" fill="#3d3237"/>
+<rect x="1094.8" y="545.9" width="4.4" height="20.2" rx="2.2" fill="#3d3237"/>
+<rect x="1100.8" y="550.9" width="4.4" height="10.2" rx="2.2" fill="#3d3237"/>
+<rect x="1106.8" y="548.1" width="4.4" height="15.9" rx="2.2" fill="#3d3237"/>
+<rect x="1112.8" y="549.0" width="4.4" height="14.0" rx="2.2" fill="#3d3237"/>
+<rect x="1118.8" y="546.7" width="4.4" height="18.7" rx="2.2" fill="#3d3237"/>
+<text x="836" y="604" font-family="JetBrains Mono" font-size="14" fill="#867a7d">1:24</text>
+<text x="1124" y="604" text-anchor="end" font-family="JetBrains Mono" font-size="14" fill="#867a7d">3:21</text>
+</svg>
