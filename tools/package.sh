@@ -1,5 +1,5 @@
 #!/bin/sh
-# Packs the two built programs with their desktop entry and the install script, and writes the SHA-256 checksum beside the
+# Packs the two built programs with their desktop entry, their icon and the install script, and writes the SHA-256 checksum beside the
 # archive. Prints the archive's file name.
 #
 #   tools/package.sh <version> <binaries-dir> <out-dir>
@@ -17,6 +17,7 @@ mkdir "$stage/$name"
 install -m 755 "$binaries/melodie" "$stage/$name/melodie"
 install -m 755 "$binaries/melodie-desktop" "$stage/$name/melodie-desktop"
 install -m 644 "$root/dist/melodie.desktop" "$stage/$name/melodie.desktop"
+install -m 644 "$root/dist/melodie.svg" "$stage/$name/melodie.svg"
 install -m 755 "$root/dist/install.sh" "$stage/$name/install.sh"
 
 mkdir -p "$out"

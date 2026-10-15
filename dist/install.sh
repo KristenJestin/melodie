@@ -1,7 +1,8 @@
 #!/bin/sh
 # Installs Mélodie from the folder of its release archive: `melodie` and `melodie-desktop` go into
 # ${PREFIX:-$HOME/.local}/bin, and `melodie.desktop` into ${PREFIX:-$HOME/.local}/share/applications
-# (the launchers' entry for the window, which MPRIS's DesktopEntry points to). It stops the running player first (`melodie quit`), so that the
+# (the launchers' entry for the window, which MPRIS's DesktopEntry points to) and `melodie.svg`
+# into ${PREFIX:-$HOME/.local}/share/icons/hicolor/scalable/apps (the icon that entry names). It stops the running player first (`melodie quit`), so that the
 # next `melodie play` starts the new one. It never asks for root, and never touches your
 # configuration, your local copy of the library or your keyring entry.
 #
@@ -13,11 +14,14 @@ here=$(cd "$(dirname "$0")" && pwd)
 prefix=${PREFIX:-${HOME:?HOME is not set: say where to install with PREFIX}/.local}
 bin=$prefix/bin
 applications=$prefix/share/applications
+icons=$prefix/share/icons/hicolor
 
 for program in melodie melodie-desktop; do
   [ -x "$here/$program" ] || { echo "install.sh: $here/$program is missing" >&2; exit 1; }
 done
-[ -f "$here/melodie.desktop" ] || { echo "install.sh: $here/melodie.desktop is missing" >&2; exit 1; }
+for file in melodie.desktop melodie.svg; do
+  [ -f "$here/$file" ] || { echo "install.sh: $here/$file is missing" >&2; exit 1; }
+done
 
 # The older player, if there is one, is the one that understands the daemon it started. `quit`
 # exits 1 when nothing ran; any other failure (an older `melodie` without `quit`, a missing
@@ -48,6 +52,15 @@ echo "Installed $applications/melodie.desktop"
 # Only a cache for desktops that read it: never required, and its failure does not fail the install.
 if command -v update-desktop-database >/dev/null 2>&1; then
   update-desktop-database "$applications" >/dev/null 2>&1 || true
+fi
+
+mkdir -p "$icons/scalable/apps"
+install -m 644 "$here/melodie.svg" "$icons/scalable/apps/.melodie.svg.new"
+mv -f "$icons/scalable/apps/.melodie.svg.new" "$icons/scalable/apps/melodie.svg"
+echo "Installed $icons/scalable/apps/melodie.svg"
+# Same as the desktop database: a cache for the themes that read it, its failure is ignored.
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+  gtk-update-icon-cache -f -t "$icons" >/dev/null 2>&1 || true
 fi
 
 case ":${PATH:-}:" in

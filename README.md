@@ -10,7 +10,7 @@ Agents read `AGENTS.md`. Work in progress: see the issues.
 
 No build needed: a release is an archive of the Releases page of this repository,
 `melodie-<version>-linux-x86_64.tar.gz` with its `.sha256`, holding `melodie`, `melodie-desktop`,
-`melodie.desktop` and `install.sh`. It is built on Ubuntu 24.04 for Linux x86_64 and needs glibc 2.39 or newer.
+`melodie.desktop`, its icon `melodie.svg` and `install.sh`. It is built on Ubuntu 24.04 for Linux x86_64 and needs glibc 2.39 or newer.
 
 - **A release** (`vX.Y.Z`) is made when `dev` is merged into `main`.
 - **The beta** (`vX.Y.Z-beta.N`, marked pre-release) is made at every push to `dev`, and only the
@@ -37,12 +37,15 @@ after `melodie quit` if a player was running, so that the next `melodie play` st
 It also installs the desktop entry `melodie.desktop` (it launches `melodie-desktop`, so that the
 window is found by launchers, and by desktops from MPRIS's `DesktopEntry`) into
 `~/.local/share/applications` (or `$PREFIX/share/applications`), creating the folder if needed, and
-refreshes the desktop database when `update-desktop-database` exists. It never asks for root and never touches your configuration, your local copy of the library or your
+refreshes the desktop database when `update-desktop-database` exists. The icon that entry names, `melodie.svg`, goes into
+`~/.local/share/icons/hicolor/scalable/apps` (or `$PREFIX/share/icons/hicolor/scalable/apps`), and the icon cache is refreshed when
+`gtk-update-icon-cache` exists. A tool that is missing or fails never fails the install. It never asks for root and never touches your configuration, your local copy of the library or your
 keyring entry. `~/.local/bin` must be in your `PATH`. `melodie --version` and
 `melodie-desktop --version` tell which version is installed.
 
 To update, do the same with the newer archive. To remove Mélodie: `melodie quit`, then delete the
-two programs from `~/.local/bin` and `melodie.desktop` from `~/.local/share/applications`; `~/.config/melodie`, `~/.cache/melodie`, `~/.local/state/melodie`
+two programs from `~/.local/bin`, `melodie.desktop` from `~/.local/share/applications`, and `melodie.svg` from
+`~/.local/share/icons/hicolor/scalable/apps`; `~/.config/melodie`, `~/.cache/melodie`, `~/.local/state/melodie`
 and the keyring entry (`service=melodie`) are yours to delete or keep.
 
 ## Build and layout

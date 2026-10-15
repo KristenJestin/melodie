@@ -107,7 +107,8 @@ fn log(work: &Path) -> String {
 }
 
 #[test]
-fn the_archive_holds_both_programs_the_desktop_entry_and_the_install_script_with_its_checksum() {
+fn the_archive_holds_both_programs_the_desktop_entry_the_icon_and_the_install_script_with_its_checksum()
+ {
     let work = tempfile::tempdir().unwrap();
     let folder = unpacked(work.path(), "0.1.0", "new");
     let mut names: Vec<_> = fs::read_dir(&folder)
@@ -121,7 +122,8 @@ fn the_archive_holds_both_programs_the_desktop_entry_and_the_install_script_with
             "install.sh",
             "melodie",
             "melodie-desktop",
-            "melodie.desktop"
+            "melodie.desktop",
+            "melodie.svg"
         ]
     );
 
@@ -183,6 +185,13 @@ fn install_puts_the_desktop_entry_where_desktops_look_for_it() {
     assert!(text.contains("\nExec=melodie-desktop\n"), "{text}");
     assert!(text.contains("\nName=Mélodie\n"), "{text}");
     assert!(text.contains("\nStartupWMClass=melodie\n"), "{text}");
+    // What lets a launcher show the icon and find the player by typing "music".
+    assert!(text.contains("\nIcon=melodie\n"), "{text}");
+    assert!(text.contains("\nGenericName=Music player\n"), "{text}");
+    assert!(
+        text.contains("\nKeywords=music;musique;navidrome;melodie;\n"),
+        "{text}"
+    );
     assert!(
         String::from_utf8(output.stdout)
             .unwrap()
@@ -196,6 +205,56 @@ fn install_puts_the_desktop_entry_where_desktops_look_for_it() {
     {
         run(Command::new("desktop-file-validate").arg(&entry));
     }
+}
+
+// A launcher finds the icon named by `Icon=melodie` in the hicolor theme.
+#[test]
+fn install_puts_the_icon_where_the_icon_theme_looks_for_it() {
+    let work = tempfile::tempdir().unwrap();
+    let folder = unpacked(work.path(), "0.1.0", "new");
+    let prefix = work.path().join("prefix");
+
+    let output = install(&folder, work.path(), &prefix, "0");
+
+    let icon = prefix.join("share/icons/hicolor/scalable/apps/melodie.svg");
+    assert_eq!(
+        fs::read(&icon).unwrap(),
+        fs::read(root().join("dist/melodie.svg")).unwrap()
+    );
+    assert!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .contains(&icon.display().to_string())
+    );
+}
+
+#[test]
+fn install_refreshes_the_icon_cache_when_the_tool_exists_and_does_without() {
+    let work = tempfile::tempdir().unwrap();
+    let folder = unpacked(work.path(), "0.1.0", "new");
+    let system = work.path().join("system");
+    fs::create_dir(&system).unwrap();
+    let tool = system.join("gtk-update-icon-cache");
+    fs::write(&tool, "#!/bin/sh\necho \"icons $*\" >> \"$LOG\"\nexit 3\n").unwrap();
+    fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+    let prefix = work.path().join("prefix");
+
+    // A tool that fails does not fail the install: the icon is there all the same.
+    let output = try_install(&folder, work.path(), &prefix, "0", Some(&system));
+
+    assert!(output.status.success());
+    assert!(
+        prefix
+            .join("share/icons/hicolor/scalable/apps/melodie.svg")
+            .is_file()
+    );
+    assert_eq!(
+        log(work.path()),
+        format!(
+            "icons -f -t {}\n",
+            prefix.join("share/icons/hicolor").display()
+        )
+    );
 }
 
 #[test]
