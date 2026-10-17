@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1280" height="640" viewBox="0 0 1280 640">
+<!-- The mark, the name, the tagline, and below them the scene of screen.svg, put back in place. -->
+<rect width="1280" height="640" fill="#181216"/>
+<svg x="332" y="34" width="150" height="150" viewBox="20 20 160 160"><g transform="translate(21.9 21.7) scale(0.8678)"><path d="M44 150 V 94 C 44 60, 100 60, 100 94 V 150 M100 94 C 100 60, 156 60, 156 94 V 150" stroke-width="20" stroke-linecap="round" stroke-linejoin="round" fill="none" stroke="#fb749f"/><ellipse cx="34" cy="154" rx="18" ry="13" transform="rotate(-20 34 154)" fill="#ece5d8"/><ellipse cx="146" cy="154" rx="18" ry="13" transform="rotate(-20 146 154)" fill="#ece5d8"/><path d="M98 38 L 130 8" stroke-width="16" stroke-linecap="round" fill="none" stroke="#ece5d8"/></g></svg>
+<text x="502" y="150" font-family="Young Serif" font-size="112" fill="#ece5d8">Mélodie</text>
+<text x="640" y="236" text-anchor="middle" font-family="Open Sauce Sans" font-size="25" fill="#ab9fa1">A music player for Navidrome on Linux, with a daemon that keeps playing.</text>
+<image href="screen.svg" xlink:href="screen.svg" x="-330" y="-45" width="1600" height="1000"/>
+</svg>
