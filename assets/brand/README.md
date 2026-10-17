@@ -9,14 +9,15 @@ SVGs of this folder are the one source of the drawing; every other file is gener
 | `mark.svg` | the mark alone, for a dark background (the default) |
 | `mark-on-light.svg` | the mark alone, for a light background |
 | `icon.svg` | the icon: the mark on a dark rounded square; the desktop entry's icon (`dist/melodie.svg`) |
-| `social-preview.svg` | the social preview of the repository and the banner of the README: the mark, the name, the tagline, and the waveform of the track playing above a shelf of albums, drawn (no capture, invented albums) |
+| `screen.svg` | the waveform of the track playing above a shelf of albums, drawn (no capture, invented albums), on a transparent ground |
+| `social-preview.svg` | the social preview of the repository and the banner of the README: the mark, the name, the tagline, and `screen.svg` under them |
 
 The colours: pink `#fb749f` on dark (`#c42c63` on light), cream `#ece5d8`, the dark of the icon
 `#14120f`, and the plum black `#181216` of the social preview.
 
 ## What is generated
 
-- `png/`: the icon at 128, 256 and 512 pixels (`icon-*.png`) and `social-preview.png`.
+- `png/`: the icon at 128, 256 and 512 pixels (`icon-*.png`), `social-preview.png` and `screen.png`.
 - `dist/melodie.svg`: a copy of `icon.svg`, the icon the desktop entry names and the archive
   installs.
 

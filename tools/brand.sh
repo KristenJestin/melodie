@@ -25,5 +25,6 @@ for size in 128 256 512; do
     rsvg-convert -w "$size" -h "$size" "$brand/icon.svg" -o "$brand/png/icon-$size.png"
 done
 rsvg-convert "$brand/social-preview.svg" -o "$brand/png/social-preview.png"
+rsvg-convert "$brand/screen.svg" -o "$brand/png/screen.png"
 cp "$brand/icon.svg" "$root/dist/melodie.svg"
 echo "Generated assets/brand/png and dist/melodie.svg"
