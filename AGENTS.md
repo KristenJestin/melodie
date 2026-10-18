@@ -111,7 +111,7 @@ git config core.hooksPath .githooks     # once per clone: the commit-msg and pre
 - For a manual try, use `dbus-run-session -- <command>` and a temporary configuration; stop
   every test daemon you started.
 - The test-only environment variables (fake keyring file, MPRIS name, idle delay, audio output)
-  are documented in the README and used by tests only.
+  are documented in `docs/reference.md` and used by tests only.
 - What only a real machine can show (sound, the desktop's player card, smoothness of a long
   list) is checked by hand and reported in the pull request.
 - A test that fails only under load is rerun alone before the failure is called real.
