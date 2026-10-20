@@ -5,5 +5,5 @@ members = ["crates/melodie-core", "crates/melodie", "crates/melodie-desktop"]
 [workspace.package]
 version = "0.0.0"
 edition = "2024"
-license = "MIT"
+license = "AGPL-3.0-only"
 publish = false
