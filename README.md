@@ -155,3 +155,7 @@ security. The event stream and the socket requests are in [docs/events.md](docs/
 The work is tracked in the issues; `dev` is the integration branch and the target of every pull
 request. Coding agents, and anyone working like them, read [`AGENTS.md`](AGENTS.md). The logo and
 the social preview are in [`assets/brand`](assets/brand).
+
+## Licence
+
+Free software under the [AGPL-3.0](LICENSE). The brand drawings use three fonts under the SIL Open Font License 1.1 ([`assets/brand/fonts`](assets/brand/fonts/README.md)).
