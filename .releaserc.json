@@ -5,13 +5,7 @@
     [
       "@semantic-release/commit-analyzer",
       {
-        "preset": "angular",
-        "releaseRules": [
-          {
-            "breaking": true,
-            "release": "minor"
-          }
-        ]
+        "preset": "angular"
       }
     ],
     "@semantic-release/release-notes-generator",
