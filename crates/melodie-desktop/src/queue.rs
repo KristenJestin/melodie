@@ -1,5 +1,5 @@
 //! The queue panel: past tracks greyed, the current one marked, the next ones; play one, drag to
-//! reorder, remove, clear what comes next.
+//! reorder, remove, shuffle or clear what comes next.
 
 use crate::app::Shared;
 use crate::artist_links;
@@ -68,12 +68,16 @@ impl QueuePanel {
 
 impl Render for QueuePanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (count, has_next) = {
+        let (count, has_next, can_shuffle) = {
             let p = &self.shared.read(cx).player;
-            (p.tracks.len(), p.has_next())
+            (p.tracks.len(), p.has_next(), p.can_shuffle_next())
         };
         let pal = palette(&self.shared, window, cx);
-        let (close, clear) = (self.shared.clone(), self.shared.clone());
+        let (close, clear, shuffle) = (
+            self.shared.clone(),
+            self.shared.clone(),
+            self.shared.clone(),
+        );
         v_flex()
             .size_full()
             .bg(pal.surface)
@@ -104,6 +108,14 @@ impl Render for QueuePanel {
                                     n => format!("{n} tracks"),
                                 },
                             ))),
+                    )
+                    .child(
+                        IconButton::new("shuffle-next", IconName::Shuffle, pal)
+                            .disabled(!can_shuffle)
+                            .tip("Shuffle what comes next")
+                            .on_click(move |_, _, cx| {
+                                shuffle.update(cx, |s, cx| s.send(Request::QueueShuffleAfter, cx))
+                            }),
                     )
                     .child(
                         IconButton::new("clear-next", IconName::ListX, pal)
