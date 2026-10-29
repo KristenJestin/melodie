@@ -3,7 +3,7 @@
 //! is the one animation inside a row, and it runs only when the pointer itself moves to another
 //! row; rows scrolled under a still pointer change at once (`docs/gui-toolkit.md`, "Lists").
 
-use crate::albums::{PAD, artist_play, content_width, cover_box, empty_state};
+use crate::albums::{PAD, artist_play, content_width, cover_box, empty_state, sort_chips};
 use crate::app::Shared;
 use crate::artist_links;
 use crate::catalog::Catalog;
@@ -382,6 +382,8 @@ pub fn track_row(
                         }),
                         Col::Plays => c.tabular().child(t.plays.to_string()),
                         Col::Time => c.child(clock_text(t.duration as f64)),
+                        // sort-only: no table draws them
+                        Col::Added | Col::Played => c,
                     }
                 }))
                 .child(
@@ -525,9 +527,35 @@ impl Render for TrackList {
         let selection = self.catalog.read(cx).selection.clone();
         let catalog = self.catalog.clone();
         let sort = self.catalog.read(cx).sorts.get(&Place::Tracks);
-        let header = track_header(&cols, false, sort, pal, move |s, cx| {
-            catalog.update(cx, |c, cx| c.sort_tracks(Place::Tracks, s, cx))
+        let header = track_header(&cols, false, sort, pal, {
+            let catalog = catalog.clone();
+            move |s, cx| catalog.update(cx, |c, cx| c.sort_tracks(Place::Tracks, s, cx))
         });
+        let top = h_flex()
+            .px(px(PAD))
+            .pt_5()
+            .pb_3()
+            .gap_4()
+            .items_center()
+            .flex_wrap()
+            .child(title_with_aside(
+                "Tracks",
+                shown.as_ref().map(|s| s.len().to_string().into()),
+                pal,
+                window,
+            ))
+            .child(div().flex_1())
+            .child(sort_chips(
+                "track-sort",
+                table::library_sort(sort),
+                &table::TRACK_CHIPS,
+                pal,
+                move |s, cx| {
+                    catalog.update(cx, |c, cx| {
+                        c.sort_tracks(Place::Tracks, Some(table::chosen(s)), cx)
+                    })
+                },
+            ));
         let body = match &shown {
             None => empty_state(empty, "", pal).into_any_element(),
             Some(shown) => {
@@ -550,11 +578,7 @@ impl Render for TrackList {
                 .into_any_element()
             }
         };
-        v_flex()
-            .size_full()
-            .child(title("Tracks", shown.as_ref().map(Shown::len), pal, window))
-            .child(header)
-            .child(body)
+        v_flex().size_full().child(top).child(header).child(body)
     }
 }
 
