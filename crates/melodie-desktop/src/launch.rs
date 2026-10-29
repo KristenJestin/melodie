@@ -55,6 +55,10 @@ pub enum Job {
         ids: Vec<String>,
         from: usize,
     },
+    /// Replaces the queue with these tracks, shuffled, and plays it.
+    ShuffleTracks {
+        ids: Vec<String>,
+    },
     /// Adds these tracks, in this order, after the current track (`next`) or at the end.
     QueueTracks {
         ids: Vec<String>,
@@ -154,6 +158,7 @@ impl Job {
             | Self::Play { .. }
             | Self::Queue { .. }
             | Self::PlayTracks { .. }
+            | Self::ShuffleTracks { .. }
             | Self::QueueTracks { .. }
             | Self::Mix { .. }
             | Self::CreatePlaylist { .. }
@@ -188,6 +193,7 @@ impl Job {
             Self::PlayTracks { from, .. } => {
                 words(&["play", "track", "--from", &(from + 1).to_string(), "-"])
             }
+            Self::ShuffleTracks { .. } => words(&["play", "track", "--shuffle", "-"]),
             Self::QueueTracks { next, .. } => {
                 let mut a = words(&["queue", "track"]);
                 if *next {
@@ -296,6 +302,7 @@ impl Job {
                 | Self::Play { .. }
                 | Self::Queue { .. }
                 | Self::PlayTracks { .. }
+                | Self::ShuffleTracks { .. }
                 | Self::QueueTracks { .. }
                 | Self::Mix { .. }
                 | Self::MixGenre { .. }
@@ -311,6 +318,7 @@ impl Job {
                 | Self::Rediscover
                 | Self::Play { .. }
                 | Self::PlayTracks { .. }
+                | Self::ShuffleTracks { .. }
                 | Self::Mix { .. }
                 | Self::MixGenre { .. }
         )
@@ -319,7 +327,9 @@ impl Job {
     /// What `melodie` reads on its standard input: the ids of several tracks, one per line.
     pub fn stdin(&self) -> Option<String> {
         match self {
-            Self::PlayTracks { ids, .. } | Self::QueueTracks { ids, .. } => {
+            Self::PlayTracks { ids, .. }
+            | Self::ShuffleTracks { ids }
+            | Self::QueueTracks { ids, .. } => {
                 Some(ids.iter().map(|id| format!("{id}\n")).collect())
             }
             _ => None,
@@ -495,6 +505,7 @@ mod tests {
                 ids: vec![id()],
                 from: 0,
             },
+            Job::ShuffleTracks { ids: vec![id()] },
             Job::Mix {
                 kind: Kind::Artist,
                 id: id(),
@@ -689,6 +700,9 @@ mod tests {
         };
         assert_eq!(play.args(), ["play", "track", "--from", "3", "-"]);
         assert_eq!(play.stdin().as_deref(), Some("-t1\nt2\nt3\n"));
+        let shuffle = Job::ShuffleTracks { ids: ids() };
+        assert_eq!(shuffle.args(), ["play", "track", "--shuffle", "-"]);
+        assert_eq!(shuffle.stdin(), play.stdin());
         let next = Job::QueueTracks {
             ids: ids(),
             next: true,

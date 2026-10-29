@@ -12,7 +12,7 @@ use crate::dialogs::{self, Dialog};
 use crate::equaliser::{Equaliser, name_line};
 use crate::player::palette;
 use crate::tips::Tipped as _;
-use crate::widgets::{Hover, Revealed as _, hover, title_with_aside};
+use crate::widgets::{Hover, IconButton, Revealed as _, hover, title_with_aside};
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::Icon;
@@ -25,7 +25,7 @@ use melodie_desktop::figures::{Figures as _, clock_text};
 use melodie_desktop::launch::{Adding, Job, Kind};
 use melodie_desktop::menu::{Item, Spot};
 use melodie_desktop::playing::{Mark, Marks};
-use melodie_desktop::selection::{Click, Selection};
+use melodie_desktop::selection::{Click, FIRST, Selection, play_first};
 use melodie_desktop::table::{self, Col, ColSort, Cols, Shown, Table, Width};
 use melodie_desktop::theme::Palette;
 use std::sync::Arc;
@@ -531,6 +531,20 @@ impl Render for TrackList {
             let catalog = catalog.clone();
             move |s, cx| catalog.update(cx, |c, cx| c.sort_tracks(Place::Tracks, s, cx))
         });
+        // the whole library cannot be a queue: the first ones shown
+        let play = |id: &'static str, icon, label: &'static str, shuffle: bool| {
+            let (catalog, shown) = (catalog.clone(), shown.clone());
+            IconButton::new(id, icon, pal)
+                .label(label)
+                .tip(format!("{label} the first {FIRST} tracks shown"))
+                .diameter(38.)
+                .disabled(shown.as_ref().is_none_or(Shown::is_empty))
+                .on_click(move |_, _, cx| {
+                    if let Some(job) = shown.as_ref().and_then(|s| play_first(s, shuffle)) {
+                        catalog.update(cx, |c, cx| c.run(job, cx))
+                    }
+                })
+        };
         let top = h_flex()
             .px(px(PAD))
             .pt_5()
@@ -544,6 +558,12 @@ impl Render for TrackList {
                 pal,
                 window,
             ))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(play("tracks-play", IconName::Play, "Play", false).primary())
+                    .child(play("tracks-shuffle", IconName::Shuffle, "Shuffle", true)),
+            )
             .child(div().flex_1())
             .child(sort_chips(
                 "track-sort",
