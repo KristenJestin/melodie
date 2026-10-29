@@ -237,7 +237,7 @@ enum Cmd {
     #[command(group(
         clap::ArgGroup::new("action")
             .required(true)
-            .args(["kind", "list", "play", "move_", "remove", "clear_after"])
+            .args(["kind", "list", "play", "move_", "remove", "clear_after", "shuffle_after"])
     ))]
     Queue {
         #[arg(requires = "ids")]
@@ -266,6 +266,9 @@ enum Cmd {
         /// Removes every track after the current one
         #[arg(long)]
         clear_after: bool,
+        /// Shuffles, once, every track after the current one
+        #[arg(long)]
+        shuffle_after: bool,
     },
     /// Follows what the player does: one JSON event per line (never starts the daemon)
     Watch,
@@ -425,6 +428,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             move_,
             remove,
             clear_after,
+            shuffle_after,
         } => {
             // Positions start at 1 on the command line, at 0 on the socket.
             let at = |p: u64| p as usize - 1;
@@ -441,6 +445,8 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 ctl::control(proto::Request::QueueRemove { index: at(p) })
             } else if clear_after {
                 ctl::control(proto::Request::QueueClearAfter)
+            } else if shuffle_after {
+                ctl::control(proto::Request::QueueShuffleAfter)
             } else {
                 match (kind, stdin_ids(ids)?) {
                     (Some(KindArg::Track), ids) => {

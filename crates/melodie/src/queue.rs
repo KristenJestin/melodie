@@ -45,18 +45,48 @@ pub fn insert_at(cur: Option<usize>, len: usize, next: bool) -> usize {
     }
 }
 
+/// The queue once what comes after the current track is shuffled: `order[i]` is the old index
+/// of the entry that ends up at `i`. What was played and the current track stay in place.
+pub fn shuffled_after(
+    cur: Option<usize>,
+    len: usize,
+    below: impl FnMut(usize) -> usize,
+) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..len).collect();
+    if let Some(c) = cur {
+        crate::rules::shuffle(&mut order[(c + 1).min(len)..], below);
+    }
+    order
+}
+
+/// The `playlist-move from target` calls that bring mpv's playlist, in the old order, to
+/// `order` (see `shuffled_after`), one entry at a time from the front.
+pub fn mpv_reorder(order: &[usize]) -> Vec<(usize, usize)> {
+    let mut mpv: Vec<usize> = (0..order.len()).collect();
+    let mut moves = Vec::new();
+    for (i, want) in order.iter().enumerate() {
+        let from = i + mpv[i..].iter().position(|x| x == want).unwrap_or(0);
+        if from != i {
+            let x = mpv.remove(from);
+            mpv.insert(i, x);
+            moves.push((from, mpv_move_target(from, i)));
+        }
+    }
+    moves
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// Applies a move to a list the way the daemon does to its queue.
-    fn apply_move(v: &mut Vec<char>, from: usize, to: usize) {
+    fn apply_move<T>(v: &mut Vec<T>, from: usize, to: usize) {
         let x = v.remove(from);
         v.insert(to, x);
     }
 
     /// Applies a move to a list the way mpv does with `playlist-move from target`.
-    fn mpv_move(v: &mut Vec<char>, from: usize, target: usize) {
+    fn mpv_move<T: Copy>(v: &mut Vec<T>, from: usize, target: usize) {
         let x = v[from];
         v.insert(target, x);
         let old = if target <= from { from + 1 } else { from };
@@ -133,5 +163,65 @@ mod tests {
         assert_eq!(insert_at(Some(1), 5, false), 5);
         assert_eq!(insert_at(None, 3, true), 3);
         assert_eq!(insert_at(None, 0, false), 0);
+    }
+
+    /// A fixed "random" source: the same sequence every time.
+    fn counter() -> impl FnMut(usize) -> usize {
+        let mut k = 0;
+        move |n| {
+            k += 7;
+            k % n
+        }
+    }
+
+    #[test]
+    fn shuffling_after_keeps_the_past_and_the_current_track_in_place() {
+        for len in 0..9 {
+            for c in 0..len {
+                let order = shuffled_after(Some(c), len, counter());
+                assert_eq!(
+                    order[..=c],
+                    (0..=c).collect::<Vec<_>>(),
+                    "len {len} cur {c}"
+                );
+                let mut tail = order[c + 1..].to_vec();
+                tail.sort();
+                assert_eq!(tail, (c + 1..len).collect::<Vec<_>>(), "len {len} cur {c}");
+            }
+        }
+    }
+
+    #[test]
+    fn shuffling_after_with_nothing_current_changes_nothing() {
+        assert_eq!(shuffled_after(None, 4, counter()), [0, 1, 2, 3]);
+        assert_eq!(shuffled_after(None, 0, counter()), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn shuffling_one_track_or_none_after_the_current_changes_nothing() {
+        assert_eq!(shuffled_after(Some(2), 3, counter()), [0, 1, 2]);
+        assert_eq!(shuffled_after(Some(1), 3, counter()), [0, 1, 2]);
+        assert_eq!(shuffled_after(Some(0), 1, counter()), [0]);
+    }
+
+    #[test]
+    fn the_moves_said_to_mpv_land_on_the_shuffled_order() {
+        for len in 0..8 {
+            for c in 0..len.max(1) {
+                let order = shuffled_after(Some(c), len, counter());
+                let mut mpv: Vec<usize> = (0..len).collect();
+                for (from, target) in mpv_reorder(&order) {
+                    mpv_move(&mut mpv, from, target);
+                }
+                assert_eq!(mpv, order, "len {len} cur {c}");
+            }
+        }
+        // Every permutation of a tail, not only the ones a source draws.
+        let order = [0, 4, 2, 5, 1, 3];
+        let mut mpv: Vec<usize> = (0..6).collect();
+        for (from, target) in mpv_reorder(&order) {
+            mpv_move(&mut mpv, from, target);
+        }
+        assert_eq!(mpv, order);
     }
 }

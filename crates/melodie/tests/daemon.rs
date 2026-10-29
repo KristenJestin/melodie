@@ -2013,6 +2013,88 @@ fn clear_after_keeps_past_and_current() {
     wait_until(5, "t5 playing", || sb.now()["id"] == "t5");
 }
 
+/// Fills the queue after the current track `t3` (a long album, 18 more entries with
+/// duplicates) and returns the ids of the whole queue.
+fn long_queue_playing_t3(sb: &Sandbox) -> Vec<String> {
+    sb.play_long_album();
+    sb.ok(&["queue", "--play", "3"]);
+    wait_until(5, "t3 playing", || sb.now()["id"] == "t3");
+    for _ in 0..3 {
+        sb.ok(&["queue", "track", "t1", "t2", "t3", "t4", "t5"]);
+    }
+    ids(&sb.queue_list())
+}
+
+#[test]
+fn shuffle_after_keeps_the_past_the_current_track_and_the_same_tracks() {
+    let sb = Sandbox::new(true);
+    let before = long_queue_playing_t3(&sb);
+    assert_eq!(before.len(), 20);
+    sb.ok(&["pause"]);
+    let at = sb.now()["position"].as_f64().unwrap();
+    let w = sb.watch();
+    w.wait_count("snapshot", 1);
+
+    // One shuffle can draw the same order back, 18 tracks make that very unlikely.
+    let mut changed = false;
+    for _ in 0..3 {
+        let queued = w.of_type("queue").len();
+        sb.ok(&["queue", "--shuffle-after"]);
+        w.wait_count("queue", queued + 1);
+        let list = sb.queue_list();
+        let after = ids(&list);
+        assert_eq!(
+            after[..3],
+            before[..3],
+            "the past and the current track stay"
+        );
+        assert_eq!(list["current"], 2);
+        let (mut a, mut b) = (after[3..].to_vec(), before[3..].to_vec());
+        changed |= a != b;
+        a.sort();
+        b.sort();
+        assert_eq!(a, b, "the same tracks come next, duplicates included");
+        assert_eq!(ids(&w.latest_queue()), after, "watchers see the new order");
+        if changed {
+            break;
+        }
+    }
+    assert!(changed, "the order of what comes next changed");
+
+    // The current track was never reloaded: same track, same place in the song.
+    let now = sb.now();
+    assert_eq!(now["id"], "t3");
+    assert_eq!(now["position"].as_f64().unwrap(), at, "{now}");
+    assert!(w.of_type("track").is_empty(), "{:?}", w.of_type("track"));
+
+    // What mpv plays next follows the new order.
+    let next = ids(&sb.queue_list())[3].clone();
+    sb.ok(&["resume"]);
+    sb.ok(&["next"]);
+    wait_until(5, "the first of the shuffled tracks plays", || {
+        sb.now()["id"] == next.as_str() && sb.now()["index"] == 4
+    });
+}
+
+#[test]
+fn shuffle_after_with_fewer_than_two_tracks_next_changes_nothing() {
+    let sb = Sandbox::new(true);
+    sb.play_long_album();
+    sb.ok(&["queue", "--play", "4"]);
+    wait_until(5, "t4 playing", || sb.now()["id"] == "t4");
+    let w = sb.watch();
+    w.wait_count("snapshot", 1);
+    // One track next (t5), then none.
+    let list = sb.queue_list();
+    sb.ok(&["queue", "--shuffle-after"]);
+    assert_eq!(sb.queue_list(), list);
+    sb.ok(&["queue", "--clear-after"]);
+    sb.ok(&["queue", "--shuffle-after"]);
+    assert_eq!(ids(&sb.queue_list()), ["t1", "t2", "t3", "t4"]);
+    assert_eq!(sb.now()["id"], "t4");
+    assert!(w.of_type("track").is_empty(), "{:?}", w.of_type("track"));
+}
+
 #[test]
 fn queue_commands_never_start_the_daemon() {
     let sb = Sandbox::new(true);
@@ -2024,6 +2106,7 @@ fn queue_commands_never_start_the_daemon() {
         vec!["queue", "--move", "1", "2"],
         vec!["queue", "--remove", "1"],
         vec!["queue", "--clear-after"],
+        vec!["queue", "--shuffle-after"],
     ] {
         assert_eq!(sb.run(&args).status.code(), Some(1), "{args:?}");
     }

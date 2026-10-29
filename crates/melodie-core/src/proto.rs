@@ -72,6 +72,8 @@ pub enum Request {
     },
     /// Removes every track after the current one.
     QueueClearAfter,
+    /// Shuffles, once and in place, the tracks after the current one.
+    QueueShuffleAfter,
     /// Turns the connection into the event stream (see `docs/events.md`).
     Watch,
     Toggle,
@@ -314,6 +316,7 @@ mod tests {
             Request::QueueMove { from: 0, to: 3 },
             Request::QueueRemove { index: 1 },
             Request::QueueClearAfter,
+            Request::QueueShuffleAfter,
             Request::Watch,
             Request::Toggle,
             Request::Pause,
