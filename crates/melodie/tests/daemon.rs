@@ -656,10 +656,10 @@ fn playlist_edits_work_on_a_copy_made_before_the_library_browsing() {
     let sb = Sandbox::new(true);
     sb.ok(&["sync", "--full"]);
     seed_playlist(&sb, &["t1"]);
-    // The copy of an older version: no `playlist_tracks`, no `albums.created`.
+    // The copy of an older version: no `playlist_tracks`, no `albums.created`, no `tracks.created`.
     let c = rusqlite::Connection::open(sb.db()).unwrap();
     c.execute_batch(
-        "DROP TABLE playlist_tracks; DROP TABLE playlist_synced; ALTER TABLE albums DROP COLUMN created;",
+        "DROP TABLE playlist_tracks; DROP TABLE playlist_synced; ALTER TABLE albums DROP COLUMN created; ALTER TABLE tracks DROP COLUMN created;",
     )
     .unwrap();
     drop(c);
