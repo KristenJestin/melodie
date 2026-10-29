@@ -215,6 +215,12 @@ impl Player {
     pub fn has_next(&self) -> bool {
         self.current.is_some_and(|c| c + 1 < self.tracks.len())
     }
+
+    /// Whether shuffling what comes next can change anything: at least two tracks come after
+    /// the current one.
+    pub fn can_shuffle_next(&self) -> bool {
+        self.current.is_some_and(|c| c + 2 < self.tracks.len())
+    }
 }
 
 /// The playback position. The daemon says it at most once a second; between two of its
@@ -462,6 +468,27 @@ mod tests {
             t0,
         );
         assert!(!p.has_next());
+    }
+
+    #[test]
+    fn shuffling_what_comes_next_needs_two_tracks_after_the_current_one() {
+        let at = |current, n: u64| {
+            let tracks = (0..n).map(|i| entry(i + 1, "t", "T")).collect();
+            let (mut p, mut c) = (Player::default(), Clock::default());
+            p.apply(
+                &Event::Queue {
+                    queue: queue(current, tracks),
+                },
+                &mut c,
+                Instant::now(),
+            );
+            p.can_shuffle_next()
+        };
+        assert!(!at(None, 4), "nothing is current");
+        assert!(!at(Some(3), 4), "the current track is the last");
+        assert!(!at(Some(2), 4), "one track next");
+        assert!(at(Some(1), 4));
+        assert!(at(Some(0), 3));
     }
 
     #[test]

@@ -43,8 +43,8 @@ event stream and the socket requests are in [events.md](events.md).
 - `melodie open <address>`: plays or queues what an address names (see "Addresses"). Same checks
   as `play`, same daemon start.
 - `melodie queue --list [--json] | --play <pos> | --move <from> <to> | --remove <pos> |
-  --clear-after`: shows the queue (the current track marked `▶`) and edits it; positions start
-  at 1. Like the controls, they never start the daemon; without one, `--list` shows an empty
+  --clear-after | --shuffle-after`: shows the queue (the current track marked `▶`) and edits it
+  (`--shuffle-after` shuffles once what comes after the current track); positions start at 1. Like the controls, they never start the daemon; without one, `--list` shows an empty
   queue (`{"current":null,"tracks":[]}`). See [docs/events.md](events.md) for what happens to
   the current track.
 - `melodie watch`: follows what the player does, one JSON event per line (state, track,
@@ -105,8 +105,8 @@ Screenshots and a recording of the animations, made with invented data, are in
   queue's 380 and 560 for the main area) it slides over the main area instead, and Escape or a
   click beside it hides it. Shown or hidden is kept between launches. Past tracks greyed, the
   current one marked, the next ones. A click plays a track; drag a track onto another to move it
-  there; the cross on a row removes it; the button at the top removes what comes after the
-  current track.
+  there; the cross on a row removes it; the buttons at the top shuffle (once, in place) or remove
+  what comes after the current track; shuffling is off with fewer than two tracks after it.
 - **What plays, wherever it is listed.** In every track table (an album, a playlist, the artist's
   top tracks, the library, the search) the row of the current track has its title in the accent
   colour and a small equaliser in the `#` column (before the title in the tables that have no

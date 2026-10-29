@@ -698,6 +698,7 @@ impl Engine {
             Request::QueueMove { from, to } => self.queue_move(from, to),
             Request::QueueRemove { index } => self.queue_remove(index),
             Request::QueueClearAfter => self.queue_clear_after(),
+            Request::QueueShuffleAfter => self.queue_shuffle_after(),
             Request::Watch => Err("watch is only answered with the event stream".into()),
             Request::Toggle => match self.status() {
                 Status::Playing => self.set_pause(true),
@@ -945,6 +946,26 @@ impl Engine {
                 .map_err(mpv_err)?;
             self.queue.truncate(i);
         }
+        Ok(())
+    }
+
+    fn queue_shuffle_after(&mut self) -> Res<()> {
+        let Some(c) = self.cur else {
+            return Err("Rien en lecture".into());
+        };
+        if c + 2 >= self.queue.len() {
+            return Ok(());
+        }
+        let order = queue::shuffled_after(self.cur, self.queue.len(), rules::random_below);
+        // Moves inside the entries after the current one: mpv keeps playing the current file.
+        for (from, target) in queue::mpv_reorder(&order) {
+            self.mpv
+                .command("playlist-move", &[&from.to_string(), &target.to_string()])
+                .map_err(mpv_err)?;
+        }
+        let mut old: Vec<Option<Entry>> = self.queue.drain(..).map(Some).collect();
+        self.queue = order.iter().filter_map(|&i| old[i].take()).collect();
+        self.queue_rev += 1;
         Ok(())
     }
 
