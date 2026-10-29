@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Mélodie
+GenericName=Music player
+Comment=Music player for a Navidrome server
+Exec=melodie-desktop
+Icon=melodie
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+Keywords=music;musique;navidrome;melodie;
+StartupWMClass=melodie

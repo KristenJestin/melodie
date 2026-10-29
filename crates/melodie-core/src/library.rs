@@ -133,6 +133,10 @@ pub enum TrackBy {
     Year,
     Duration,
     Plays,
+    /// When it came into the library.
+    Added,
+    /// When it was last played.
+    Played,
 }
 
 fn dir(descending: bool) -> &'static str {
@@ -440,6 +444,11 @@ pub fn tracks(conn: &Connection, sort: Sort<TrackBy>) -> Result<Vec<Track>> {
         TrackBy::Year => format!("t.year {d}, t.album COLLATE NOCASE, t.track"),
         TrackBy::Duration => format!("t.duration {d}, t.title COLLATE NOCASE"),
         TrackBy::Plays => format!("t.playCount {d}, t.title COLLATE NOCASE"),
+        // no date: last either way. Tracks added together keep their album's order.
+        TrackBy::Added => {
+            format!("t.created IS NULL, t.created {d}, t.album COLLATE NOCASE, t.track")
+        }
+        TrackBy::Played => format!("t.played IS NULL, t.played {d}, t.title COLLATE NOCASE"),
     };
     all(
         conn,
@@ -763,6 +772,39 @@ mod tests {
         assert_eq!(
             by(Sort::desc(TrackBy::Plays)),
             ["t5", "t1", "t3", "t4", "t2"]
+        );
+    }
+
+    #[test]
+    fn tracks_sort_by_when_they_were_added_and_last_played_the_undated_last() {
+        let (_d, conn) = library();
+        conn.execute_batch(
+            "UPDATE tracks SET created = '2026-03-01T00:00:00Z' WHERE id IN ('t1', 't2');
+             UPDATE tracks SET created = '2026-04-01T00:00:00Z' WHERE id = 't4';
+             UPDATE tracks SET created = '2026-02-01T00:00:00Z' WHERE id = 't5';
+             UPDATE tracks SET played = '2026-09-10T20:00:00Z' WHERE id = 't1';
+             UPDATE tracks SET played = '2026-08-01T09:00:00Z' WHERE id = 't4';
+             UPDATE tracks SET played = '2026-09-20T09:00:00Z' WHERE id = 't5';",
+        )
+        .unwrap();
+        let by = |s| track_ids(&tracks(&conn, s).unwrap());
+        // t3 has no date: last either way; t1 and t2 came together: their album's order
+        assert_eq!(
+            by(Sort::desc(TrackBy::Added)),
+            ["t4", "t2", "t1", "t5", "t3"]
+        );
+        assert_eq!(
+            by(Sort::asc(TrackBy::Added)),
+            ["t5", "t2", "t1", "t4", "t3"]
+        );
+        // t2 and t3 were never played: by title
+        assert_eq!(
+            by(Sort::desc(TrackBy::Played)),
+            ["t5", "t1", "t4", "t2", "t3"]
+        );
+        assert_eq!(
+            by(Sort::asc(TrackBy::Played)),
+            ["t4", "t1", "t5", "t2", "t3"]
         );
     }
 

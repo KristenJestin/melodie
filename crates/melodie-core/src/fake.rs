@@ -152,7 +152,8 @@ pub fn song(i: usize) -> Value {
     json!({"id": format!("s{i}"), "title": format!("Titre numéro {i}"),
            "artist": if i.is_multiple_of(2) {"Daft Punk"} else {"Beyoncé"}, "artistId": if i.is_multiple_of(2) {"ar1"} else {"ar2"},
            "album": "Discovery", "albumId": "al1", "year": 2001, "duration": 200,
-           "suffix": "flac", "bitRate": 900, "playCount": 0, "coverArt": format!("mf-s{i}")})
+           "suffix": "flac", "bitRate": 900, "playCount": 0, "coverArt": format!("mf-s{i}"),
+           "created": format!("2026-01-01T{:02}:{:02}:{:02}Z", i / 3600 % 24, i / 60 % 60, i % 60)})
 }
 
 impl Fake {

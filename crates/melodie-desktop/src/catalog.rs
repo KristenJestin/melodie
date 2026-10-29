@@ -705,9 +705,11 @@ mod tests {
     use gpui_kit::{AppContext as _, TestAppContext};
     use melodie_core::db;
     use melodie_core::env::Env;
+    use melodie_core::library::{Sort, TrackBy};
     use melodie_desktop::browse::Place;
-    use melodie_desktop::selection::{Click, How};
-    use melodie_desktop::table::Shown;
+    use melodie_desktop::launch::Job;
+    use melodie_desktop::selection::{Click, How, play_first};
+    use melodie_desktop::table::{self, Shown};
 
     /// An artist page read from a copy where `ar9` is featured on two tracks of `ar1` and `ar8`
     /// is credited on nothing.
@@ -822,6 +824,48 @@ mod tests {
             conn.execute("INSERT INTO tracks(id, title) VALUES (?1, ?1)", [id])
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn recently_added_then_play_sends_the_hundred_tracks_added_last() {
+        let mut app = TestAppContext::single();
+        let d = tempfile::tempdir().unwrap();
+        let env = Env::with_home(d.path());
+        let conn = db::create(&db::db_path(&env)).unwrap();
+        // 130 tracks, `s{i}` added i minutes after midnight, the ones in between never dated
+        for i in 0..130 {
+            let created =
+                (i % 7 != 3).then(|| format!("2026-03-01T{:02}:{:02}:00Z", i / 60, i % 60));
+            conn.execute(
+                "INSERT INTO tracks(id, title, created) VALUES (?1, ?1, ?2)",
+                rusqlite::params![format!("s{i:03}"), created],
+            )
+            .unwrap();
+        }
+        drop(conn);
+        let catalog = app.update(|cx| {
+            let shared = crate::app::for_tests(env.clone(), cx);
+            cx.new(|cx| Catalog::new(env.clone(), shared, cx))
+        });
+        catalog.update(&mut app, |c, cx| c.start_at(Place::Tracks, cx));
+        app.run_until_parked();
+        // the chip, as the page asks for it
+        let chip = Sort::desc(TrackBy::Added);
+        catalog.update(&mut app, |c, cx| {
+            c.sort_tracks(Place::Tracks, Some(table::chosen(chip)), cx)
+        });
+        app.run_until_parked();
+        let job = catalog.read_with(&app, |c, _| play_first(&c.views[&Place::Tracks], false));
+        let dated: Vec<String> = (0..130)
+            .rev()
+            .filter(|i| i % 7 != 3)
+            .map(|i| format!("s{i:03}"))
+            .collect();
+        let Some(Job::PlayTracks { ids, from: 0 }) = job else {
+            panic!("{job:?}")
+        };
+        assert_eq!(ids.len(), 100);
+        assert_eq!(ids[..], dated[..100]);
     }
 
     #[test]

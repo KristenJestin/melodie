@@ -396,6 +396,17 @@ fn lecture_complete_mpris_scrobble_skip_et_fin() {
         .get_property("Identity")
         .unwrap();
         assert_eq!(ident, "Mélodie");
+        // The window's app id: a desktop finds the app (and its icon) from it.
+        let entry: String = Proxy::new(
+            conn.as_ref().unwrap(),
+            format!("org.mpris.MediaPlayer2.{}", sb.bus_name),
+            "/org/mpris/MediaPlayer2",
+            "org.mpris.MediaPlayer2",
+        )
+        .unwrap()
+        .get_property("DesktopEntry")
+        .unwrap();
+        assert_eq!(entry, "melodie");
         let vol: f64 = p.get_property("Volume").unwrap();
         assert!((vol - 1.0).abs() < 1e-9, "volume par défaut : {vol}");
         p.set_property("Volume", 0.8f64).unwrap();
@@ -645,10 +656,10 @@ fn playlist_edits_work_on_a_copy_made_before_the_library_browsing() {
     let sb = Sandbox::new(true);
     sb.ok(&["sync", "--full"]);
     seed_playlist(&sb, &["t1"]);
-    // The copy of an older version: no `playlist_tracks`, no `albums.created`.
+    // The copy of an older version: no `playlist_tracks`, no `albums.created`, no `tracks.created`.
     let c = rusqlite::Connection::open(sb.db()).unwrap();
     c.execute_batch(
-        "DROP TABLE playlist_tracks; DROP TABLE playlist_synced; ALTER TABLE albums DROP COLUMN created;",
+        "DROP TABLE playlist_tracks; DROP TABLE playlist_synced; ALTER TABLE albums DROP COLUMN created; ALTER TABLE tracks DROP COLUMN created;",
     )
     .unwrap();
     drop(c);
@@ -2002,6 +2013,88 @@ fn clear_after_keeps_past_and_current() {
     wait_until(5, "t5 playing", || sb.now()["id"] == "t5");
 }
 
+/// Fills the queue after the current track `t3` (a long album, 18 more entries with
+/// duplicates) and returns the ids of the whole queue.
+fn long_queue_playing_t3(sb: &Sandbox) -> Vec<String> {
+    sb.play_long_album();
+    sb.ok(&["queue", "--play", "3"]);
+    wait_until(5, "t3 playing", || sb.now()["id"] == "t3");
+    for _ in 0..3 {
+        sb.ok(&["queue", "track", "t1", "t2", "t3", "t4", "t5"]);
+    }
+    ids(&sb.queue_list())
+}
+
+#[test]
+fn shuffle_after_keeps_the_past_the_current_track_and_the_same_tracks() {
+    let sb = Sandbox::new(true);
+    let before = long_queue_playing_t3(&sb);
+    assert_eq!(before.len(), 20);
+    sb.ok(&["pause"]);
+    let at = sb.now()["position"].as_f64().unwrap();
+    let w = sb.watch();
+    w.wait_count("snapshot", 1);
+
+    // One shuffle can draw the same order back, 18 tracks make that very unlikely.
+    let mut changed = false;
+    for _ in 0..3 {
+        let queued = w.of_type("queue").len();
+        sb.ok(&["queue", "--shuffle-after"]);
+        w.wait_count("queue", queued + 1);
+        let list = sb.queue_list();
+        let after = ids(&list);
+        assert_eq!(
+            after[..3],
+            before[..3],
+            "the past and the current track stay"
+        );
+        assert_eq!(list["current"], 2);
+        let (mut a, mut b) = (after[3..].to_vec(), before[3..].to_vec());
+        changed |= a != b;
+        a.sort();
+        b.sort();
+        assert_eq!(a, b, "the same tracks come next, duplicates included");
+        assert_eq!(ids(&w.latest_queue()), after, "watchers see the new order");
+        if changed {
+            break;
+        }
+    }
+    assert!(changed, "the order of what comes next changed");
+
+    // The current track was never reloaded: same track, same place in the song.
+    let now = sb.now();
+    assert_eq!(now["id"], "t3");
+    assert_eq!(now["position"].as_f64().unwrap(), at, "{now}");
+    assert!(w.of_type("track").is_empty(), "{:?}", w.of_type("track"));
+
+    // What mpv plays next follows the new order.
+    let next = ids(&sb.queue_list())[3].clone();
+    sb.ok(&["resume"]);
+    sb.ok(&["next"]);
+    wait_until(5, "the first of the shuffled tracks plays", || {
+        sb.now()["id"] == next.as_str() && sb.now()["index"] == 4
+    });
+}
+
+#[test]
+fn shuffle_after_with_fewer_than_two_tracks_next_changes_nothing() {
+    let sb = Sandbox::new(true);
+    sb.play_long_album();
+    sb.ok(&["queue", "--play", "4"]);
+    wait_until(5, "t4 playing", || sb.now()["id"] == "t4");
+    let w = sb.watch();
+    w.wait_count("snapshot", 1);
+    // One track next (t5), then none.
+    let list = sb.queue_list();
+    sb.ok(&["queue", "--shuffle-after"]);
+    assert_eq!(sb.queue_list(), list);
+    sb.ok(&["queue", "--clear-after"]);
+    sb.ok(&["queue", "--shuffle-after"]);
+    assert_eq!(ids(&sb.queue_list()), ["t1", "t2", "t3", "t4"]);
+    assert_eq!(sb.now()["id"], "t4");
+    assert!(w.of_type("track").is_empty(), "{:?}", w.of_type("track"));
+}
+
 #[test]
 fn queue_commands_never_start_the_daemon() {
     let sb = Sandbox::new(true);
@@ -2013,6 +2106,7 @@ fn queue_commands_never_start_the_daemon() {
         vec!["queue", "--move", "1", "2"],
         vec!["queue", "--remove", "1"],
         vec!["queue", "--clear-after"],
+        vec!["queue", "--shuffle-after"],
     ] {
         assert_eq!(sb.run(&args).status.code(), Some(1), "{args:?}");
     }
@@ -2443,6 +2537,74 @@ fn an_unknown_id_never_changes_the_connection_the_daemon_keeps() {
     });
     assert!(w.of_type("connection").is_empty(), "{:?}", w.raw());
     assert_eq!(queue_ids(&sb), ids_of(&["t1", "t2", "t3"]));
+}
+
+#[test]
+fn play_track_answers_while_a_write_holds_the_copy_past_two_seconds() {
+    let sb = Sandbox::new(true);
+    sb.ok(&["sync"]);
+    let writer = rusqlite::Connection::open(sb.db()).unwrap();
+    // EXCLUSIVE: the lock a sync takes to commit, which no reader gets past.
+    writer
+        .execute_batch("BEGIN EXCLUSIVE; INSERT INTO meta(key, value) VALUES ('held', '1');")
+        .unwrap();
+    let args = &["play", "track", "nope"][..];
+    let child = sb
+        .cmd(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_secs(3));
+    writer.execute_batch("COMMIT").unwrap();
+    assert_not_found(&child.wait_with_output().unwrap(), "track nope", args);
+}
+
+/// Holds the lock a sync takes to commit, which no reader gets past, until `COMMIT`.
+fn hold_copy(sb: &Sandbox) -> rusqlite::Connection {
+    let writer = rusqlite::Connection::open(sb.db()).unwrap();
+    writer
+        .execute_batch("BEGIN EXCLUSIVE; INSERT INTO meta(key, value) VALUES ('held', '1');")
+        .unwrap();
+    writer
+}
+
+#[test]
+fn like_answers_while_a_write_holds_the_copy_past_two_seconds() {
+    let sb = Sandbox::new(true);
+    sb.ok(&["sync"]);
+    let writer = hold_copy(&sb);
+    let child = sb
+        .cmd(&["like", "track", "t2"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_secs(3));
+    writer.execute_batch("COMMIT").unwrap();
+    let o = child.wait_with_output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(db_value::<bool>(
+        &sb,
+        "SELECT starred IS NOT NULL FROM tracks WHERE id = 't2'"
+    ));
+}
+
+#[test]
+fn the_daemon_moves_on_quickly_while_a_write_holds_the_copy() {
+    let sb = Sandbox::new(true);
+    addressable_library(&sb);
+    sb.ok(&["sync"]);
+    sb.ok(&["play", "album", "al1"]);
+    wait_until(5, "t1 playing", || sb.now()["id"] == "t1");
+    let writer = hold_copy(&sb);
+    let start = Instant::now();
+    // An early `next` writes a skip, and the next track reads its favourite: both in the copy.
+    sb.ok(&["next"]);
+    wait_until(5, "t2 playing", || sb.now()["id"] == "t2");
+    let took = start.elapsed();
+    writer.execute_batch("COMMIT").unwrap();
+    assert!(took < Duration::from_secs(15), "{took:?}");
 }
 
 #[test]

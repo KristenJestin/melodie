@@ -81,9 +81,6 @@ fn session(env: &Env) -> Result<Session, Failure> {
     state::quick_check(env)?;
     let client = state::open_client(env)?;
     let conn = db::open_existing(env)?;
-    if let Some(c) = &conn {
-        c.busy_timeout(std::time::Duration::from_secs(2))?;
-    }
     Ok(Session { client, conn })
 }
 

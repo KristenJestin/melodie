@@ -23,6 +23,10 @@ pub enum Col {
     Year,
     Plays,
     Time,
+    /// When the track came into the library. Not drawn: the Tracks page sorts by it from its chips.
+    Added,
+    /// When it was last played. Not drawn either.
+    Played,
 }
 
 pub const COLS: [Col; 7] = [
@@ -55,6 +59,8 @@ impl Col {
             Self::Year => "YEAR",
             Self::Plays => "PLAYS",
             Self::Time => "TIME",
+            Self::Added => "ADDED",
+            Self::Played => "PLAYED",
         }
     }
 
@@ -64,7 +70,7 @@ impl Col {
             Self::Title => Width::Share(3.),
             Self::Artist | Self::Album => Width::Share(2.),
             Self::Year => Width::Fixed(48.),
-            Self::Plays | Self::Time => Width::Fixed(56.),
+            Self::Plays | Self::Time | Self::Added | Self::Played => Width::Fixed(56.),
         }
     }
 
@@ -83,9 +89,37 @@ impl Col {
             Self::Year => Some(TrackBy::Year),
             Self::Plays => Some(TrackBy::Plays),
             Self::Time => Some(TrackBy::Duration),
+            Self::Added => Some(TrackBy::Added),
+            Self::Played => Some(TrackBy::Played),
+        }
+    }
+
+    /// The column that stands for the library's order `by`.
+    fn of(by: TrackBy) -> Self {
+        match by {
+            TrackBy::Title => Self::Title,
+            TrackBy::Artist => Self::Artist,
+            TrackBy::Album => Self::Album,
+            TrackBy::Year => Self::Year,
+            TrackBy::Plays => Self::Plays,
+            TrackBy::Duration => Self::Time,
+            TrackBy::Added => Self::Added,
+            TrackBy::Played => Self::Played,
         }
     }
 }
+
+/// The chips above the Tracks page, in order: the sort, its label, and whether it starts
+/// descending (as the Albums page's).
+pub const TRACK_CHIPS: [(TrackBy, &str, bool); 7] = [
+    (TrackBy::Added, "Recently added", true),
+    (TrackBy::Title, "Title", false),
+    (TrackBy::Artist, "Artist", false),
+    (TrackBy::Album, "Album", false),
+    (TrackBy::Year, "Year", true),
+    (TrackBy::Plays, "Most played", true),
+    (TrackBy::Played, "Recently played", true),
+];
 
 /// Where a table is shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -225,6 +259,14 @@ pub fn library_sort(sort: Option<ColSort>) -> Sort<TrackBy> {
     }
 }
 
+/// The sort of the Tracks page that a chip picked: the headers and the chips share the one sort.
+pub fn chosen(sort: Sort<TrackBy>) -> ColSort {
+    ColSort {
+        col: Col::of(sort.by),
+        descending: sort.descending,
+    }
+}
+
 /// The ranks of `tracks`, in the order `sort` shows them.
 pub fn order(tracks: &[Track], sort: Option<ColSort>) -> Vec<usize> {
     let mut ranks: Vec<usize> = (0..tracks.len()).collect();
@@ -241,7 +283,10 @@ pub fn order(tracks: &[Track], sort: Option<ColSort>) -> Vec<usize> {
     };
     let (title, artist, album) = (
         lower(
-            matches!(sort.col, Col::Title | Col::Plays | Col::Time),
+            matches!(
+                sort.col,
+                Col::Title | Col::Plays | Col::Time | Col::Added | Col::Played
+            ),
             |t| &t.title,
         ),
         lower(sort.col == Col::Artist, |t| &t.artist),
@@ -260,6 +305,8 @@ pub fn order(tracks: &[Track], sort: Option<ColSort>) -> Vec<usize> {
             Col::Year => x.year.cmp(&y.year),
             Col::Plays => x.plays.cmp(&y.plays),
             Col::Time => x.duration.cmp(&y.duration),
+            // dates are read from the local copy, which sorts the library's tracks
+            Col::Added | Col::Played => std::cmp::Ordering::Equal,
         }
     };
     // ties: as the library sorts them, then the list's own order
@@ -269,7 +316,7 @@ pub fn order(tracks: &[Track], sort: Option<ColSort>) -> Vec<usize> {
             Col::Artist => album[a].cmp(&album[b]).then(x.number.cmp(&y.number)),
             Col::Album => x.number.cmp(&y.number),
             Col::Year => album[a].cmp(&album[b]).then(x.number.cmp(&y.number)),
-            Col::Plays | Col::Time => title[a].cmp(&title[b]),
+            Col::Plays | Col::Time | Col::Added | Col::Played => title[a].cmp(&title[b]),
             Col::Number | Col::Title => std::cmp::Ordering::Equal,
         }
         .then(a.cmp(&b))
@@ -709,6 +756,40 @@ mod tests {
         assert_eq!(s(Col::Time, true), Sort::desc(TrackBy::Duration));
         assert_eq!(s(Col::Year, false), Sort::asc(TrackBy::Year));
         assert_eq!(s(Col::Album, false), Sort::asc(TrackBy::Album));
+    }
+
+    #[test]
+    fn the_chips_and_the_headers_of_the_tracks_page_stay_in_agreement() {
+        // each chip, either way, is a sort the page can hold, and comes back as itself
+        for (by, _, _) in TRACK_CHIPS {
+            for sort in [Sort::asc(by), Sort::desc(by)] {
+                assert_eq!(library_sort(Some(chosen(sort))), sort, "{by:?}");
+            }
+        }
+        // the dates have no column: only the chips ask for them
+        let added = chosen(Sort::desc(TrackBy::Added));
+        assert!(!COLS.contains(&added.col));
+        assert!(!COLS.contains(&chosen(Sort::desc(TrackBy::Played)).col));
+        // a click on a header lights the chip of its column
+        let by_year = clicked(None, Col::Year);
+        assert_eq!(library_sort(by_year), Sort::asc(TrackBy::Year));
+        // a click on that chip flips it, and the header follows
+        let flipped = library_sort(by_year).clicked(TrackBy::Year, true);
+        assert_eq!(
+            chosen(flipped),
+            ColSort {
+                col: Col::Year,
+                descending: true
+            }
+        );
+        // another chip takes the page from the header's column, which no longer shows an arrow
+        let by_added = chosen(flipped.clicked(TrackBy::Added, true));
+        assert_eq!(library_sort(Some(by_added)), Sort::desc(TrackBy::Added));
+        assert_ne!(by_added.col, Col::Year);
+        // the third click on a header gives the library's own order back: the artist chip
+        let own = clicked(clicked(None, Col::Title), Col::Title);
+        assert_eq!(clicked(own, Col::Title), None);
+        assert_eq!(library_sort(None), Sort::asc(TrackBy::Artist));
     }
 
     #[test]

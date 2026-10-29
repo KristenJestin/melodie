@@ -267,7 +267,9 @@ impl Shared {
             Job::PlayMix => "Could not start your mix",
             Job::Rediscover => "Could not start the rediscoveries",
             Job::Star { .. } => "Could not change the favourite",
-            Job::Play { .. } | Job::PlayTracks { .. } => "Could not play it",
+            Job::Play { .. } | Job::PlayTracks { .. } | Job::ShuffleTracks { .. } => {
+                "Could not play it"
+            }
             Job::Queue { .. } | Job::QueueTracks { .. } => "Could not add it to the queue",
             Job::Mix { .. } => "Could not make the mix",
             Job::AddToPlaylist { .. } => "Could not add to the playlist",

@@ -19,6 +19,7 @@ older `index` of `now`.)
 | `{"cmd":"queue_move","from":4,"to":1}` | moves a track so that it ends up at `to` | `{"ok":true}` |
 | `{"cmd":"queue_remove","index":0}` | removes a track | `{"ok":true}` |
 | `{"cmd":"queue_clear_after"}` | removes every track after the current one | `{"ok":true}` |
+| `{"cmd":"queue_shuffle_after"}` | shuffles, once and in place, the tracks after the current one | `{"ok":true}` |
 | `{"cmd":"queue","tracks":[…],"next":true}` | adds tracks right after the current one (`next`) or at the end (`next` false or absent); plays the first of them if nothing plays | `{"ok":true}` |
 | `{"cmd":"play","tracks":[…],"shuffle":false,"start":2}` | replaces the queue and plays it from the track at `start` (from 0, 0 when absent; ignored with `shuffle`): the tracks before it never start | `{"ok":true}` |
 
@@ -32,6 +33,11 @@ What happens to the current track:
   rest of the queue stays: `current` is null, and `queue_play` starts again from any track. The
   daemon then quits after its idle delay, like any stop.
 - `queue_clear_after` keeps what was played and the current track.
+- `queue_shuffle_after` keeps what was played and the current track (not reloaded, same place in
+  the song) and reorders only the tracks after it, duplicates included. It is a one-shot action,
+  not a mode: what is added afterwards goes where it is put. With fewer than two tracks after the
+  current one it changes nothing; with no current track it is refused. The watchers get the new
+  queue as one `queue` event.
 
 `<queue>` is:
 

@@ -244,9 +244,6 @@ const COPY_SCAN: &str = "copy_scan";
 const COPY_SERVER: &str = "copy_server";
 const COPY_USER: &str = "copy_user";
 
-/// How long the copy waits for the readers (the window reads it again while it fills).
-const BUSY: std::time::Duration = std::time::Duration::from_secs(30);
-
 /// Starts a first copy: an empty copy that says it is not finished, put in place at once (made
 /// aside then renamed, so that no reader ever sees half a schema).
 fn start_first(client: &Client, target: &Path) -> Result<Connection, Failure> {
@@ -263,7 +260,7 @@ fn start_first(client: &Client, target: &Path) -> Result<Connection, Failure> {
     std::fs::rename(&tmp, target)
         .map_err(|e| anyhow::anyhow!("putting {} in place: {e}", target.display()))?;
     let conn = Connection::open(target)?;
-    conn.busy_timeout(BUSY)?;
+    conn.busy_timeout(db::BUSY)?;
     Ok(conn)
 }
 
@@ -299,10 +296,7 @@ fn made_for(conn: &Connection, client: &Client) -> bool {
 fn first(env: &Env, client: &Client, partial: Option<Connection>) -> Result<Report, Failure> {
     let resumed = partial.and_then(|c| Some((resume_point(&c, client)?, c)));
     let ((start, offset), mut conn) = match resumed {
-        Some((at, c)) => {
-            c.busy_timeout(BUSY)?;
-            (at, c)
-        }
+        Some((at, c)) => (at, c),
         None => ((0, 0), start_first(client, &db::db_path(env))?),
     };
     for (i, (kind, label, insert)) in KINDS.into_iter().enumerate().skip(start) {
@@ -378,7 +372,6 @@ pub fn run(env: &Env, client: &Client, force_full: bool) -> Result<Report, Failu
         Ok(Some(c)) => c,
         Err(e) => return Err(e.into()),
     };
-    conn.busy_timeout(BUSY)?;
     // a copy older than the credited artists reads every track again, to know them
     if !made_for(&conn, client) || db::get_meta(&conn, db::PARTICIPANTS).is_none() {
         drop(conn);
@@ -593,6 +586,24 @@ mod tests {
             s["artists"] = json!([{"id": s["artistId"], "name": s["artist"]},
                                   {"id": "ar9", "name": "Lior Castell"}]);
         }
+    }
+
+    #[test]
+    fn a_copy_keeps_the_date_each_track_was_added() {
+        let (_d, env, fake, client) = setup(3);
+        fake.state.songs.lock().unwrap()[1]["created"] = json!("2026-02-03T04:05:06Z");
+        run(&env, &client, true).unwrap();
+        let conn = db::open_existing(&env).unwrap().unwrap();
+        let added = |id: &str| -> Option<String> {
+            conn.query_row("SELECT created FROM tracks WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .unwrap()
+        };
+        assert_eq!(added("s1").as_deref(), Some("2026-02-03T04:05:06Z"));
+        // the fake gives every song one of its own
+        assert!(added("s0").is_some());
+        assert_ne!(added("s0"), added("s2"));
     }
 
     #[test]

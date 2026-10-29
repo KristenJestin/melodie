@@ -111,7 +111,7 @@ git config core.hooksPath .githooks     # once per clone: the commit-msg and pre
 - For a manual try, use `dbus-run-session -- <command>` and a temporary configuration; stop
   every test daemon you started.
 - The test-only environment variables (fake keyring file, MPRIS name, idle delay, audio output)
-  are documented in the README and used by tests only.
+  are documented in `docs/reference.md` and used by tests only.
 - What only a real machine can show (sound, the desktop's player card, smoothness of a long
   list) is checked by hand and reported in the pull request.
 - A test that fails only under load is rerun alone before the failure is called real.
@@ -165,12 +165,12 @@ Nobody edits a version: `Cargo.toml` stays at `0.0.0` and the version comes from
   rulesets: squash only into `dev`, merge commit only into `main`. The pull request is titled
   `chore(repo): release` (a `chore` needs no `Closes #n`). `release.yml` runs on `main`:
   semantic-release reads the Angular subjects the merge brings and tags `vX.Y.Z` with its notes
-  (`feat` moves the minor, `fix` the patch, a breaking change also the minor: Mélodie is in `0.x`
-  and `1.0` is the maintainer's decision). With no release yet it counts from a `v0.0.0` tag
-  it puts on the first commit before it runs, so the first release is `v0.1.0`; semantic-release
-  pushes its tags, so `v0.0.0` is published with that first release, harmlessly (it
-  is not a release). Then the job
-  `build` builds the tag with `MELODIE_VERSION` and attaches
+  (`feat` moves the minor, `fix` and `perf` the patch, a breaking change the major: Mélodie left
+  `0.x` with `1.0.0`, and a `BREAKING CHANGE:` footer in the squash body is what moves the major).
+  `v0.0.0` was pushed by hand once, on the base commit, so that semantic-release had a tag to
+  start from: the run's token cannot create a ref on a commit that holds workflow files. A
+  release now follows from the last tag.
+  Then the job `build` builds the tag with `MELODIE_VERSION` and attaches
   `melodie-<version>-linux-x86_64.tar.gz` and its `.sha256` to the release.
 - **A beta** (`vX.Y.Z-beta.N`, a pre-release) is published by `beta.yml` at every push to `dev`:
   the patch after the last release, numbered by the run. Only the newest exists.

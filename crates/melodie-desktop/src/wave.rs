@@ -8,11 +8,16 @@ use crate::model::Player;
 use melodie_core::env::Env;
 use melodie_core::waveform::{self, Ask};
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// How many times a waveform may come back from a finished `waveform-fetch` still missing
 /// before the window keeps the plain bar for that track.
 pub const MAX_TRIES: u32 = 2;
+/// How long one `waveform-fetch` may run, as long as a `cover-fetch`: one that never ends (an
+/// unreachable server, a stuck lock) would hold every waveform back until a restart.
+pub const FETCH_LIMIT: Duration = crate::covers::ROUND_LIMIT;
 /// The width of a bar of the waveform and the gap after it, in logical pixels.
 pub const BAR: f32 = 2.0;
 pub const GAP: f32 = 1.5;
@@ -120,6 +125,17 @@ pub fn round(env: &Env, batch: &[Ask], fetch: impl FnOnce(&[Ask]) -> Fetch) -> R
         found,
         missing: missing.into_iter().map(|a| a.id).collect(),
         fetch: Some(fetch),
+    }
+}
+
+/// `<program> waveform-fetch` with the tracks on its standard input; waits for it, `limit` at
+/// most. Past it the process is killed and the fetch has failed, so the usual tries apply.
+/// Blocking: run it away from the window.
+pub fn fetch(program: &Path, asks: &[Ask], limit: Duration) -> Fetch {
+    let lines: Vec<String> = asks.iter().map(Ask::line).collect();
+    match crate::covers::run(program, "waveform-fetch", &lines, limit) {
+        Fetch::Stopped => Fetch::Failed,
+        ended => ended,
     }
 }
 
@@ -423,5 +439,67 @@ mod tests {
         assert_eq!(count(BAR), 1);
         assert_eq!(count(BAR + GAP + BAR), 2);
         assert_eq!(count(350.0), (350.0 / (BAR + GAP)) as usize);
+    }
+
+    /// A stand-in for `melodie`: a shell script that keeps its input and its pid, then runs
+    /// `body`.
+    fn program(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt as _;
+        let path = dir.join("melodie");
+        let script = format!(
+            "#!/bin/sh\necho $$ > {pid}\ncat > {input}\n{body}\n",
+            pid = dir.join("pid").display(),
+            input = dir.join("input").display(),
+        );
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_fetch_says_how_waveform_fetch_ended() {
+        let dir = tempfile::tempdir().unwrap();
+        let wanted = asks(&["a", "b"]);
+        let done = program(dir.path(), "exit 0");
+        assert_eq!(fetch(&done, &wanted, FETCH_LIMIT), Fetch::Done);
+        let input = std::fs::read_to_string(dir.path().join("input")).unwrap();
+        let lines: Vec<String> = wanted.iter().map(Ask::line).collect();
+        assert_eq!(input, lines.join("\n"));
+        let locked = program(
+            dir.path(),
+            &format!("exit {}", melodie_core::cover::LOCKED_EXIT),
+        );
+        assert_eq!(fetch(&locked, &wanted, FETCH_LIMIT), Fetch::Locked);
+        let broken = program(dir.path(), "exit 3");
+        assert_eq!(fetch(&broken, &wanted, FETCH_LIMIT), Fetch::Failed);
+        let missing = dir.path().join("nothing-here");
+        assert_eq!(fetch(&missing, &wanted, FETCH_LIMIT), Fetch::Failed);
+    }
+
+    /// Issue #106: a `waveform-fetch` that never ends (an unreachable server, a stuck lock) kept
+    /// the round running for good, and no waveform was asked again until the window restarted.
+    #[test]
+    fn a_fetch_that_never_ends_fails_after_its_deadline_and_the_process_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let stuck = program(dir.path(), "exec sleep 20");
+        let t = Instant::now();
+        let ended = fetch(&stuck, &asks(&["a"]), Duration::from_secs(1));
+        assert!(t.elapsed() < Duration::from_secs(10), "{:?}", t.elapsed());
+        assert_eq!(ended, Fetch::Failed);
+        // under load the shell may not have written its pid yet when it was stopped
+        let pid_file = dir.path().join("pid");
+        let wait = Instant::now();
+        while !pid_file.exists() && wait.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let Ok(pid) = std::fs::read_to_string(&pid_file) else {
+            return; // stopped before it ran its first line: nothing of it is left
+        };
+        let alive = std::process::Command::new("kill")
+            .args(["-0", pid.trim()])
+            .status()
+            .unwrap()
+            .success();
+        assert!(!alive, "the process is stopped, its lock with it");
     }
 }

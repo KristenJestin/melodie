@@ -7,8 +7,7 @@
 #
 # Only `main` publishes: merging `dev` into `main` (a merge commit, never a squash) publishes
 # `vX.Y.Z`, read from the subjects of the squashed pull requests it brings. `dev` publishes
-# betas instead (beta.yml). Mélodie starts in `0.x`: a breaking change moves the minor, a 1.0 is
-# the maintainer's decision, not something a commit message brings about.
+# betas instead (beta.yml). Mélodie left `0.x` with 1.0.0: a breaking change moves the major.
 
 name: release
 
@@ -44,15 +43,6 @@ jobs:
         with:
           node-version: 24
       - run: npm ci --ignore-scripts
-      # With no release yet, semantic-release makes 1.0.0 whatever the commits say. Counting from a
-      # 0.0.0 on the first commit makes the first release 0.1.0 for a `feat`, and the 1.0 stays the
-      # maintainer's decision. semantic-release pushes its tags, so `v0.0.0` is published with
-      # that first release, on the first commit: harmless, it is not a release.
-      - name: Count from 0.0.0 until there is a release
-        run: |
-          if ! git tag --list 'v*' | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
-            git tag v0.0.0 "$(git rev-list --max-parents=0 HEAD | tail -n 1)"
-          fi
       - name: Tag what was merged, and write the release notes
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -88,11 +78,12 @@ jobs:
         run: MELODIE_VERSION="${TAG#v}" cargo build --locked --release
       - name: Pack them with their checksum
         run: tools/package.sh "${TAG#v}" target/release "$RUNNER_TEMP/dist"
-      - uses: actions/upload-artifact@v4
+      # Handed to the next job through the Actions cache, not an artifact: artifacts count in the
+      # account's small Actions storage, the cache does not. The next job deletes it.
+      - uses: actions/cache/save@v4
         with:
-          name: release-archive
-          path: ${{ runner.temp }}/dist/melodie-*
-          if-no-files-found: error
+          key: release-archive-${{ github.run_id }}
+          path: ${{ runner.temp }}/dist
 
   # The archive and its checksum, attached to the release of the tag. If the build or this job
   # fails the release exists without its archive: re-run the failed job.
@@ -101,14 +92,19 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/cache/restore@v4
         with:
-          name: release-archive
-          path: dist
+          key: release-archive-${{ github.run_id }}
+          path: ${{ runner.temp }}/dist
+          fail-on-cache-miss: true
       - name: Attach both to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.tag.outputs.tag }}
-        run: gh release upload "$TAG" dist/melodie-*.tar.gz dist/melodie-*.tar.gz.sha256 --clobber
+        run: |
+          cd "$RUNNER_TEMP/dist"
+          gh release upload "$TAG" melodie-*.tar.gz melodie-*.tar.gz.sha256 --clobber
+          gh cache delete "release-archive-$GITHUB_RUN_ID"

@@ -3,7 +3,7 @@
 //! is the one animation inside a row, and it runs only when the pointer itself moves to another
 //! row; rows scrolled under a still pointer change at once (`docs/gui-toolkit.md`, "Lists").
 
-use crate::albums::{PAD, artist_play, content_width, cover_box, empty_state};
+use crate::albums::{PAD, artist_play, content_width, cover_box, empty_state, sort_chips};
 use crate::app::Shared;
 use crate::artist_links;
 use crate::catalog::Catalog;
@@ -12,7 +12,7 @@ use crate::dialogs::{self, Dialog};
 use crate::equaliser::{Equaliser, name_line};
 use crate::player::palette;
 use crate::tips::Tipped as _;
-use crate::widgets::{Hover, Revealed as _, hover, title_with_aside};
+use crate::widgets::{Hover, IconButton, Revealed as _, hover, title_with_aside};
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::Icon;
@@ -25,7 +25,7 @@ use melodie_desktop::figures::{Figures as _, clock_text};
 use melodie_desktop::launch::{Adding, Job, Kind};
 use melodie_desktop::menu::{Item, Spot};
 use melodie_desktop::playing::{Mark, Marks};
-use melodie_desktop::selection::{Click, Selection};
+use melodie_desktop::selection::{Click, FIRST, Selection, play_first};
 use melodie_desktop::table::{self, Col, ColSort, Cols, Shown, Table, Width};
 use melodie_desktop::theme::Palette;
 use std::sync::Arc;
@@ -382,6 +382,8 @@ pub fn track_row(
                         }),
                         Col::Plays => c.tabular().child(t.plays.to_string()),
                         Col::Time => c.child(clock_text(t.duration as f64)),
+                        // sort-only: no table draws them
+                        Col::Added | Col::Played => c,
                     }
                 }))
                 .child(
@@ -525,9 +527,55 @@ impl Render for TrackList {
         let selection = self.catalog.read(cx).selection.clone();
         let catalog = self.catalog.clone();
         let sort = self.catalog.read(cx).sorts.get(&Place::Tracks);
-        let header = track_header(&cols, false, sort, pal, move |s, cx| {
-            catalog.update(cx, |c, cx| c.sort_tracks(Place::Tracks, s, cx))
+        let header = track_header(&cols, false, sort, pal, {
+            let catalog = catalog.clone();
+            move |s, cx| catalog.update(cx, |c, cx| c.sort_tracks(Place::Tracks, s, cx))
         });
+        // the whole library cannot be a queue: the first ones shown
+        let play = |id: &'static str, icon, label: &'static str, shuffle: bool| {
+            let (catalog, shown) = (catalog.clone(), shown.clone());
+            IconButton::new(id, icon, pal)
+                .label(label)
+                .tip(format!("{label} the first {FIRST} tracks shown"))
+                .diameter(38.)
+                .disabled(shown.as_ref().is_none_or(Shown::is_empty))
+                .on_click(move |_, _, cx| {
+                    if let Some(job) = shown.as_ref().and_then(|s| play_first(s, shuffle)) {
+                        catalog.update(cx, |c, cx| c.run(job, cx))
+                    }
+                })
+        };
+        let top = h_flex()
+            .px(px(PAD))
+            .pt_5()
+            .pb_3()
+            .gap_4()
+            .items_center()
+            .flex_wrap()
+            .child(title_with_aside(
+                "Tracks",
+                shown.as_ref().map(|s| s.len().to_string().into()),
+                pal,
+                window,
+            ))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(play("tracks-play", IconName::Play, "Play", false).primary())
+                    .child(play("tracks-shuffle", IconName::Shuffle, "Shuffle", true)),
+            )
+            .child(div().flex_1())
+            .child(sort_chips(
+                "track-sort",
+                table::library_sort(sort),
+                &table::TRACK_CHIPS,
+                pal,
+                move |s, cx| {
+                    catalog.update(cx, |c, cx| {
+                        c.sort_tracks(Place::Tracks, Some(table::chosen(s)), cx)
+                    })
+                },
+            ));
         let body = match &shown {
             None => empty_state(empty, "", pal).into_any_element(),
             Some(shown) => {
@@ -550,11 +598,7 @@ impl Render for TrackList {
                 .into_any_element()
             }
         };
-        v_flex()
-            .size_full()
-            .child(title("Tracks", shown.as_ref().map(Shown::len), pal, window))
-            .child(header)
-            .child(body)
+        v_flex().size_full().child(top).child(header).child(body)
     }
 }
 

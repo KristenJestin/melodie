@@ -107,7 +107,8 @@ fn log(work: &Path) -> String {
 }
 
 #[test]
-fn the_archive_holds_both_programs_and_the_install_script_with_its_checksum() {
+fn the_archive_holds_both_programs_the_desktop_entry_the_icon_and_the_install_script_with_its_checksum()
+ {
     let work = tempfile::tempdir().unwrap();
     let folder = unpacked(work.path(), "0.1.0", "new");
     let mut names: Vec<_> = fs::read_dir(&folder)
@@ -115,7 +116,16 @@ fn the_archive_holds_both_programs_and_the_install_script_with_its_checksum() {
         .map(|e| e.unwrap().file_name().into_string().unwrap())
         .collect();
     names.sort();
-    assert_eq!(names, ["install.sh", "melodie", "melodie-desktop"]);
+    assert_eq!(
+        names,
+        [
+            "install.sh",
+            "melodie",
+            "melodie-desktop",
+            "melodie.desktop",
+            "melodie.svg"
+        ]
+    );
 
     // Checked from the folder the two files are in, as a person who downloaded them does.
     run(Command::new("sha256sum")
@@ -158,6 +168,119 @@ fn install_puts_both_programs_in_the_prefix_and_leaves_the_user_alone() {
     );
     // And no player was asked to quit, as there was none.
     assert_eq!(log(work.path()), "");
+}
+
+// The desktop finds the window (and matches MPRIS's DesktopEntry) through this file.
+#[test]
+fn install_puts_the_desktop_entry_where_desktops_look_for_it() {
+    let work = tempfile::tempdir().unwrap();
+    let folder = unpacked(work.path(), "0.1.0", "new");
+    // `share/applications` does not exist in a fresh prefix: install creates it.
+    let prefix = work.path().join("prefix");
+
+    let output = install(&folder, work.path(), &prefix, "0");
+
+    let entry = prefix.join("share/applications/melodie.desktop");
+    let text = fs::read_to_string(&entry).unwrap();
+    assert!(text.contains("\nExec=melodie-desktop\n"), "{text}");
+    assert!(text.contains("\nName=Mélodie\n"), "{text}");
+    assert!(text.contains("\nStartupWMClass=melodie\n"), "{text}");
+    // What lets a launcher show the icon and find the player by typing "music".
+    assert!(text.contains("\nIcon=melodie\n"), "{text}");
+    assert!(text.contains("\nGenericName=Music player\n"), "{text}");
+    assert!(
+        text.contains("\nKeywords=music;musique;navidrome;melodie;\n"),
+        "{text}"
+    );
+    assert!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .contains(&entry.display().to_string())
+    );
+    // A real desktop-file-validate, when the machine has one.
+    if Command::new("desktop-file-validate")
+        .arg("--version")
+        .output()
+        .is_ok()
+    {
+        run(Command::new("desktop-file-validate").arg(&entry));
+    }
+}
+
+// A launcher finds the icon named by `Icon=melodie` in the hicolor theme.
+#[test]
+fn install_puts_the_icon_where_the_icon_theme_looks_for_it() {
+    let work = tempfile::tempdir().unwrap();
+    let folder = unpacked(work.path(), "0.1.0", "new");
+    let prefix = work.path().join("prefix");
+
+    let output = install(&folder, work.path(), &prefix, "0");
+
+    let icon = prefix.join("share/icons/hicolor/scalable/apps/melodie.svg");
+    assert_eq!(
+        fs::read(&icon).unwrap(),
+        fs::read(root().join("dist/melodie.svg")).unwrap()
+    );
+    assert!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .contains(&icon.display().to_string())
+    );
+}
+
+#[test]
+fn install_refreshes_the_icon_cache_when_the_tool_exists_and_does_without() {
+    let work = tempfile::tempdir().unwrap();
+    let folder = unpacked(work.path(), "0.1.0", "new");
+    let system = work.path().join("system");
+    fs::create_dir(&system).unwrap();
+    let tool = system.join("gtk-update-icon-cache");
+    fs::write(&tool, "#!/bin/sh\necho \"icons $*\" >> \"$LOG\"\nexit 3\n").unwrap();
+    fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+    let prefix = work.path().join("prefix");
+
+    // A tool that fails does not fail the install: the icon is there all the same.
+    let output = try_install(&folder, work.path(), &prefix, "0", Some(&system));
+
+    assert!(output.status.success());
+    assert!(
+        prefix
+            .join("share/icons/hicolor/scalable/apps/melodie.svg")
+            .is_file()
+    );
+    assert_eq!(
+        log(work.path()),
+        format!(
+            "icons -f -t {}\n",
+            prefix.join("share/icons/hicolor").display()
+        )
+    );
+}
+
+#[test]
+fn install_refreshes_the_desktop_database_when_the_tool_exists_and_does_without() {
+    let work = tempfile::tempdir().unwrap();
+    let folder = unpacked(work.path(), "0.1.0", "new");
+    let system = work.path().join("system");
+    fs::create_dir(&system).unwrap();
+    let tool = system.join("update-desktop-database");
+    fs::write(
+        &tool,
+        "#!/bin/sh\necho \"database $1\" >> \"$LOG\"\nexit 3\n",
+    )
+    .unwrap();
+    fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+    let prefix = work.path().join("prefix");
+
+    // A tool that fails does not fail the install: the entry is there all the same.
+    let output = try_install(&folder, work.path(), &prefix, "0", Some(&system));
+
+    assert!(output.status.success());
+    assert!(prefix.join("share/applications/melodie.desktop").is_file());
+    assert_eq!(
+        log(work.path()),
+        format!("database {}\n", prefix.join("share/applications").display())
+    );
 }
 
 #[test]
