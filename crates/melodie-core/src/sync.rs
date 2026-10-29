@@ -589,6 +589,24 @@ mod tests {
     }
 
     #[test]
+    fn a_copy_keeps_the_date_each_track_was_added() {
+        let (_d, env, fake, client) = setup(3);
+        fake.state.songs.lock().unwrap()[1]["created"] = json!("2026-02-03T04:05:06Z");
+        run(&env, &client, true).unwrap();
+        let conn = db::open_existing(&env).unwrap().unwrap();
+        let added = |id: &str| -> Option<String> {
+            conn.query_row("SELECT created FROM tracks WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .unwrap()
+        };
+        assert_eq!(added("s1").as_deref(), Some("2026-02-03T04:05:06Z"));
+        // the fake gives every song one of its own
+        assert!(added("s0").is_some());
+        assert_ne!(added("s0"), added("s2"));
+    }
+
+    #[test]
     fn a_copy_keeps_the_artists_credited_on_each_track() {
         for force in [false, true] {
             let (_d, env, fake, client) = setup(4);

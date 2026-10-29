@@ -177,6 +177,13 @@ Screenshots and a recording of the animations, made with invented data, are in
     A sorted playlist's rows are not dragged (there is no order to drop them in). A sort belongs
     to the visit: a list opened anew (the sidebar, a link, a search result) shows its own order,
     one come back to (Back, Forward) keeps its sort, and a new search shows its tracks unsorted.
+  - **The Tracks page** has the Albums' chips above the table (Recently added, Title, Artist,
+    Album, Year, Most played, Recently played) and the same sort as the headers: a header lights
+    its chip, a chip shows on its header. The tracks without a date come last in both directions.
+    Its Play and Shuffle send the first 100 tracks of the order shown, as one queue ("Recently
+    added", then Play, plays the 100 tracks added last). The date a track was added is the
+    server's `created`, kept by every full synchronisation; a copy made before it has none until
+    the next full one.
   - **Each artist of a track is a link of its own** to their page, in the tables, the queue, the
     player and the bottom bar: the artists the server credits on the track (OpenSubsonic
     `artists`), in its order, the main one first, separated by ", ". A name that does not fit is

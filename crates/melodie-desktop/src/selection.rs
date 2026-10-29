@@ -255,6 +255,21 @@ fn play_from(shown: &Shown, ix: usize) -> Option<Played> {
     })
 }
 
+/// How many tracks the Play and Shuffle of a page of the whole library send: the first ones of
+/// the order shown.
+pub const FIRST: usize = 100;
+
+/// What the Play (or, `shuffle`d, the Shuffle) of a page of the whole library sends: its first
+/// `FIRST` tracks, in the order shown.
+pub fn play_first(shown: &Shown, shuffle: bool) -> Option<Job> {
+    let ids: Vec<String> = ids(shown).take(FIRST).map(str::to_string).collect();
+    match (ids.is_empty(), shuffle) {
+        (true, _) => None,
+        (false, true) => Some(Job::ShuffleTracks { ids }),
+        (false, false) => Some(Job::PlayTracks { ids, from: 0 }),
+    }
+}
+
 /// The ids of a list, in the order shown.
 fn ids(shown: &Shown) -> impl Iterator<Item = &str> {
     (0..shown.len()).filter_map(|i| shown.row(i).map(|(_, t)| t.id.as_str()))
@@ -387,6 +402,42 @@ mod tests {
             },
             ranks: ranks.to_vec(),
         })
+    }
+
+    fn tracks(n: usize) -> Shown {
+        let list: Vec<Track> = (0..n)
+            .map(|i| track(&format!("t{i}"), &format!("{:03}", n - i)))
+            .collect();
+        // the order shown is by title: the list's last track first
+        Shown::new(
+            list.into(),
+            Some(ColSort {
+                col: Col::Title,
+                descending: false,
+            }),
+        )
+    }
+
+    #[test]
+    fn play_and_shuffle_of_a_long_list_send_the_first_hundred_shown() {
+        let shown = tracks(130);
+        let first: Vec<String> = (0..FIRST).map(|i| format!("t{}", 129 - i)).collect();
+        assert_eq!(FIRST, 100);
+        assert_eq!(
+            play_first(&shown, false),
+            Some(Job::PlayTracks {
+                ids: first.clone(),
+                from: 0
+            })
+        );
+        assert_eq!(
+            play_first(&shown, true),
+            Some(Job::ShuffleTracks { ids: first })
+        );
+        // a shorter list goes whole; none, nothing
+        let few = play_first(&tracks(3), false);
+        assert!(matches!(few, Some(Job::PlayTracks { ids, .. }) if ids == ["t2", "t1", "t0"]));
+        assert_eq!(play_first(&tracks(0), true), None);
     }
 
     #[test]

@@ -36,7 +36,7 @@ CREATE TABLE tracks (
   duration INTEGER NOT NULL DEFAULT 0, suffix TEXT, bitRate INTEGER NOT NULL DEFAULT 0,
   samplingRate INTEGER NOT NULL DEFAULT 0, bitDepth INTEGER NOT NULL DEFAULT 0,
   channelCount INTEGER NOT NULL DEFAULT 0, playCount INTEGER NOT NULL DEFAULT 0, played TEXT,
-  starred TEXT, userRating INTEGER NOT NULL DEFAULT 0, coverArt TEXT
+  starred TEXT, userRating INTEGER NOT NULL DEFAULT 0, coverArt TEXT, created TEXT
 );
 CREATE TABLE skips (id TEXT NOT NULL, at INTEGER NOT NULL);
 CREATE INDEX skips_at ON skips(at);
@@ -71,12 +71,12 @@ pub fn create(path: &std::path::Path) -> Result<Connection> {
 }
 
 /// A copy as the versions before the library browsing made it: no `albums.created`, no
-/// `playlist_tracks`, no `track_artists`. For tests of the upgrade, which must start from a schema
+/// `tracks.created`, no `playlist_tracks`, no `track_artists`. For tests of the upgrade, which must start from a schema
 /// that truly lacks them.
 #[cfg(any(test, feature = "fake"))]
 pub fn create_before_browsing(path: &std::path::Path) -> Result<Connection> {
     let conn = create(path)?;
-    conn.execute_batch("DROP TABLE playlist_tracks; DROP TABLE playlist_synced; DROP TABLE track_artists; ALTER TABLE albums DROP COLUMN created;")?;
+    conn.execute_batch("DROP TABLE playlist_tracks; DROP TABLE playlist_synced; DROP TABLE track_artists; ALTER TABLE albums DROP COLUMN created; ALTER TABLE tracks DROP COLUMN created;")?;
     Ok(conn)
 }
 
@@ -121,12 +121,17 @@ pub fn carry_skips(old: &std::path::Path, new: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-/// What `upgrade` has to add: `(the created column, the playlist_tracks table, the
-/// playlist_synced table, the track_artists table, its pos column)`. A copy without an `albums`
+/// What `upgrade` has to add: `(the albums' created column, the playlist_tracks table, the
+/// playlist_synced table, the track_artists table, its pos column, the tracks' created column)`. A copy without an `albums`
 /// table is no older copy: there is nothing to add a column to.
-fn upgrade_pending(conn: &Connection) -> Result<(bool, bool, bool, bool, bool)> {
+fn upgrade_pending(conn: &Connection) -> Result<(bool, bool, bool, bool, bool, bool)> {
     let (columns, has_created): (i64, i64) = conn.query_row(
         "SELECT count(*), coalesce(sum(name = 'created'), 0) FROM pragma_table_info('albums')",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let (track_columns, track_has_created): (i64, i64) = conn.query_row(
+        "SELECT count(*), coalesce(sum(name = 'created'), 0) FROM pragma_table_info('tracks')",
         [],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
@@ -147,12 +152,13 @@ fn upgrade_pending(conn: &Connection) -> Result<(bool, bool, bool, bool, bool)> 
         !has_table("playlist_synced")?,
         !credits,
         credits && !has_pos,
+        track_columns > 0 && track_has_created == 0,
     ))
 }
 
 /// Brings a copy made by an older version up to the schema: what was added since is created
-/// empty, and filled by the next synchronisation (the date an album was added, by the next full
-/// one; the artists credited on each track, by the next full one, which the next sync makes, see
+/// empty, and filled by the next synchronisation (the date an album or a track was added, by the
+/// next full one; the artists credited on each track, by the next full one, which the next sync makes, see
 /// `PARTICIPANTS`). The order of those artists needs no sync: a copy credited without it wrote
 /// the artists of each track one after the other, in the server's order, so the order they were
 /// written in is it.
@@ -161,14 +167,17 @@ fn upgrade_pending(conn: &Connection) -> Result<(bool, bool, bool, bool, bool)> 
 /// is idempotent and safe in parallel: the work is checked again under the write lock, and a
 /// process that waited for the lock finds it done.
 pub fn upgrade(conn: &Connection) -> Result<()> {
-    if upgrade_pending(conn)? == (false, false, false, false, false) {
+    if upgrade_pending(conn)? == (false, false, false, false, false, false) {
         return Ok(());
     }
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    let (created, playlist_tracks, playlist_synced, track_artists, credit_pos) =
+    let (created, playlist_tracks, playlist_synced, track_artists, credit_pos, track_created) =
         upgrade_pending(&tx)?;
     if created {
         tx.execute_batch("ALTER TABLE albums ADD COLUMN created TEXT")?;
+    }
+    if track_created {
+        tx.execute_batch("ALTER TABLE tracks ADD COLUMN created TEXT")?;
     }
     if playlist_tracks {
         tx.execute_batch(
@@ -368,9 +377,9 @@ pub fn insert_track(tx: &Transaction, v: &Value) -> Result<bool> {
     let n = tx.execute(
         "INSERT OR IGNORE INTO tracks(id, title, artist, artistId, album, albumId, genre, genres,
            year, track, duration, suffix, bitRate, samplingRate, bitDepth, channelCount,
-           playCount, played, starred, userRating, coverArt)
+           playCount, played, starred, userRating, coverArt, created)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
-           ?19, ?20, ?21)",
+           ?19, ?20, ?21, ?22)",
         params![
             id,
             title,
@@ -392,7 +401,8 @@ pub fn insert_track(tx: &Transaction, v: &Value) -> Result<bool> {
             text(v, "played"),
             text(v, "starred"),
             num(v, "userRating"),
-            cover(v)
+            cover(v),
+            text(v, "created")
         ],
     )?;
     if n == 1 {
@@ -909,6 +919,23 @@ mod tests {
             .query_row("SELECT count(*) FROM playlist_tracks", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn an_older_copy_gets_the_date_its_tracks_were_added() {
+        let d = tempfile::tempdir().unwrap();
+        let env = Env::with_home(d.path());
+        let old = create_before_browsing(&db_path(&env)).unwrap();
+        old.execute_batch("INSERT INTO tracks(id, title) VALUES ('t1', 'A');")
+            .unwrap();
+        drop(old);
+
+        let conn = open_existing(&env).unwrap().unwrap();
+        let created: Option<String> = conn
+            .query_row("SELECT created FROM tracks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(created, None, "filled by the next full sync");
+        upgrade(&conn).unwrap(); // twice is harmless
     }
 
     #[test]
