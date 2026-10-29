@@ -19,6 +19,7 @@ use melodie_desktop::browse::{self, Place};
 use melodie_desktop::covers::Covers;
 use melodie_desktop::figures::Figures as _;
 use melodie_desktop::launch::{Adding, Job, Kind};
+use melodie_desktop::menu::{self, Action, Effect};
 use melodie_desktop::playing::Playing;
 use melodie_desktop::selection::Selection;
 use melodie_desktop::table::{ColSort, Cols, Shown, Table};
@@ -690,6 +691,21 @@ impl Render for SelectionBar {
                 dialogs::open(Dialog::Pick { what, about }, window, cx)
             }
         };
+        // the same line of the right-click menu, on the same rows: it leaves them picked
+        let run = |action: Action| {
+            let (catalog, shared) = (self.catalog.clone(), self.shared.clone());
+            let playlist = playlist.clone();
+            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                let effect = {
+                    let c = catalog.read(cx);
+                    let shown = c.selection.tracks(&c.picking());
+                    menu::on_picked(action, &shown, playlist.clone(), c.here().clone())
+                };
+                if let Some(Effect::Run(job)) = effect {
+                    shared.update(cx, |s, cx| s.run(job, cx));
+                }
+            }
+        };
         let clear = self.catalog.clone();
         h_flex()
             .id("selection-bar")
@@ -716,26 +732,81 @@ impl Render for SelectionBar {
                     .child(format!("{n} selected")),
             )
             .child(
-                IconButton::new("picked-add", IconName::ListPlus, pal)
-                    .label("Add to playlist")
-                    .diameter(34.)
-                    .on_click(add),
+                div()
+                    .flex_none()
+                    .debug_selector(|| "picked-play".into())
+                    .child(
+                        IconButton::new("picked-play", IconName::Play, pal)
+                            .label("Play")
+                            .diameter(34.)
+                            .on_click(run(Action::Play)),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .debug_selector(|| "picked-shuffle".into())
+                    .child(
+                        IconButton::new("picked-shuffle", IconName::Shuffle, pal)
+                            .label("Shuffle")
+                            .diameter(34.)
+                            .on_click(run(Action::Shuffle)),
+                    ),
+            )
+            // icon only: the bar is already wide, and these two are the quiet ones
+            .child(
+                div()
+                    .flex_none()
+                    .debug_selector(|| "picked-next".into())
+                    .child(
+                        IconButton::new("picked-next", IconName::ListStart, pal)
+                            .tip("Play next")
+                            .diameter(34.)
+                            .on_click(run(Action::Next)),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .debug_selector(|| "picked-last".into())
+                    .child(
+                        IconButton::new("picked-last", IconName::ListEnd, pal)
+                            .tip("Add to queue")
+                            .diameter(34.)
+                            .on_click(run(Action::Last)),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .debug_selector(|| "picked-add".into())
+                    .child(
+                        IconButton::new("picked-add", IconName::ListPlus, pal)
+                            .label("Add to playlist")
+                            .diameter(34.)
+                            .on_click(add),
+                    ),
             )
             .when_some(playlist, |d, (id, name)| {
                 d.child(
-                    IconButton::new("picked-remove", IconName::ListMinus, pal)
-                        .label("Remove")
-                        .diameter(34.)
-                        .on_click(move |_, window, cx| {
-                            let (picks, titles) = picked(cx);
-                            let dialog = Dialog::Remove {
-                                id: id.clone(),
-                                name: name.clone(),
-                                picks,
-                                titles,
-                            };
-                            dialogs::open(dialog, window, cx)
-                        }),
+                    div()
+                        .flex_none()
+                        .debug_selector(|| "picked-remove".into())
+                        .child(
+                            IconButton::new("picked-remove", IconName::ListMinus, pal)
+                                .label("Remove")
+                                .diameter(34.)
+                                .on_click(move |_, window, cx| {
+                                    let (picks, titles) = picked(cx);
+                                    let dialog = Dialog::Remove {
+                                        id: id.clone(),
+                                        name: name.clone(),
+                                        picks,
+                                        titles,
+                                    };
+                                    dialogs::open(dialog, window, cx)
+                                }),
+                        ),
                 )
             })
             .child(

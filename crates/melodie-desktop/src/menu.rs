@@ -500,6 +500,8 @@ fn several(
     let ids = picks.iter().map(|(_, id)| id.clone()).collect();
     let job = match action {
         Action::Play => Job::PlayTracks { ids, from: 0 },
+        // not a line of the menu of the tracks picked: the selection bar's button
+        Action::Shuffle => Job::ShuffleTracks { ids },
         Action::Next => Job::QueueTracks { ids, next: true },
         Action::Last => Job::QueueTracks { ids, next: false },
         Action::RemoveFromPlaylist => {
@@ -519,6 +521,27 @@ fn several(
         _ => return None,
     };
     Some(Effect::Run(job))
+}
+
+/// What a button of the selection bar does: what the same line of the menu does on the tracks
+/// picked (`picked`, in the order shown, as `of_picked` takes them), so the two never differ.
+/// `here`: the place the window shows.
+pub fn on_picked(
+    action: Action,
+    picked: &[(usize, &Track)],
+    playlist: Option<(String, String)>,
+    here: Place,
+) -> Option<Effect> {
+    let (item, spot) = of_picked(picked, playlist)?;
+    effect(
+        action,
+        &Target {
+            item,
+            spot,
+            here,
+            starred: None,
+        },
+    )
 }
 
 /// What choosing a playlist (`None`: "New playlist…") in the list beside "Add to playlist" does.
@@ -1550,5 +1573,35 @@ mod tests {
         let t = target(item, spot);
         assert_eq!(actions(&t), [Play, Next, Last, AddToPlaylist]);
         assert_eq!(effect(RemoveFromPlaylist, &t), None);
+    }
+
+    #[test]
+    fn a_button_of_the_selection_bar_does_what_the_same_line_of_the_menu_does() {
+        let songs = songs();
+        // shown sorted: the rank 2 above the rank 0
+        let at = picked(&songs, &[2, 0, 1]);
+        let rows: Vec<(usize, &Track)> = at.iter().map(|(r, t)| (*r, t)).collect();
+        for playlist in [None, Some(("p1".to_string(), "Road".to_string()))] {
+            let (item, spot) = of_picked(&rows, playlist.clone()).unwrap();
+            let t = target(item, spot);
+            for action in [Play, Next, Last] {
+                assert_eq!(
+                    on_picked(action, &rows, playlist.clone(), Place::Home),
+                    effect(action, &t),
+                    "{action:?}"
+                );
+            }
+        }
+        let ids = || vec!["-t1".to_string(), "-t1".into(), "-t2".into()];
+        assert_eq!(
+            on_picked(Shuffle, &rows, None, Place::Home),
+            Some(Effect::Run(Job::ShuffleTracks { ids: ids() })),
+            "the tracks in the order shown, which the daemon then shuffles"
+        );
+        assert_eq!(
+            on_picked(Play, &[], None, Place::Home),
+            None,
+            "nothing picked"
+        );
     }
 }
