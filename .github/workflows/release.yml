@@ -7,8 +7,7 @@
 #
 # Only `main` publishes: merging `dev` into `main` (a merge commit, never a squash) publishes
 # `vX.Y.Z`, read from the subjects of the squashed pull requests it brings. `dev` publishes
-# betas instead (beta.yml). Mélodie starts in `0.x`: a breaking change moves the minor, a 1.0 is
-# the maintainer's decision, not something a commit message brings about.
+# betas instead (beta.yml). Mélodie left `0.x` with 1.0.0: a breaking change moves the major.
 
 name: release
 
