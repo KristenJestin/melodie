@@ -270,6 +270,21 @@ pub fn play_first(shown: &Shown, shuffle: bool) -> Option<Job> {
     }
 }
 
+/// What the Play of an album's or a playlist's page sends while its rows are shown sorted: the
+/// rows from the first one shown. Unsorted, `None`: the page plays by its id, in its own order.
+pub fn play_shown(shown: &Shown) -> Option<Played> {
+    shown.sort?;
+    play_from(shown, 0)
+}
+
+/// What Play next (`next`) or Add to queue of such a page sends while its rows are shown sorted:
+/// the rows, in the order shown. Unsorted, `None`.
+pub fn queue_shown(shown: &Shown, next: bool) -> Option<Job> {
+    shown.sort?;
+    let ids: Vec<String> = ids(shown).map(str::to_string).collect();
+    (!ids.is_empty()).then_some(Job::QueueTracks { ids, next })
+}
+
 /// The ids of a list, in the order shown.
 fn ids(shown: &Shown) -> impl Iterator<Item = &str> {
     (0..shown.len()).filter_map(|i| shown.row(i).map(|(_, t)| t.id.as_str()))
@@ -438,6 +453,35 @@ mod tests {
         let few = play_first(&tracks(3), false);
         assert!(matches!(few, Some(Job::PlayTracks { ids, .. }) if ids == ["t2", "t1", "t0"]));
         assert_eq!(play_first(&tracks(0), true), None);
+    }
+
+    #[test]
+    fn play_of_a_sorted_page_plays_its_rows_in_the_order_shown() {
+        assert_eq!(
+            play_shown(&sorted()),
+            play_from(&["c", "b", "a"], &[2, 1, 0], 0)
+        );
+    }
+
+    #[test]
+    fn play_next_and_add_to_queue_of_a_sorted_page_add_its_rows_in_the_order_shown() {
+        for next in [true, false] {
+            assert_eq!(
+                queue_shown(&sorted(), next),
+                Some(Job::QueueTracks {
+                    ids: vec!["c".into(), "b".into(), "a".into()],
+                    next
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn an_unsorted_page_plays_and_queues_by_its_id() {
+        let tracks: Arc<[Track]> = [track("a", "A"), track("b", "B")].into();
+        let own = Shown::new(tracks, None);
+        assert_eq!(play_shown(&own), None);
+        assert_eq!(queue_shown(&own, true), None);
     }
 
     #[test]

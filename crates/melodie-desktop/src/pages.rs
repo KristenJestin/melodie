@@ -21,7 +21,7 @@ use melodie_desktop::figures::Figures as _;
 use melodie_desktop::launch::{Adding, Job, Kind};
 use melodie_desktop::menu::{self, Action, Effect};
 use melodie_desktop::playing::Playing;
-use melodie_desktop::selection::Selection;
+use melodie_desktop::selection::{Selection, play_shown, queue_shown};
 use melodie_desktop::table::{ColSort, Cols, Shown, Table};
 use melodie_desktop::theme::Palette;
 use std::sync::Arc;
@@ -173,17 +173,44 @@ enum Extra {
 
 /// Play, shuffle, play next, add at the end, an instant mix; then what `extra` says. Without
 /// anything to play (`playable` false), the buttons that play stay but cannot be pressed.
+/// `rows`: the page's list and its rows; while they are shown sorted, Play, Play next and Add to
+/// queue send them in that order rather than the album or playlist by its id.
 fn actions(
     kind: Kind,
     id: &str,
     (extra, playable): (Extra, bool),
+    rows: Option<(&Place, &Shown)>,
     pal: Palette,
-    catalog: &Entity<Catalog>,
+    (catalog, shared): (&Entity<Catalog>, &Entity<Shared>),
 ) -> Div {
-    let job = |make: fn(Kind, String) -> Job| {
-        let (catalog, id) = (catalog.clone(), id.to_string());
+    let rows = rows.map(|(here, shown)| (here.clone(), shown.clone()));
+    let job = |make: fn(Kind, String) -> Job, sorted: fn(&Shown) -> Option<Job>| {
+        let (catalog, id, rows) = (catalog.clone(), id.to_string(), rows.clone());
         move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-            catalog.update(cx, |c, cx| c.run(make(kind, id.clone()), cx))
+            let job = rows.as_ref().and_then(|(_, shown)| sorted(shown));
+            let job = job.unwrap_or_else(|| make(kind, id.clone()));
+            catalog.update(cx, |c, cx| c.run(job, cx))
+        }
+    };
+    let play = {
+        let (shared, rows) = (shared.clone(), rows.clone());
+        let by_id = job(
+            |kind, id| Job::Play {
+                kind,
+                id,
+                shuffle: false,
+            },
+            |_| None,
+        );
+        move |e: &ClickEvent, window: &mut Window, cx: &mut App| {
+            match rows
+                .as_ref()
+                .and_then(|(here, s)| Some((here, play_shown(s)?)))
+            {
+                // as a double click on the first row: a playlist is still marked as playing
+                Some((here, played)) => shared.update(cx, |s, cx| s.play_from(here, played, cx)),
+                None => by_id(e, window, cx),
+            }
         }
     };
     let open = |make: Box<dyn Fn() -> Dialog>| {
@@ -200,11 +227,7 @@ fn actions(
                 .diameter(38.)
                 .disabled(!playable)
                 .when_some(unplayable_tip(playable), |b, tip| b.tip(tip))
-                .on_click(job(|kind, id| Job::Play {
-                    kind,
-                    id,
-                    shuffle: false,
-                })),
+                .on_click(play),
         )
         .child(
             IconButton::new("page-shuffle", IconName::Shuffle, pal)
@@ -212,32 +235,41 @@ fn actions(
                 .diameter(38.)
                 .disabled(!playable)
                 .when_some(unplayable_tip(playable), |b, tip| b.tip(tip))
-                .on_click(job(|kind, id| Job::Play {
-                    kind,
-                    id,
-                    shuffle: true,
-                })),
+                .on_click(job(
+                    |kind, id| Job::Play {
+                        kind,
+                        id,
+                        shuffle: true,
+                    },
+                    |_| None,
+                )),
         )
         .when(kind != Kind::Artist, |d| {
             d.child(
                 IconButton::new("page-next", IconName::ListStart, pal)
                     .label("Play next")
                     .diameter(38.)
-                    .on_click(job(|kind, id| Job::Queue {
-                        kind,
-                        id,
-                        next: true,
-                    })),
+                    .on_click(job(
+                        |kind, id| Job::Queue {
+                            kind,
+                            id,
+                            next: true,
+                        },
+                        |s| queue_shown(s, true),
+                    )),
             )
             .child(
                 IconButton::new("page-last", IconName::ListEnd, pal)
                     .label("Add to queue")
                     .diameter(38.)
-                    .on_click(job(|kind, id| Job::Queue {
-                        kind,
-                        id,
-                        next: false,
-                    })),
+                    .on_click(job(
+                        |kind, id| Job::Queue {
+                            kind,
+                            id,
+                            next: false,
+                        },
+                        |s| queue_shown(s, false),
+                    )),
             )
         })
         // `melodie mix` makes instant mixes from a track, an album or an artist
@@ -248,7 +280,7 @@ fn actions(
                     .diameter(38.)
                     .disabled(!playable)
                     .when_some(unplayable_tip(playable), |b, tip| b.tip(tip))
-                    .on_click(job(|kind, id| Job::Mix { kind, id })),
+                    .on_click(job(|kind, id| Job::Mix { kind, id }, |_| None)),
             )
         })
         .map(|d| match extra {
@@ -451,8 +483,9 @@ impl Render for PageView {
                                 },
                                 true,
                             ),
+                            Some((&here, &shown())),
                             pal,
-                            catalog,
+                            (catalog, &self.shared),
                         ),
                         pal,
                     ))
@@ -499,8 +532,9 @@ impl Render for PageView {
                                 },
                                 true,
                             ),
+                            Some((&here, &shown())),
                             pal,
-                            catalog,
+                            (catalog, &self.shared),
                         ),
                         pal,
                     ))
@@ -547,8 +581,9 @@ impl Render for PageView {
                         Kind::Artist,
                         &artist.id,
                         (Extra::None, artist_page.playable()),
+                        None,
                         pal,
-                        catalog,
+                        (catalog, &self.shared),
                     ),
                     pal,
                 ))
